@@ -3,9 +3,15 @@ name: Release
 # Tags trigger a release. Nothing here runs on a schedule or on a branch push —
 # a build that cannot be reproduced from a tag does not get cut.
 on:
-  # Nothing is releasable yet — this repository is the specification.
-  # Tag-triggered releases stay defined so the pipeline is ready when
-  # Tasks/002 lands, but they do not fire on tag push yet.
+  # A release is cut by pushing a tag. Nothing here runs on a schedule or on a
+  # branch push: a build that cannot be reproduced from a tag does not get cut.
+  #
+  # Note: this repository is currently the specification only, so there is no
+  # workspace to bundle yet. The pipeline is wired and will start failing
+  # loudly and usefully the moment Tasks/002 lands without a tag.
+  push:
+    tags: ["v*"]
+  # Manual re-run for a tag that already exists.
   workflow_dispatch:
     inputs:
       tag:
@@ -54,6 +60,20 @@ jobs:
 
       # --locked is not optional in CI. It is the difference between
       # "reproducible" and "usually the same".
+      # Fail loudly and specifically if there is still nothing to bundle.
+      # This repository is the specification until Tasks/002 lands, and a tag
+      # pushed before then should say so rather than surface as a cargo error
+      # about a missing manifest.
+      - name: Refuse to release a spec-only tree
+        shell: bash
+        run: |
+          if [ ! -f Cargo.toml ] || [ ! -f package.json ]; then
+            echo "::error::no Cargo.toml or no package.json - this repository is"
+            echo "::error::the specification only. Nothing is bundleable until"
+            echo "::error::Tasks/002 lands the workspace."
+            exit 1
+          fi
+
       - name: Build frontend
         run: |
           npm ci
