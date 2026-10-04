@@ -151,38 +151,45 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
-      - name: Secret scanning
+      # Secret scanning and config scanning are --scanners on the fs scan in
+      # current Trivy; the standalone scan-type values were removed, so a
+      # separate step fails with 'unknown command "secret"'. One fs scan with
+      # all three scanners enabled covers them.
+      - name: Dependencies, secrets and misconfiguration
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: secret
+          scan-type: fs
           scan-ref: .
-          exit-code: "0"
-
-      - name: Misconfiguration and IaC
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: config
-          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: table
+          output: trivy-results.txt
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
           exit-code: "0"
 
       - name: Licence policy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: license
+          scan-type: fs
           scan-ref: .
-          exit-code: "0"
+          scanners: license
+          format: table
+          output: trivy-licences.txt
           # The whole porting argument depends on this. A GPL or AGPL
           # dependency would make an MIT repository undeliverable, so licence
-          # drift is a build failure rather than a line in a report. D59, D60.
+          # drift is a build failure rather than a line in a report (D59, D60).
           license-forbidden: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later, GPL-1.0, GPL-1.0-only, GPL-1.0-or-later, GPL-2.0, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0, GPL-3.0-only, GPL-3.0-or-later, SSPL-1.0
           license-allowed: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016
+          exit-code: "0"
 
       - name: Upload scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-report
-          path: trivy-results.txt
+          path: |
+            trivy-results.txt
+            trivy-licences.txt
           if-no-files-found: ignore
 
   # 4. Secret scan, independent of Trivy.
