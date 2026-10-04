@@ -3,11 +3,14 @@
 **Phase** 0 · **Depends** `002` · **Decisions** D23, D49, D50, D53, D76
 **Contracts** §5 `ProviderAdapter.limits`, §5 model catalogue shapes
 
-**Status: verified 2026-10-04 on Windows/WebView2.** `cargo test` (11 shell tests + workspace),
-`vitest` (17), `tsc`, `eslint strictTypeChecked` all green; picker verified live against the real
-`models.dev` catalogue (8,158 models after filtering). Caveats where a live path could not run on
-this host: the *missing*-WebView2 path and the *libsecret-absent* path are proven by unit tests only
-— Linux CI and a runtime-less machine exercise them for real.
+**Status: verified 2026-10-04 on Windows/WebView2, and on Linux CI.** `cargo test` (12 shell tests +
+workspace), `vitest` (17), `tsc`, `eslint strictTypeChecked` all green; picker verified live against
+the real `models.dev` catalogue (8,158 models after filtering). The first CI run on Linux failed the
+keyring test — the crate's typed `Error::NoDefaultStore` (platform store init failed: no session bus
+on a runner) was classified as `Failed` by a string match. Fixed test-first: `entry()` now consults
+`Entry::store_status()` and `classify()` matches the typed variant, so the libsecret-absent path is
+proven both locally and on both Linux CI jobs. The missing-WebView2 path remains unit-test-proven
+only — it needs a machine without the runtime.
 
 ## Failing test first
 

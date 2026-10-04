@@ -184,7 +184,17 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
-      - name: Licence policy
+      # Licence report. The forbidden/allowed lists originally written here
+      # were silently DROPPED: trivy-action@v0.36 has no such inputs (its own
+      # input validation announced this as a warning on every run). The scan
+      # itself always targeted licences; the *policy* on top of it never
+      # existed. A policy nobody can reconstruct is not a policy, so the dead
+      # lists are removed rather than left to look enforced.
+      # Enforcing a forbidden-licence list needs a trivy.yaml through the
+      # action's `trivy-config` input — Tasks/022 owns that, together with
+      # flipping this from report-only to blocking (exit-code 1). The porting
+      # rule (D59, D60) is what makes that a release blocker when it lands.
+      - name: Licence scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
@@ -192,11 +202,6 @@ jobs:
           scanners: license
           format: table
           output: trivy-licences.txt
-          # The whole porting argument depends on this. A GPL or AGPL
-          # dependency would make an MIT repository undeliverable, so licence
-          # drift is a build failure rather than a line in a report (D59, D60).
-          license-forbidden: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later, GPL-1.0, GPL-1.0-only, GPL-1.0-or-later, GPL-2.0, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0, GPL-3.0-only, GPL-3.0-or-later, SSPL-1.0
-          license-allowed: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016
           exit-code: "0"
 
       - name: Upload scan results

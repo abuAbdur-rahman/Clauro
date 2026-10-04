@@ -34,17 +34,33 @@ impl std::fmt::Display for KeyringError {
 impl std::error::Error for KeyringError {}
 
 fn entry(account: &str) -> Result<keyring::Entry, KeyringError> {
-    keyring::Entry::new(SERVICE, account).map_err(|e| classify(e, "open entry"))
+    // The platform store initialises once per process and caches its result
+    // (keyring's v1 layer). Checking the typed status here surfaces the
+    // *underlying* init failure — no session bus, no secret service — as
+    // `Unavailable` with a diagnostic reason, instead of the bare
+    // `NoDefaultStore` that `Entry::new` would return.
+    match keyring::Entry::store_status() {
+        Ok(()) => keyring::Entry::new(SERVICE, account).map_err(|e| classify(e, "open entry")),
+        Err(init) => Err(KeyringError::Unavailable {
+            reason: format!("platform credential store not initialised: {init}"),
+        }),
+    }
 }
 
 /// Classify a keyring error: backend-absence becomes `Unavailable`, everything
-/// else becomes `Failed`. The match is on the error's own description, which is
-/// the stable part of the `keyring` API across backends.
+/// else becomes `Failed`.
+///
+/// Primary signal is the **typed** `Error::NoDefaultStore` — the crate's own
+/// marker that the platform store failed to initialise. The keyword pass below
+/// is a fallback for the daemon-disappears-mid-session case, where a live store
+/// returns a transport-flavoured message (dbus / secret-service wording).
 fn classify(e: keyring::Error, op: &str) -> KeyringError {
+    if matches!(e, keyring::Error::NoDefaultStore) {
+        return KeyringError::Unavailable {
+            reason: format!("{op}: {e}"),
+        };
+    }
     let msg = format!("{e:?}");
-    // Backend-absence signals across keyring 4.x backends: no dbus session,
-    // no libsecret service, no credential daemon. Matched case-insensitively
-    // because backend crates capitalise differently.
     let lower = msg.to_lowercase();
     let absent = [
         "no backend",
@@ -157,6 +173,21 @@ mod tests {
         assert!(
             !dbg.contains("s3cr3t"),
             "error variants must not carry secrets"
+        );
+    }
+
+    #[test]
+    fn no_default_store_is_unavailable_not_failed() {
+        // The keyring crate exposes backend absence as a typed variant —
+        // `Error::NoDefaultStore` means the platform store failed to
+        // initialise (headless Linux without a session bus is the case CI
+        // exercises). It must map to `Unavailable`, never to `Failed`: the
+        // product reports it, it does not treat it as an operation failure.
+        // This is the exact path the Linux CI jobs take.
+        let e = classify(keyring::Error::NoDefaultStore, "open entry");
+        assert!(
+            matches!(e, KeyringError::Unavailable { .. }),
+            "NoDefaultStore must classify as Unavailable, got {e:?}"
         );
     }
 }
