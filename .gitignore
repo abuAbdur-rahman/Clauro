@@ -4,6 +4,7 @@ node_modules/
 dist/
 *.exe
 *.msi
+src-tauri/gen/
 
 # Local machine specifics -- D88 says these never belong in the spec
 docs/dev-host.md

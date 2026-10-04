@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/clauro-core",
+  "crates/clauro-store",
+  "crates/clauro-transport",
+  "crates/clauro-tokens",
+  "crates/clauro-tools",
+  "crates/clauro-fs",
+  "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"

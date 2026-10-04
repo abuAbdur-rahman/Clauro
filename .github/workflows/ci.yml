@@ -54,12 +54,25 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Single source of truth for the Rust pin is rust-toolchain.toml.
+      # The action does not read that file, so extract the channel here —
+      # a second hardcoded version would drift silently.
+      - name: Read pinned Rust toolchain
+        id: tc
+        shell: bash
+        run: 'echo "channel=$(grep -oP '\''channel = "\K[^"]+'\'' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"'
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.tc.outputs.channel }}
           components: clippy, rustfmt
+      - uses: pnpm/action-setup@v4
+        with:
+          # No version input: the action reads package.json "packageManager".
+          run_install: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: ".nvmrc"
+          cache: pnpm
 
       - name: Install Linux webview deps
         if: runner.os == 'Linux'
@@ -101,12 +114,13 @@ jobs:
         if: steps.rust.outputs.present == 'true'
         run: cargo test --workspace
 
-      - name: Frontend lint and typecheck
+      - name: Frontend lint, typecheck and test
         if: steps.web.outputs.present == 'true'
         run: |
-          npm ci
-          npm run lint
-          npm run typecheck
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm typecheck
+          pnpm test
 
       - name: Note skipped gates
         if: "steps.rust.outputs.present == 'false' && steps.web.outputs.present == 'false'"

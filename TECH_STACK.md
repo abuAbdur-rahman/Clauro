@@ -201,11 +201,14 @@ instinct to hand-roll is the expensive one.
 
 ## 7. Version pinning
 
-Cargo.lock and package-lock.json are committed. Tauri, Tailwind and the `rusqlite` bundled SQLite
+Cargo.lock and pnpm-lock.yaml are committed. Tauri, Tailwind and the `rusqlite` bundled SQLite
 are pinned exactly — an unpinned SQLite changes the schema layer underneath the append-only
 guarantee without any commit that mentions it.
 
-Toolchain is pinned in `rust-toolchain.toml` and `.nvmrc`. CI fails on drift rather than warning.
+Toolchain is pinned in `rust-toolchain.toml` and `.nvmrc`. The frontend package manager is pinned
+via the `packageManager` field in `package.json` (`pnpm@11.6.0`) — CI installs with
+`pnpm install --frozen-lockfile` and fails on drift rather than warning. The Rust pin lives only in
+`rust-toolchain.toml`; CI extracts the channel from that file instead of hardcoding a second copy.
 
 ### 7.1 Pinned versions, verified 2026-10-04
 
@@ -268,7 +271,7 @@ Windows toolchain in a Windows shell, and needs no cross-compilation and no inte
 |---|---|
 | Source of truth | The repo, on the Windows filesystem. |
 | Build | Windows `cargo`/`rustc`, target `x86_64-pc-windows-msvc`, linked by MSVC. |
-| Frontend | Windows-side node/npm/pnpm. |
+| Frontend | Windows-side node/pnpm. |
 | Artefacts | A local build directory. Never committed — `target/` is gitignored. |
 | Cross-compilation | **Not used, and not needed.** One platform, one toolchain. |
 
