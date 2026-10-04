@@ -486,6 +486,48 @@ P4  Usage comes from usage.iterations, never from the top-level
 P4 is the one that silently ships: a usage footer that reads 0/0 looks like a bug in the meter, not
 a protocol detail.
 
+### Model catalogue shapes (D23)
+
+`ProviderAdapter.limits` names `ModelRef` and `ModelLimits` but nothing defined them. These are the
+shapes, mirroring the subset of `models.dev/api.json` the picker consumes. A model entry carries
+`limit.context` / `limit.output`; everything else in the catalogue entry is display metadata.
+
+```ts
+/** Identity. `provider` is the models.dev provider key (`anthropic`), not a display name. */
+export interface ModelRef {
+  provider: string;
+  id: string;            // e.g. `claude-haiku-4-5`
+}
+
+/** What the picker shows and what the request builder reserves. All counts are tokens. */
+export interface ModelLimits {
+  contextWindow: number; // catalogue `limit.context`
+  maxOutput: number;     // catalogue `limit.output`
+  reasoning: boolean;    // catalogue `reasoning` — thinking effort is offerable
+  toolCall: boolean;     // catalogue `tool_call` — tools are offerable
+}
+
+/**
+ * Limit resolution order: conversation → adapter spec → server snapshot.
+ * First present value wins per field; absent everywhere means unknown, never zero.
+ * Zero is a measurement; unknown is the absence of one. Conflating them
+ * under-reserves the reply and overflows the window.
+ */
+export type LimitSource = Partial<ModelLimits>;
+
+export interface LimitSources {
+  conversation?: LimitSource;
+  adapterSpec?: LimitSource;
+  serverSnapshot?: LimitSource;
+}
+
+/** An unknown model degrades to this, never a panic and never a zero-limit guess. */
+export interface UnknownModel {
+  kind: 'unknown-model';
+  ref: ModelRef;
+}
+```
+
 ---
 
 ## 6. Acceptance criteria for §3 (v1 scope)

@@ -247,8 +247,12 @@ prefix; you pay cache-write every time. Clearing 300 tokens to save 300 is a net
 226 providers, 5.3 MB — larger than the entire binary budget.
 
 **D24 — Hand-roll SSE over `reqwest`.** There is no official Anthropic Rust SDK (max version 0.0.8,
-last updated 2024-09-03) and both SSE crates are unmaintained. They are heavily used, so
-abandoned-not-dead — but they are not a dependency we build on.
+last updated 2024-09-03) and we do not build on an SSE crate either.
+
+> **Corrected 2026-10-04.** This entry previously claimed both SSE crates were unmaintained. That
+> became false: `reqwest-sse` 0.2.0 released 2026-05-08 and is maintained (MIT, six stars, one
+> maintainer). It is recorded and not adopted — it covers only the framing layer while
+> `CONTRACTS.md` §5's rules are event semantics we own either way. See `TECH_STACK.md` §3.1. **D97.**
 
 **D25 — Tool schemas live in the request; `compactIfNeeded` takes intent, not token arithmetic.**
 Compaction policy must not know how to count tokens. A separate token meter owns accounting.

@@ -99,9 +99,10 @@ Installed in `spikes/sandbox-probe` and read back out of `package-lock.json`:
 | `tailwindcss` + `@tailwindcss/vite` | `4.3.x` | — | Vite 8 support merged into `@tailwindcss/vite`. |
 | `zod` | `^4` | 4.6.5 | v4, not v3. |
 | `vitest` | `^5` | 5.0.3 | Peer-supports Vite `^8.0.0`. |
+| `eslint` + `typescript-eslint` | `^10` + `^8` | 10.12.0 / 8.71.0 | `strictTypeChecked`; `no-explicit-any` and `no-console` configured as errors. |
 | `tauri` (Rust) | `=2.12.1` | — | Pinned **exactly**; the IPC-injection rule is version-dependent (**D92**). |
 | `tauri-build` (Rust) | `=2.7.1` | — | |
-| `reqwest` (Rust) | 0.13.x | 0.13.5 | `rustls` only. |
+| `reqwest` (Rust) | 0.13.x | 0.13.1 | `rustls` + `webpki-roots` only, no OpenSSL. Resolved from `Cargo.lock`. |
 | `rusqlite` (Rust) | 0.40.x | 0.40.2 | `bundled`. |
 | `keyring` (Rust) | 4.x | 4.2.0 | |
 
@@ -140,7 +141,90 @@ cadence — more than one maintainer, or a non-trivial dependent base — this d
 
 ---
 
-## 4. Identified, vetted, NOT installed
+## 4. Adopted by the workspace — records required by `AGENTS.md` §5a
+
+These four are installed but are not part of Tauri's template, so each gets the full record:
+licence, URL, rejected alternative, maintenance state **as checked on 2026-10-04**.
+
+### 4.1 `keyring` (Rust) — OS keychain
+
+| Field | Value |
+|---|---|
+| Crate | `keyring` **4.2.0** (resolved, `Cargo.lock`) |
+| Licence | **MIT OR Apache-2.0** — compatible |
+| URL | https://crates.io/crates/keyring · https://github.com/open-source-cooperative/keyring-rs |
+| Maintenance | Latest 4.2.0 released **2026-08-29** — one month before the check. 28.9M downloads. |
+| Verified | 2026-10-04 (crates.io API) |
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Hand-rolled Win32 `CredRead`/`CredWrite` + libsecret FFI | Two platform backends, per-platform test matrices, and every error-classification edge re-discovered by us. The textbook case of §5a's "hand-rolled is the expensive instinct". |
+| Secrets in SQLite or a config file | Forbidden outright: `CONTRACTS.md` §6 ("API key read from the OS keychain; never written to SQLite, never logged"). |
+| `secrecy` / `zeroize` | Correct *wrappers* for zeroising memory, but no storage backend at all. They solve a different layer. |
+
+### 4.2 `reqwest` (Rust) — HTTP transport
+
+| Field | Value |
+|---|---|
+| Crate | `reqwest` **0.13.1** (resolved, `Cargo.lock`; registry latest 0.13.5 at check date) |
+| Licence | **MIT OR Apache-2.0** — compatible |
+| URL | https://crates.io/crates/reqwest · https://github.com/seanmonstar/reqwest |
+| Features | `default-features = false`, `rustls` + `webpki-roots` + `json` — **no OpenSSL**. |
+| Maintenance | Actively maintained; crate updated **2026-09-08**. 767M downloads. |
+| Verified | 2026-10-04 (crates.io API) |
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| `native-tls` / OpenSSL default features | A system OpenSSL dependency on every distro we package for — the exact cost `rustls` avoids (§1 "HTTP" row). |
+| `ureq` | Sync-only HTTP. The shell is Tokio under Tauri and SSE streaming (005) wants async; a sync client means a thread-per-request or `block_on` at the boundary. |
+| `attohttpc` / `isahc` | Smaller and less maintained on the most load-bearing transport in the project — the same star-count argument as **D97**. |
+
+Note: `reqwest` here covers the **catalogue fetch** (003). The SSE framing layer stays hand-rolled
+per **D24/D97**; `reqwest` is the byte pipe underneath it either way.
+
+### 4.3 `zustand` (npm) — frontend state
+
+| Field | Value |
+|---|---|
+| Package | `zustand` **^5.0.15** (resolved 5.0.15) |
+| Licence | **MIT** |
+| URL | https://www.npmjs.com/package/zustand · https://github.com/pmndrs/zustand |
+| Maintenance | Last modified **2026-08-13** — actively maintained. |
+| Verified | 2026-10-04 (npm registry) |
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Redux Toolkit | Middleware, actions, reducers, devtools ceremony for a state shape that is one flat append-only thread list. Boilerplate buys nothing at this size. |
+| React Context + `useReducer` | Re-render granularity: every consumer re-renders on any thread update, which is the wrong default for a streaming transcript. |
+| `jotai` | Atoms suit derived state; Clauro has one authoritative store per thread. Reach for atoms when a real derivation graph appears — not before. |
+
+### 4.4 `zod` (npm) — boundary validation
+
+| Field | Value |
+|---|---|
+| Package | `zod` **^4.6.5** (resolved 4.6.5 — v4, not v3) |
+| Licence | **MIT** |
+| URL | https://www.npmjs.com/package/zod |
+| Maintenance | Last modified **2026-10-02** — two days before the check. |
+| Verified | 2026-10-04 (npm registry) |
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| `valibot` | Smaller bundle, but schema inference into TS types is the feature we use at every boundary, and Zod v4 closed most of the size gap while keeping the ecosystem (Tauri/React examples, form libs) on its side. |
+| `ajv` | JSON Schema, not TypeScript-first: the type has to be written twice and then kept in sync by hand — exactly the drift the contract surface exists to prevent. |
+| Hand-written type guards | `CONTRACTS.md` shapes arrive from the host and from disk; a hand-written guard per shape is a bug farm with a type annotation. |
+
+---
+
+## 5. Identified, vetted, NOT installed
 
 Researched so the owning task does not repeat it. **Nothing here is a dependency yet.** Each still
 needs its own task, and its own `TECH_STACK.md` row before it lands (`AGENTS.md` §5).

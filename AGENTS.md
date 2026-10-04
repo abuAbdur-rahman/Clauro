@@ -179,7 +179,7 @@ six hundred thousand downloads with no release since 2022.
 `reqwest-sse` invalidated "both SSE crates are unmaintained" — correct it in the same change and
 keep the correction visible. Do not quietly rewrite history and do not leave the false claim standing.
 
-**Research is not installation.** `TECH_STACK.md` §7.2 and `docs/dependencies.md` §4 list wheels that
+**Research is not installation.** `TECH_STACK.md` §7.2 and `docs/dependencies.md` §5 list wheels that
 were identified and vetted so the owning task does not re-research them. Nothing in those tables is
 installed. Each still needs its own task and its own row before it lands.
 

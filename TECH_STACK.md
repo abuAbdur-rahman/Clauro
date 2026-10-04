@@ -223,13 +223,15 @@ table is the evidence that the rules were applied.**
 | `react` / `react-dom` | `^19.1.0` | |
 | `tailwindcss` + `@tailwindcss/vite` | `4.3.x` | Vite 8 support merged into `@tailwindcss/vite`. |
 | `lucide-react` | `1.51.0` | ISC. Peer-declares React `^19`. §1.2, **D96.** |
-| `zod` | `^4` | v4, not v3. |
+| `zod` | `^4` | v4, not v3. Boundary validation (`docs/dependencies.md` §4.4). |
+| `zustand` | `^5.0.15` | MIT. One store, no context ceremony. `docs/dependencies.md` §4.3. |
 | `vitest` | `^5` | Peer-supports Vite `^8.0.0`. |
+| `eslint` + `typescript-eslint` | `^10` + `^8` | `strictTypeChecked`, `no-explicit-any`, `no-console` as **errors** — §4. |
 | `@tauri-apps/cli` / `api` | `^2.12.1` | ≥ the CVE-2024-35222 fix. **D92.** |
 | `tauri` / `tauri-build` (Rust) | `2.12.1` / `2.7.1` | |
-| `reqwest` (Rust) | `0.13.x` | `rustls` only. |
+| `reqwest` (Rust) | `0.13.x` → **0.13.1** | `rustls` + `webpki-roots`, no OpenSSL. `docs/dependencies.md` §4.2. |
 | `rusqlite` (Rust) | `0.40.x` | `bundled`. |
-| `keyring` (Rust) | `4.x` | |
+| `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
 `@tauri-apps/cli` expect.
