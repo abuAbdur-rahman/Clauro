@@ -4,7 +4,7 @@
 Status: **pre-plan.** This document is the input to a build plan. Everything here is decided unless
 it appears in §8.
 
-**Stack:** Tauri v2 (Rust) · React 19 · TypeScript · Tailwind · SQLite (`rusqlite`) · Zustand
+**Stack:** Tauri v2 (Rust) · React 19 · TypeScript 6 · Tailwind 4 · `lucide-react` (shell only, D96) · SQLite (`rusqlite`) · Zustand
 **Platforms:** **Linux and Windows only.** Two webviews, two very different problems — WebView2 on Windows (Edge runtime) and WebKitGTK on Linux.
 **Binary budget:** ~25 MB · **Telemetry:** none, ever · **Account:** none
 
@@ -1061,6 +1061,31 @@ uniquely offers and that `D16` actually wanted: keep-recent-turns, and our own `
 Threshold is kept, not deleted. It is the fallback where on-demand is unavailable, and the runtime
 `capabilities.compaction` probe (`D75`) already decides which is which — so this is a change of
 preference inside an existing branch, not new machinery.
+
+**D96 — `lucide-react` is the icon library, app shell only.**
+
+Decided 2026-10-04. `lucide-react` **1.51.0**, ISC, peer-declares React `^19`. Every icon is an
+inline `<svg>` and the package is fully tree-shakable ES modules — named imports only, the full set
+never reaches the bundle. Alternatives rejected and recorded in `TECH_STACK.md` §6:
+`react-icons` (per-set bundle analysis, brand logos return), `@radix-ui/react-icons` (fifteen
+icons), `feather-icons` (last released 2024-05-01, the abandoned original Lucide forked from),
+`material-symbols` (13 MB icon font, wrong delivery mechanism), `@mui/icons-material` (hard peer on
+`@mui/material`).
+
+Scope is the app shell: chat affordances, the incognito ghost (**D37**), the crossed-out memory
+indicator (**D9**), the command palette. **Artifacts are excluded in v1.** They run in an opaque
+origin with no network (`D2`, `D3`), so they cannot import from `node_modules`, and an external SVG
+sprite is already known to break on WebKit under `default-src 'none'`. When artifacts get icons
+(v2), they are inlined SVG paths with their own task and vendoring step.
+
+**D97 — `reqwest-sse` is recorded and not adopted; hand-rolled SSE stands.**
+
+Decided 2026-10-04. `TECH_STACK.md` §3 previously claimed both SSE crates were unmaintained. That
+became false: `reqwest-sse` 0.2.0 released 2026-05-08, MIT, maintained. It is the honest alternative
+and is recorded in §3.1 rather than dismissed. It is not adopted: it covers only the framing layer,
+while `CONTRACTS.md` §5's four rules are Anthropic event *semantics* we own either way, each needing
+a fixture — and six stars with one maintainer is a supply-chain surface on the most load-bearing
+crate in the project. Revisit when it reaches a real release cadence.
 
 ## 5. Security posture — stated plainly
 

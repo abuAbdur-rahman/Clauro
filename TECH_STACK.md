@@ -9,17 +9,51 @@ is then a real obligation rather than a courtesy, and the research assumed open 
 
 | | Choice | Why this and not the obvious alternative |
 |---|---|---|
-| Shell | **Tauri v2** (Rust) | Chromium-free. WebView2 on Windows, WebKitGTK on Linux. ~25 MB binary vs ~150 MB for Electron. |
+| Shell | **Tauri v2** (Rust) | Chromium-free. WebView2 on Windows, WebKitGTK on Linux. ~25 MB binary vs ~150 MB for Electron. Pinned at **2.12.1**, far above the CVE-2024-35222 fix. |
 | Language (shell) | **Rust, 2021 edition** | Required by Tauri. Also the right language for a process runner and a path-safety layer. |
-| Language (web) | **TypeScript 5.x, strict** | The whole contract surface is types. `strict` is non-negotiable. |
+| Language (web) | **TypeScript 6.0, strict** | The whole contract surface is types. `strict` is non-negotiable. **Pinned to what Tauri's own `react-ts` template ships** — see §1.1. |
 | UI | **React 19** | The ecosystem and the concurrent-rendering model suit a streaming transcript. |
-| Build | **Vite 7** | Fast HMR; the production build is what lands in the binary. |
-| Styling | **Tailwind 4** | No-build-step utilities. Also the reason artifacts can be told to use *only* predefined classes. |
+| Icons | **`lucide-react`** (ISC) | 1,600+ inline-SVG components, tree-shakable ES modules. App shell only — see §1.2. **D96.** |
+| Build | **Vite 8** | Fast HMR; the production build is what lands in the binary. Rolldown-based. |
+| Styling | **Tailwind 4** via `@tailwindcss/vite` | No-build-step utilities. Also the reason artifacts can be told to use *only* predefined classes. |
 | State | **Zustand** | One store, no context ceremony. The transcript is a flat append-only list — a reducer would be overkill. |
 | Persistence | **SQLite via `rusqlite`** (bundled) | Single file, WAL, synchronous. No ORM. `CONTRACTS.md` §1 is 12 tables of DDL we write by hand. |
 | Serialisation | **`serde`** | Rust boundary. |
-| Validation | **Zod** at every boundary | Tool inputs are untrusted. No `any` crosses into the tool host. |
+| Validation | **Zod 4** at every boundary | Tool inputs are untrusted. No `any` crosses into the tool host. |
 | Secrets | **`keyring`** crate | OS keychain. Windows Credential Manager, libsecret on Linux. Never touches SQLite. |
+
+### 1.1 TypeScript is pinned to Tauri, not to latest
+
+`typescript` is pinned to **`~6.0.3`**, which is what `create-tauri-app`'s `react-ts` template
+declares. This is a deliberate choice against a newer release.
+
+TypeScript **7.0** is the native Go compiler, stable since 2026-07-08, and it is 8–12× faster on
+typecheck. It is not adopted yet. TS 6.0 is the final JavaScript-based release and the documented
+bridge to 7 — its stated purpose is retiring legacy defaults and aligning the compiler with modern
+JavaScript. Two reasons to hold at 6:
+
+- **Tauri's template pins it.** Matching the template exactly is what makes scaffold drift
+  mechanical rather than something a human has to notice.
+- **Type-aware tooling is still catching up.** The `tsgo` programmatic Language Service API is not at
+  parity; type-aware lint rules are the gap.
+
+**Rule:** moving to TS 7 is a deliberate, separately-committed bump with its own task — never a
+transitive `npm update`. The compiler may change; the contract surface may not.
+
+### 1.2 Icons: `lucide-react`, app shell only
+
+`lucide-react` **1.51.0**, ISC-licensed, peer-depends on React `^19` — it is compatible with React 19
+by declaration, not by hope. Chosen because every icon is an inline `<svg>` element and the package is
+fully tree-shakable, so we import named components and never ship the full set.
+
+**Scope is the app shell.** Icons for the chat title, the incognito ghost (**D37**), the crossed-out
+memory indicator (**D9**), and the command palette come from `lucide-react`.
+
+**Icons inside artifacts are a v2 concern and are not vendored in v1.** Artifacts run in an opaque
+origin with no network (`D2`, `D3`), so a model-written artifact cannot import from `node_modules` —
+and an external SVG sprite referenced by `<use href="…#id">` is already known to break on WebKit
+under `default-src 'none'`. When artifacts get icons, the icons are **inlined SVG paths**, and the
+vendoring step gets its own task and its own D-number. **D96.**
 
 ## 2. Cargo workspace
 
@@ -52,10 +86,31 @@ handler in `clauro-tools` may not import `tauri`.
 
 | | Choice | Why |
 |---|---|---|
-| Protocol | **SSE**, hand-rolled over `reqwest` | There is **no official Anthropic Rust SDK** (max 0.0.8, last updated 2024-09-03) and both SSE crates are unmaintained — heavily used, so abandoned-not-dead. We do not build on either. |
+| Protocol | **SSE**, hand-rolled over `reqwest` | There is **no official Anthropic Rust SDK** (max 0.0.8, last updated 2024-09-03). We do not build on an SDK. See §3.1 for why not an SSE crate either. |
 | HTTP | **`reqwest`** with `rustls` | Avoids an OpenSSL system dependency, which matters for cross-distro packaging. |
 | Streaming | `bytes` → incremental UTF-8 decode → line frame → event parse | Must handle events split across chunk boundaries. |
 | Retry | Transport-level backoff on 429/5xx, honouring `Retry-After` | No agent-level retry concept in v1. |
+
+### 3.1 Why not an SSE crate — re-checked 2026-10-04
+
+The four rules in `CONTRACTS.md` §5 are **Anthropic event semantics**, not SSE framing:
+`signature_delta` on an empty-rendering block, `input_transformations` on two different events,
+`usage.iterations` after a compaction, unknown events never fatal. A crate would hand us the framing
+layer and leave every one of those four to us anyway — and each needs a fixture.
+
+**Correction to the previous text in this document.** It claimed *both* SSE crates were unmaintained.
+That is no longer true, and a false claim in a spec is worse than a missing one:
+
+| Crate | Latest | Last release | Verdict |
+|---|---|---|---|
+| `reqwest-eventsource` | 0.6.0 | 2024-03-29 | Abandoned. Heavily used, so widely depended on. |
+| `eventsource-stream` | 0.2.3 | 2022-02-17 | Abandoned, four years stale. |
+| `reqwest-sse` | 0.2.0 | **2026-05-08** | **Maintained.** MIT. But 6 stars, 1 maintainer. |
+
+`reqwest-sse` is the honest alternative and it is recorded here rather than dismissed. It is not
+adopted because it covers only the framing layer we would still have to own, and a transport with one
+maintainer and six stars is a supply-chain surface we would be adding to the most load-bearing crate in
+the project. If it reaches a real release cadence, this decision is revisited — **D97.**
 
 **The parser is where the bugs live.** Four rules from `CONTRACTS.md` §5 are not optional and each
 has a fixture:
@@ -112,10 +167,37 @@ part of the job, otherwise the next person cannot tell what was actually tested.
 | Electron | Defeats the size and RAM thesis outright. |
 | An ORM (Drizzle, sqlx) | `CONTRACTS.md` §1 is hand-written DDL by decision. An ORM obscures the append-only constraint that D19 depends on. |
 | Official Anthropic Rust SDK | 0.0.8, two years stale. |
-| `reqwest-eventsource` / `eventsource-stream` | Unmaintained. Hand-rolled instead, with fixtures. |
+| `reqwest-eventsource` / `eventsource-stream` | Abandoned. See §3.1 — including the correction that a third crate now exists and *is* maintained. |
+| `reqwest-sse` | Maintained and MIT, but framing-only (see §3.1) and six stars. Revisit at real release cadence — **D97.** |
+| Hand-rolled icons / inline SVG paths in app UI | **D96.** `lucide-react` is tree-shakable, ISC, React 19-compatible, and 1,600+ icons. Drawing our own is a worse wheel. |
+| `react-icons` 5.7.0 | Aggregates *many* icon sets, so bundle analysis is per-set and brand logos are reintroduced — exactly what Lucide 1.0 removed for trademark reasons. |
+| `@radix-ui/react-icons` 1.3.2 | Fifteen icons. Not a library, a garnish. |
+| `feather-icons` 4.29.2 | Last released **2024-05-01**. Lucide was forked from it and is actively maintained; this is the abandoned original. |
+| `material-symbols` 0.47.6 | An icon *font* — 13 MB unpacked, plus `font-src` in a CSP we want narrow. Wrong delivery mechanism for a desktop binary. |
+| `@mui/icons-material` 9.4.0 | Declares a hard peer dependency on `@mui/material`. Adopting the icons would adopt Material Design. |
 | A JS/Rust transpiler for artifacts | Sucrase, in-browser. The compile must happen client-side because the artifact runs client-side. |
 | A local embedding model | ~200 MB. Would triple the binary for a v3 feature. Embeddings are a remote API, opt-in. |
 | macOS / WKWebView | Dropped from scope. Windows is the low-risk platform; Linux is the open one. |
+
+### 6.1 Rules for adopting a dependency
+
+Recorded 2026-10-04. This project has no interest in rebuilding what already exists well, and the
+instinct to hand-roll is the expensive one.
+
+1. **Search before writing.** Before implementing anything non-trivial, check whether a library
+   already does it. This applies to `similar` (text diff) and `notify` (filesystem watching) exactly
+   as it applies to icons. Hand-rolling a diff is a bug farm with a nice UI.
+2. **Vet it, then cite it.** Licence must be MIT/ISC/Apache-2.0-compatible with our MIT licence.
+   Maintenance is checked — last release date and open-issues state, not download count alone.
+   Downloads reward abandonment: `eventsource-stream` has 25M downloads and died in 2022.
+3. **Record the reference.** Every adopted dependency gets a row here with the URL, the version
+   adopted, and the alternative that was rejected and why. A dependency with no recorded alternative
+   has not been justified.
+4. **Adopt the maintained thing, not the popular thing.** Six stars with a release last month beats
+   six hundred thousand downloads with no release since 2022. Prefer the boring, currently-shipped
+   dependency.
+5. **A dependency crossing a boundary needs a D-number.** Anything added inside the artifact sandbox
+   or the tool host is a security-surface change, not a convenience — see `AGENTS.md` §8.
 
 ## 7. Version pinning
 
@@ -124,6 +206,51 @@ are pinned exactly — an unpinned SQLite changes the schema layer underneath th
 guarantee without any commit that mentions it.
 
 Toolchain is pinned in `rust-toolchain.toml` and `.nvmrc`. CI fails on drift rather than warning.
+
+### 7.1 Pinned versions, verified 2026-10-04
+
+Recorded so a reader can tell a stale claim from a deliberate one. **The spec states the rules; this
+table is the evidence that the rules were applied.**
+
+| Component | Pinned | Note |
+|---|---|---|
+| `typescript` | `~6.0.3` | Matches the Tauri template exactly. §1.1. |
+| `vite` | `^8.0.16` | Matches the Tauri template. Rolldown-based. |
+| `@vitejs/plugin-react` | `^6.1.1` | Peer-requires Vite `^8.0.0` — this is why Vite 8 is not optional. |
+| `react` / `react-dom` | `^19.1.0` | |
+| `tailwindcss` + `@tailwindcss/vite` | `4.3.x` | Vite 8 support merged into `@tailwindcss/vite`. |
+| `lucide-react` | `1.51.0` | ISC. Peer-declares React `^19`. §1.2, **D96.** |
+| `zod` | `^4` | v4, not v3. |
+| `vitest` | `^5` | Peer-supports Vite `^8.0.0`. |
+| `@tauri-apps/cli` / `api` | `^2.12.1` | ≥ the CVE-2024-35222 fix. **D92.** |
+| `tauri` / `tauri-build` (Rust) | `2.12.1` / `2.7.1` | |
+| `reqwest` (Rust) | `0.13.x` | `rustls` only. |
+| `rusqlite` (Rust) | `0.40.x` | `bundled`. |
+| `keyring` (Rust) | `4.x` | |
+
+**Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
+`@tauri-apps/cli` expect.
+
+### 7.2 Wheels already identified, for when the task that needs them lands
+
+Not dependencies yet — nothing here is installed. These were checked against the registry on
+2026-10-04 so that when the owning task arrives the choice is already researched. **Each still gets
+its own task, and each still needs a `TECH_STACK.md` row before it is installed.**
+
+| Need | Candidate | Licence | Verdict |
+|---|---|---|---|
+| Text diff | `similar` 3.2.0 | MIT/Apache | Adopt for `fs` diff rendering. Do not hand-roll a diff. |
+| Filesystem watching | `notify` 8.2.0 | CC0/MIT | Adopt for the workspace tree. |
+| Virtualised transcript | `@tanstack/react-virtual` 3.14 | MIT | Likely — a long thread is a flat append-only list that must not render every block. |
+| Markdown in transcript | `react-markdown` 10.1 | MIT | Likely. Sanitisation is ours to get right; not a default-export decision. |
+| Syntax highlight | `shiki` 4.5 | MIT | Likely. TextMate grammars, no eval. |
+| Command palette | `cmdk` 1.1.1 | MIT | Likely for **D42/D44**. |
+| Hotkeys | `react-hotkeys-hook` 5.3 | MIT | Likely for **D66**. |
+| SSE framing | `reqwest-sse` 0.2.0 | MIT | **Not adopted** — §3.1, **D97.** |
+| Pseudo-terminal for `bash` | `portable-pty` 0.9.0 | MIT | Open question for **D28/D30** — a pty changes signal and exit-code semantics. |
+
+**Recording these is the point.** A dependency researched once and written down is not re-litigated
+in the task that needs it, and the alternative it beat is on the record.
 
 ---
 
@@ -153,4 +280,11 @@ machine records the versions.**
 Linux remains a shipped target with its own CI floor (`D89`, `D50`, `Tasks/021`); Linux CI runs on
 GitHub's runners, not on a developer machine, so nothing in this section depends on having Linux
 locally.
+
+**Development is Windows-only for now (`AGENTS.md` §8a, decided 2026-10-04).** WebKitGTK development
+headers are not installed on the development host and require a sudo password an agent cannot supply,
+so the Linux half of any engine-dependent verdict is executed in CI rather than locally. This is a
+sequencing decision: **the WebView2 verdict is the one that gates a release, and the WebKitGTK
+verdict is best-effort** (`D89`). Until the Linux column is genuinely run, it reads "not run on this
+host" — never "verified".
 

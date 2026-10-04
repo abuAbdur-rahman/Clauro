@@ -13,3 +13,9 @@ docs/dev-host.md
 
 # Harness scratch
 .openchamber/
+
+# Task 001 throwaway spike apps. Not production code -- to be deleted once the
+# verdict is written (Tasks/001 acceptance). The verdict is the deliverable,
+# not the app that produced it. Anchored to root so docs/spikes/ (where verdicts
+# live) stays tracked.
+/spikes/
