@@ -18,7 +18,7 @@ fn run_anthropic() -> Vec<NormalisedEvent> {
     let mut framer = SseFramer::new();
     let mut parser = AnthropicParser::new();
     let mut out = Vec::new();
-    for raw in framer.feed(&bytes) {
+    for raw in framer.feed(&bytes).expect("fixture is small valid UTF-8") {
         out.extend(parser.feed(&raw));
     }
     for raw in framer.finish() {
@@ -32,7 +32,10 @@ fn run_openai_reasoning() -> Vec<NormalisedEvent> {
     let mut parser = OpenAiParser::new();
     let mut out = Vec::new();
     let chunk = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"because\"},\"finish_reason\":null}]}\n\n";
-    for raw in framer.feed(chunk.as_bytes()) {
+    for raw in framer
+        .feed(chunk.as_bytes())
+        .expect("inline chunk is small valid UTF-8")
+    {
         out.extend(parser.feed(&raw));
     }
     out

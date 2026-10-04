@@ -19,21 +19,30 @@ use std::collections::BTreeMap;
 
 /// Stateful chunk parser behind the shared trait.
 pub struct OpenAiParser {
-    text_started: bool,
-    thinking_started: bool,
+    /// One counter for every synthesised start: text, thinking, and tool
+    /// blocks share it, so index-keyed consumers never merge two blocks.
+    next_index: u32,
+    text_index: Option<u32>,
+    thinking_index: Option<u32>,
     tool_index: BTreeMap<String, u32>,
-    tool_seq: u32,
 }
 
 impl OpenAiParser {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            text_started: false,
-            thinking_started: false,
+            next_index: 0,
+            text_index: None,
+            thinking_index: None,
             tool_index: BTreeMap::new(),
-            tool_seq: 0,
         }
+    }
+
+    /// Hand out the next block index.
+    fn fresh_index(&mut self) -> u32 {
+        let index = self.next_index;
+        self.next_index += 1;
+        index
     }
 }
 
@@ -79,47 +88,62 @@ impl StreamParser for OpenAiParser {
             }
             let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                if !self.text_started {
-                    self.text_started = true;
-                    out.push(NormalisedEvent::BlockStart {
-                        index: 0,
-                        kind: InboundKind::Text,
-                        tool: None,
-                    });
-                }
+                let index = match self.text_index {
+                    Some(i) => i,
+                    None => {
+                        let i = self.fresh_index();
+                        self.text_index = Some(i);
+                        out.push(NormalisedEvent::BlockStart {
+                            index: i,
+                            kind: InboundKind::Text,
+                            tool: None,
+                        });
+                        i
+                    }
+                };
                 out.push(NormalisedEvent::BlockDelta {
-                    index: 0,
+                    index,
                     text: Some(text.to_string()),
                     signature: None,
                 });
             }
             if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                if !self.thinking_started {
-                    self.thinking_started = true;
-                    out.push(NormalisedEvent::BlockStart {
-                        index: 0,
-                        kind: InboundKind::Thinking,
-                        tool: None,
-                    });
-                }
+                let index = match self.thinking_index {
+                    Some(i) => i,
+                    None => {
+                        let i = self.fresh_index();
+                        self.thinking_index = Some(i);
+                        out.push(NormalisedEvent::BlockStart {
+                            index: i,
+                            kind: InboundKind::Thinking,
+                            tool: None,
+                        });
+                        i
+                    }
+                };
                 out.push(NormalisedEvent::BlockDelta {
-                    index: 0,
+                    index,
                     text: Some(reasoning.to_string()),
                     signature: None,
                 });
             }
             if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
                 // A refusal is shown, not dropped: silence would read as a stall.
-                if !self.text_started {
-                    self.text_started = true;
-                    out.push(NormalisedEvent::BlockStart {
-                        index: 0,
-                        kind: InboundKind::Text,
-                        tool: None,
-                    });
-                }
+                let index = match self.text_index {
+                    Some(i) => i,
+                    None => {
+                        let i = self.fresh_index();
+                        self.text_index = Some(i);
+                        out.push(NormalisedEvent::BlockStart {
+                            index: i,
+                            kind: InboundKind::Text,
+                            tool: None,
+                        });
+                        i
+                    }
+                };
                 out.push(NormalisedEvent::BlockDelta {
-                    index: 0,
+                    index,
                     text: Some(refusal.to_string()),
                     signature: None,
                 });
@@ -138,8 +162,7 @@ impl StreamParser for OpenAiParser {
                     let index = if let Some(&i) = self.tool_index.get(&key) {
                         i
                     } else {
-                        let i = self.tool_seq;
-                        self.tool_seq += 1;
+                        let i = self.fresh_index();
                         self.tool_index.insert(key, i);
                         i
                     };

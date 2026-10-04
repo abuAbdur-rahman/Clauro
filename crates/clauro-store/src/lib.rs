@@ -415,7 +415,14 @@ impl Store {
         // outlives any one handle.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA_SQL)?;
+        // The file outlives any one handle, so reopening must not replay the
+        // DDL. `user_version` gates creation (and later migrations); the DDL
+        // above stays verbatim rather than gaining IF NOT EXISTS on every line.
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version == 0 {
+            conn.execute_batch(SCHEMA_SQL)?;
+            conn.pragma_update(None, "user_version", 1)?;
+        }
         Ok(Self { conn })
     }
 

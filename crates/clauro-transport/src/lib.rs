@@ -27,7 +27,7 @@ pub use build::{
 pub use capabilities::{compaction_path, CompactionPath};
 pub use openai_compat::OpenAiParser;
 pub use retry::{retry_delay, MAX_ATTEMPTS};
-pub use sse::{RawSseEvent, SseFramer};
+pub use sse::{FramerError, RawSseEvent, SseFramer, MAX_LINE_LEN};
 
 use std::fmt;
 

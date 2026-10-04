@@ -18,7 +18,7 @@ fn run(chunk: usize, bytes: &[u8]) -> Vec<NormalisedEvent> {
     let mut parser = OpenAiParser::new();
     let mut out = Vec::new();
     for slice in bytes.chunks(chunk) {
-        for raw in framer.feed(slice) {
+        for raw in framer.feed(slice).expect("fixtures are small valid UTF-8") {
             out.extend(parser.feed(&raw));
         }
     }
@@ -100,7 +100,10 @@ fn feed_chunks(chunks: &[&str]) -> Vec<NormalisedEvent> {
     let mut framer = SseFramer::new();
     let mut out = Vec::new();
     for c in chunks {
-        for raw in framer.feed(c.as_bytes()) {
+        for raw in framer
+            .feed(c.as_bytes())
+            .expect("inline chunks are small valid UTF-8")
+        {
             out.extend(parser.feed(&raw));
         }
     }

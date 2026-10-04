@@ -89,3 +89,16 @@ fn unbroken_run_end_finds_the_first_gap() {
     assert_eq!(unbroken_run_end(&[false, true]), 0);
     assert_eq!(unbroken_run_end(&[]), 0);
 }
+
+#[test]
+fn deserialization_rejects_empty_signatures() {
+    // CodeRabbit PR #3: derive(Deserialize) bypassed the constructor check,
+    // and persisted/wire payloads take the deserialize path.
+    let bad = r#"{"kind":"thinking","text":"x","signature":"","display":"full"}"#;
+    assert!(
+        serde_json::from_str::<ContentBlock>(bad).is_err(),
+        "empty signature must fail on the deserialize path too (D72)"
+    );
+    let good = r#"{"kind":"thinking","text":"x","signature":"s","display":"full"}"#;
+    assert!(serde_json::from_str::<ContentBlock>(good).is_ok());
+}

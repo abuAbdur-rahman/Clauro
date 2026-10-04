@@ -20,7 +20,7 @@ fn run(chunk: usize, bytes: &[u8]) -> Vec<NormalisedEvent> {
     let mut parser = AnthropicParser::new();
     let mut out = Vec::new();
     for slice in bytes.chunks(chunk) {
-        for raw in framer.feed(slice) {
+        for raw in framer.feed(slice).expect("fixtures are small valid UTF-8") {
             out.extend(parser.feed(&raw));
         }
     }
@@ -173,13 +173,17 @@ fn unknown_event_is_ignored_and_stream_continues() {
 fn ping_keeps_alive_error_terminates_with_typed_error() {
     let mut parser = AnthropicParser::new();
     let mut framer = SseFramer::new();
-    let raw = framer.feed(b"event: ping\ndata: {\"type\":\"ping\"}\n\n");
+    let raw = framer
+        .feed(b"event: ping\ndata: {\"type\":\"ping\"}\n\n")
+        .expect("inline feed is small valid UTF-8");
     assert_eq!(raw.len(), 1);
     assert_eq!(parser.feed(&raw[0]), vec![NormalisedEvent::Ping]);
 
-    let raw = framer.feed(
-        b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
-    );
+    let raw = framer
+        .feed(
+            b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        )
+        .expect("inline feed is small valid UTF-8");
     assert_eq!(raw.len(), 1);
     assert!(
         matches!(
@@ -196,7 +200,9 @@ fn malformed_data_line_is_ignored_not_fatal() {
     // catch corruption, the stream stays open (P1 reasoning).
     let mut parser = AnthropicParser::new();
     let mut framer = SseFramer::new();
-    let raws = framer.feed(b"event: content_block_delta\ndata: {not json}\n\n");
+    let raws = framer
+        .feed(b"event: content_block_delta\ndata: {not json}\n\n")
+        .expect("inline feed is small valid UTF-8");
     assert_eq!(raws.len(), 1);
     let out = parser.feed(&raws[0]);
     assert!(
@@ -209,7 +215,9 @@ fn malformed_data_line_is_ignored_not_fatal() {
 fn message_stop_emits_nothing() {
     let mut parser = AnthropicParser::new();
     let mut framer = SseFramer::new();
-    let raws = framer.feed(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    let raws = framer
+        .feed(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+        .expect("inline feed is small valid UTF-8");
     assert_eq!(raws.len(), 1);
     assert!(
         parser.feed(&raws[0]).is_empty(),
@@ -221,9 +229,11 @@ fn message_stop_emits_nothing() {
 fn tool_use_start_carries_id_and_name_for_pairing() {
     let mut parser = AnthropicParser::new();
     let mut framer = SseFramer::new();
-    let raws = framer.feed(
-        b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_9\",\"name\":\"fs\",\"input\":{}}}\n\n",
-    );
+    let raws = framer
+        .feed(
+            b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_9\",\"name\":\"fs\",\"input\":{}}}\n\n",
+        )
+        .expect("inline feed is small valid UTF-8");
     let out = parser.feed(&raws[0]);
     assert!(
         matches!(

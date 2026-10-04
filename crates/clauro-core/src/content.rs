@@ -47,7 +47,10 @@ pub enum ContentBlock {
     Thinking {
         text: String,
         /// REQUIRED in practice: a persister that stops at `content_block_stop`
-        /// replays blocks that fail verification (D72).
+        /// replays blocks that fail verification (D72). Empty signatures are
+        /// rejected on construction *and* deserialization — persisted and wire
+        /// payloads take the deserialize path.
+        #[serde(deserialize_with = "non_empty_signature")]
         signature: String,
         display: ThinkingDisplay,
     },
@@ -102,8 +105,10 @@ impl fmt::Display for MissingSignature {
 impl std::error::Error for MissingSignature {}
 
 impl ContentBlock {
-    /// The only way to build a `Thinking`: empty signatures fail here, not
-    /// mid-thread on replay (D72).
+    /// Build a `Thinking` with its signature checked. Empty signatures fail
+    /// here, not mid-thread on replay (D72). Deserialization enforces the
+    /// same rule; direct struct construction is same-crate code and covered
+    /// by the deserialize test's contract, not by this function.
     pub fn thinking(
         text: &str,
         signature: &str,
@@ -126,4 +131,12 @@ impl ContentBlock {
 #[must_use]
 pub fn unbroken_run_end(present: &[bool]) -> usize {
     present.iter().take_while(|&&p| p).count()
+}
+
+fn non_empty_signature<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    if s.is_empty() {
+        return Err(serde::de::Error::custom(MissingSignature));
+    }
+    Ok(s)
 }
