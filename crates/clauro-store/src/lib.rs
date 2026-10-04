@@ -250,6 +250,16 @@ pub struct NewThread {
     pub tools_frozen: String,
 }
 
+/// One thread row, for the loop's frozen-prefix check (D19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRow {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub title: Option<String>,
+    pub system_frozen: String,
+    pub tools_frozen: String,
+}
+
 /// Append-only: insert + read. `seq` gaps are legal; a compaction removes a
 /// run, it never renumbers (D63).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,6 +520,27 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// One thread row. The loop reads `system_frozen` to prove the prefix it
+    /// is about to extend is the one the thread started with (D19).
+    pub fn get_thread(&self, id: &str) -> Result<Option<ThreadRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, project_id, title, system_frozen, tools_frozen FROM thread WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(ThreadRow {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        title: row.get(2)?,
+                        system_frozen: row.get(3)?,
+                        tools_frozen: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     pub fn insert_message(&self, m: NewMessage) -> Result<(), StoreError> {

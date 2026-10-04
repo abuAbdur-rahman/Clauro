@@ -27,7 +27,8 @@ a D-number, cited from here. **D87.**
 └───────┬────────────────────────────────┘  └──────────────────────────────┘
         │
 ┌───────▼────────────────────────────────────────────────────────────┐
-│  clauro-core       ← no tauri. models, blocks, turn loop, rules    │
+│  clauro-core       ← no tauri. models, blocks, rules                 │
+│  clauro-loop        ← serial turn loop, prompt, queue               │
 │  clauro-transport  ← SSE + the two provider adapters              │
 │  clauro-tools      ← the eight handlers, registry, permissions    │
 │  clauro-fs         ← path safety, workspace layout, process run.  │

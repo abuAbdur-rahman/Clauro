@@ -72,6 +72,8 @@ clauro/
 │  │                    Pure arithmetic over injected measurement — no provider calls.
 │  ├─ clauro-tools/     the eight handlers + registry + permission resolution.
 │  │                    CONTRACTS.md §3.
+│  ├─ clauro-loop/      serial turn loop + system prompt + queue.
+│  │                    CONTRACTS.md §2, §3. May use core/store/transport/tools.
 │  └─ clauro-fs/        workspace tree, path safety, process runner.
 │                       CONTRACTS.md §1 Windows rules, §3 fs/bash contracts.
 └─ src-tauri/           Tauri shell: commands, capabilities, CSP assembly.
@@ -80,7 +82,8 @@ clauro/
 ```
 
 **Dependency rule:** `clauro-core` depends on nothing but `serde`. Dependencies point inward. A
-handler in `clauro-tools` may not import `tauri`.
+handler in `clauro-tools` may not import `tauri`. `clauro-loop` may use core, store, transport and
+tools — never `tauri`.
 
 ## 3. Transport
 

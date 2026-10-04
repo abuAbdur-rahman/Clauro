@@ -1,0 +1,13 @@
+[package]
+name = "clauro-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clauro-core = { path = "../clauro-core" }
+clauro-store = { path = "../clauro-store" }
+clauro-transport = { path = "../clauro-transport" }
+clauro-tools = { path = "../clauro-tools" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
