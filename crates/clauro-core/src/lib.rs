@@ -75,6 +75,45 @@ impl std::fmt::Display for UnknownToolStatus {
 
 impl std::error::Error for UnknownToolStatus {}
 
+/// Identity of one model. `provider` is the models.dev provider key
+/// (`anthropic`), not a display name (`CONTRACTS.md` §5, D23).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ModelRef {
+    pub provider: String,
+    pub id: String,
+}
+
+/// What the picker shows and what the request builder reserves. All counts
+/// are tokens. Keys mirror the catalogue subset the picker consumes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelLimits {
+    #[serde(rename = "contextWindow")]
+    pub context_window: u64,
+    #[serde(rename = "maxOutput")]
+    pub max_output: u64,
+    pub reasoning: bool,
+    pub tool_call: bool,
+}
+
+/// An unknown model degrades to this, never a panic and never a zero-limit
+/// guess: zero is a measurement, unknown is the absence of one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnknownModel {
+    pub kind: String,
+    #[serde(rename = "ref")]
+    pub model: ModelRef,
+}
+
+impl UnknownModel {
+    #[must_use]
+    pub fn for_ref(model: ModelRef) -> Self {
+        Self {
+            kind: "unknown-model".to_string(),
+            model,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

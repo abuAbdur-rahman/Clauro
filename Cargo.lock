@@ -590,6 +590,7 @@ name = "clauro-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -631,7 +632,9 @@ name = "clauro-transport"
 version = "0.1.0"
 dependencies = [
  "clauro-core",
+ "reqwest",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

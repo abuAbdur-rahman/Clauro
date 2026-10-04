@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 clauro-core = { path = "../clauro-core" }
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls", "webpki-roots", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
