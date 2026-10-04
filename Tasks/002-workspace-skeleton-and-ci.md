@@ -22,17 +22,21 @@ clauro/
 - `clauro-core` depends on nothing but `serde`. Enforce with a test or a CI dep check.
 - **A test asserting `clauro-tools` does not depend on `tauri`.** Make the rule mechanical, not a
   convention someone breaks quietly.
-- `rust-toolchain.toml`, `.nvmrc`, committed `Cargo.lock` + `package-lock.json`.
+- `rust-toolchain.toml`, `.nvmrc`, committed `Cargo.lock` + `pnpm-lock.yaml`.
 - `vitest` green with one trivial test, so the web test runner is proven before any UI exists.
 
 ## CI matrix
 
+The task text originally named `ubuntu-22.04` and `windows-2019` here. Both labels were untestable
+and were corrected by audit — see `TECH_STACK.md` §5, which is authoritative. The matrix that runs
+is `.github/workflows/ci.yml`:
+
 | Job | Purpose |
 |---|---|
-| `ubuntu-latest` | Linux primary |
-| `ubuntu-22.04` | **Linux floor** — older WebKitGTK |
-| `windows-latest` | Windows primary |
-| `windows-2019` | **Windows floor** — older WebView2 |
+| `ubuntu-24.04` | Linux primary — WebKitGTK system version |
+| `ubuntu-24.04` | **Linux floor** — oldest runner with a meaningful WebKitGTK |
+| `windows-latest` | Windows primary — evergreen WebView2 |
+| `windows-latest` + Fixed Version runtime | **Windows floor** — pinned WebView2, not an older OS image |
 
 Fail on drift, do not warn.
 

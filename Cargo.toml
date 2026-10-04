@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/clauro-core",
+  "crates/clauro-store",
+  "crates/clauro-transport",
+  "crates/clauro-tokens",
+  "crates/clauro-tools",
+  "crates/clauro-fs",
+  "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Release profile lives at the workspace root — profiles in member manifests
+# are ignored with a warning. Read the optimization guideline for more details:
+# https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

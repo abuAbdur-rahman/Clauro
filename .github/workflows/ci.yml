@@ -14,6 +14,11 @@ concurrency:
 permissions:
   contents: read
 
+# Every action below is pinned to a full commit SHA, with the tag it resolves
+# to kept as a comment for readability (CWE-829, PR #2 finding). A floating
+# major tag is an edit someone else can make after review; a commit SHA is
+# not. Refresh the pins deliberately, never as a side effect of another change.
+
 jobs:
   # 1. The spec suite's own invariants.
   #
@@ -24,8 +29,10 @@ jobs:
     name: spec consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Check D-refs, task count, crate names, DDL count
@@ -53,32 +60,16 @@ jobs:
           - job: windows floor
             os: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          components: clippy, rustfmt
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+          persist-credentials: false
 
-      - name: Install Linux webview deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev
-
-      # The Windows floor pins a FIXED WebView2 runtime rather than relying on
-      # whatever the image happens to ship. Placeholder until Tasks/002 lands.
-      - name: Pin the Windows floor WebView2 runtime
-        if: matrix.job == 'windows floor'
-        shell: pwsh
-        run: Write-Host "pinned WebView2 runtime - see Tasks/021"
-
-      # There is no Cargo.toml yet: this repository is currently the
-      # specification only. These gates unblock themselves the moment Tasks/002
-      # lands the workspace. A green run now and a real gate later beats a
-      # permanently red build that everyone learns to ignore.
+      # The detection guards come FIRST (PR #2 finding): every setup action
+      # below reads a repo file — pnpm reads package.json's "packageManager",
+      # the extractor reads rust-toolchain.toml — so running setup before the
+      # guard that decides it applies makes a spec-only branch or a fork fail
+      # for the wrong reason. On main/dev both manifests are present since
+      # Tasks/002, so both gates always run.
       - name: Detect Rust workspace
         id: rust
         shell: bash
@@ -88,6 +79,47 @@ jobs:
         id: web
         shell: bash
         run: 'echo "present=$(test -f package.json && echo true || echo false)" >> "$GITHUB_OUTPUT"'
+
+      # Single source of truth for the Rust pin is rust-toolchain.toml.
+      # The action does not read that file, so extract the channel here —
+      # a second hardcoded version would drift silently. Block scalar: a
+      # one-line run with nested quotes is unparseable in YAML.
+      - name: Read pinned Rust toolchain
+        id: tc
+        if: steps.rust.outputs.present == 'true'
+        shell: bash
+        run: |
+          echo "channel=$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        if: steps.rust.outputs.present == 'true'
+        with:
+          toolchain: ${{ steps.tc.outputs.channel }}
+          components: clippy, rustfmt
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: steps.web.outputs.present == 'true'
+        with:
+          # No version input: the action reads package.json "packageManager".
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.web.outputs.present == 'true'
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
+
+      - name: Install Linux webview deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      # The Windows floor pins a FIXED WebView2 runtime rather than relying on
+      # whatever the image happens to ship. Placeholder until Tasks/021 lands
+      # the runtime selection (Phase 6).
+      - name: Pin the Windows floor WebView2 runtime
+        if: matrix.job == 'windows floor'
+        shell: pwsh
+        run: Write-Host "pinned WebView2 runtime - see Tasks/021"
 
       - name: cargo fmt check
         if: steps.rust.outputs.present == 'true'
@@ -101,19 +133,20 @@ jobs:
         if: steps.rust.outputs.present == 'true'
         run: cargo test --workspace
 
-      - name: Frontend lint and typecheck
+      - name: Frontend lint, typecheck and test
         if: steps.web.outputs.present == 'true'
         run: |
-          npm ci
-          npm run lint
-          npm run typecheck
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm typecheck
+          pnpm test
 
       - name: Note skipped gates
         if: "steps.rust.outputs.present == 'false' && steps.web.outputs.present == 'false'"
         # bash explicitly: the default shell is PowerShell on Windows, where
         # "cat" is Get-Content and pipes an object rather than a string.
         shell: bash
-        run: echo "::notice::spec-only repo, Rust and frontend gates activate with Tasks/002"
+        run: echo "::notice::manifest absent on this ref - Rust and frontend gates skipped"
 
   # 3. Supply chain: Trivy via Aqua, filesystem scan, nothing cloned.
   #
@@ -134,12 +167,12 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
       - name: OS and language dependencies
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           # fs, not image. image-ref expects a container reference and fails
           # with "could not parse reference: ." on a directory.
@@ -156,7 +189,7 @@ jobs:
       # separate step fails with 'unknown command "secret"'. One fs scan with
       # all three scanners enabled covers them.
       - name: Dependencies, secrets and misconfiguration
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -167,24 +200,29 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
-      - name: Licence policy
-        uses: aquasecurity/trivy-action@v0.36.0
+      # Licence report. The forbidden/allowed lists originally written here
+      # were silently DROPPED: trivy-action@v0.36 has no such inputs (its own
+      # input validation announced this as a warning on every run). The scan
+      # itself always targeted licences; the *policy* on top of it never
+      # existed. A policy nobody can reconstruct is not a policy, so the dead
+      # lists are removed rather than left to look enforced.
+      # Enforcing a forbidden-licence list needs a trivy.yaml through the
+      # action's `trivy-config` input — Tasks/022 owns that, together with
+      # flipping this from report-only to blocking (exit-code 1). The porting
+      # rule (D59, D60) is what makes that a release blocker when it lands.
+      - name: Licence scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
           scanners: license
           format: table
           output: trivy-licences.txt
-          # The whole porting argument depends on this. A GPL or AGPL
-          # dependency would make an MIT repository undeliverable, so licence
-          # drift is a build failure rather than a line in a report (D59, D60).
-          license-forbidden: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later, GPL-1.0, GPL-1.0-only, GPL-1.0-or-later, GPL-2.0, GPL-2.0-only, GPL-2.0-or-later, GPL-3.0, GPL-3.0-only, GPL-3.0-or-later, SSPL-1.0
-          license-allowed: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016
           exit-code: "0"
 
       - name: Upload scan results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: trivy-report
           path: |
@@ -201,7 +239,7 @@ jobs:
     name: no secrets committed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false

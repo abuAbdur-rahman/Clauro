@@ -22,7 +22,7 @@
 
 | Job | Purpose |
 |---|---|
-| `ubuntu-latest` | Linux primary |
+| `ubuntu-24.04` | Linux primary |
 | `ubuntu-24.04` | **Linux floor** — older WebKitGTK. *(Was `ubuntu-22.04`, unsupported 2027-04-17.)* |
 | `windows-latest` | Windows primary |
 | `windows-latest` + **fixed-version WebView2 runtime** installed | **Windows floor.** *(Was `windows-2019`, not a current runner label — and an older OS image does not give you an older WebView2 anyway.)* |

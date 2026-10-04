@@ -14,13 +14,14 @@ a failing test first. Both are non-negotiable and the reason this project is tra
 | File | What it is | Read it when |
 |---|---|---|
 | `MISSION.md` | What this is and what it is not | Once, then whenever you are unsure whether a feature belongs |
-| `DECISIONS.md` | **D1–D95.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
+| `DECISIONS.md` | **D1–D97.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
 | `CONTRACTS.md` | The shapes tests assert against | Before writing any type or any test. **If your type cannot cite a D-number, stop.** |
 | `FEATURES.md` | Provenance: CALLED / PORTED / MIRRORED / ORIGINAL + terminology | Before porting anything, or naming anything |
 | `SPEC.md` | **Normative v1 scope**: what must exist, each with the task that proves it | Before estimating, scoping, or accepting a feature |
 | `DESIGN.md` | Surfaces and behaviour | Before touching UI |
 | `ARCHITECTURE.md` | Crate graph, turn loop, the two security boundaries | Before adding a crate or crossing a boundary |
 | `TECH_STACK.md` | Versions and the workspace layout | Before adding a dependency |
+| `docs/dependencies.md` | **The evidence** behind every dependency choice, with the research date | Before adding a dependency — it may already be done |
 | `PLAN.md` · `ROADMAP.md` · `PHASES.md` · `Tasks/*` | What to build, in order | Before starting anything |
 
 **The authority order is fixed.** `MISSION.md` decides *whether*, `SPEC.md` decides *whether it
@@ -151,6 +152,43 @@ If you cannot say which of the four tags a change is, it is not ready to merge.
 
 ---
 
+## 5a. Adopt the wheel. Record the reference.
+
+**Added 2026-10-04.** The instinct to hand-roll is the expensive one, and it is the one this project
+is most likely to indulge because it feels like diligence. It is not. A hand-rolled text diff is a
+bug farm with a nice UI.
+
+**Before writing anything non-trivial, search for the library that already does it.** Both
+registries: `npm view`, and `crates.io/api/v1/crates/<name>`. This applies to parsing, diffing,
+watching a filesystem, and every algorithm someone else debugged for a decade.
+
+**Then vet it, and write down what you found.** A dependency nobody can reconstruct six months from
+memory is a dependency nobody dares remove. Every adopted dependency records:
+
+1. **Name, version, licence.** Must be MIT/ISC/Apache-2.0/CC0-compatible with our MIT licence.
+2. **The URL** — repo or registry page.
+3. **The alternative rejected, and why.** This is the part that matters. Without it the next person
+   re-litigates the decision.
+4. **The maintenance state as of the date checked.** Last release date, not download count —
+   downloads reward abandonment. `eventsource-stream` has 25M downloads and died in 2022.
+
+**Prefer the maintained thing over the popular thing.** Six stars with a release last month beats
+six hundred thousand downloads with no release since 2022.
+
+**A false claim in a spec is a bug.** When research invalidates something written down — the way
+`reqwest-sse` invalidated "both SSE crates are unmaintained" — correct it in the same change and
+keep the correction visible. Do not quietly rewrite history and do not leave the false claim standing.
+
+**Research is not installation.** `TECH_STACK.md` §7.2 and `docs/dependencies.md` §5 list wheels that
+were identified and vetted so the owning task does not re-research them. Nothing in those tables is
+installed. Each still needs its own task and its own row before it lands.
+
+**Scope discipline.** "We should use a library for this" is a claim to verify, not a licence to add
+four. A dependency crossing the artifact sandbox or the tool host is a **security-surface change**,
+not a convenience — see §8.
+
+---
+
 ## 6. Test-first, and what that means concretely
 
 Every task in `Tasks/` names a failing test that must exist before implementation. The discipline that
@@ -199,6 +237,35 @@ silently.
 - **Anything that raises the binary budget past ~25 MB.**
 - **Taking anything from LobeHub.** Ever. If it looks like the only way, it is not.
 - **Renaming a decision.** D-numbers are permanent. Supersede, never renumber.
+
+## 8a. Development and testing are Windows-only, for now
+
+**Decided 2026-10-04.** Every local build, test run, and manual verification happens on **Windows /
+WebView2**. Linux is a shipped target (`D88`) but it is **not** a development environment yet.
+
+**What this means concretely:**
+
+- The local toolchain is the Windows one: MSVC, `x86_64-pc-windows-msvc`, Windows-side node/npm.
+  **No cross-compilation, and none is needed.**
+- A probe, verdict, or measurement is **Windows-only until labelled otherwise**. Do not write
+  "verified" next to a WebKitGTK claim on the strength of a Windows run — that is the exact
+  substitution that makes a sandbox claim a lie.
+- When a task's verdict table has a Linux column, it reads **"not run on this host"** until someone
+  has actually run it on Linux. `Tasks/001` is the live example.
+- The Linux half is executed by **CI on GitHub's runners**, never by an agent on a developer machine
+  (`TECH_STACK.md` §8).
+
+**Why now, and what "later" means.** WebKitGTK development headers are not installed on the
+development host, and they need a sudo password an agent cannot supply non-interactively. Rather than
+block Phase 0 on an environment setup, we take the WebView2 half now — `D89` already makes the
+**WebView2 verdict the one that gates a release** and the WebKitGTK verdict best-effort.
+
+**This is a sequencing decision, not a platform decision.** Linux remains a first-class shipped
+platform and its CI floor remains a **release blocker** (`D50`, `Tasks/021`). Nothing here licenses
+treating WebKitGTK as unverified-and-therefore-fine: when the headers are installed, the Linux
+column gets filled in properly, and until then it stays empty.
+
+---
 
 ## 9. Repo conventions
 
