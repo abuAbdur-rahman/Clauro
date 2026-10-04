@@ -141,7 +141,10 @@ jobs:
       - name: OS and language dependencies
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: .
+          # fs, not image. image-ref expects a container reference and fails
+          # with "could not parse reference: ." on a directory.
+          scan-type: fs
+          scan-ref: .
           format: table
           output: trivy-results.txt
           severity: HIGH,CRITICAL
@@ -152,21 +155,21 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: secret
-          image-ref: .
+          scan-ref: .
           exit-code: "0"
 
       - name: Misconfiguration and IaC
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
-          image-ref: .
+          scan-ref: .
           exit-code: "0"
 
       - name: Licence policy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: license
-          image-ref: .
+          scan-ref: .
           exit-code: "0"
           # The whole porting argument depends on this. A GPL or AGPL
           # dependency would make an MIT repository undeliverable, so licence
