@@ -56,11 +56,13 @@ jobs:
       - uses: actions/checkout@v4
       # Single source of truth for the Rust pin is rust-toolchain.toml.
       # The action does not read that file, so extract the channel here —
-      # a second hardcoded version would drift silently.
+      # a second hardcoded version would drift silently. Block scalar: a
+      # one-line run with nested quotes is unparseable in YAML.
       - name: Read pinned Rust toolchain
         id: tc
         shell: bash
-        run: 'echo "channel=$(grep -oP '\''channel = "\K[^"]+'\'' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"'
+        run: |
+          echo "channel=$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.tc.outputs.channel }}
@@ -82,16 +84,17 @@ jobs:
             librsvg2-dev patchelf libssl-dev
 
       # The Windows floor pins a FIXED WebView2 runtime rather than relying on
-      # whatever the image happens to ship. Placeholder until Tasks/002 lands.
+      # whatever the image happens to ship. Placeholder until Tasks/021 lands
+      # the runtime selection (Phase 6).
       - name: Pin the Windows floor WebView2 runtime
         if: matrix.job == 'windows floor'
         shell: pwsh
         run: Write-Host "pinned WebView2 runtime - see Tasks/021"
 
-      # There is no Cargo.toml yet: this repository is currently the
-      # specification only. These gates unblock themselves the moment Tasks/002
-      # lands the workspace. A green run now and a real gate later beats a
-      # permanently red build that everyone learns to ignore.
+      # The detection guards survive a spec-only branch or a fork: on a
+      # checkout without the workspace or the frontend manifest, the gates
+      # skip rather than fail the run for the wrong reason. On main/dev both
+      # are present since Tasks/002, so both gates always run.
       - name: Detect Rust workspace
         id: rust
         shell: bash
@@ -127,7 +130,7 @@ jobs:
         # bash explicitly: the default shell is PowerShell on Windows, where
         # "cat" is Get-Content and pipes an object rather than a string.
         shell: bash
-        run: echo "::notice::spec-only repo, Rust and frontend gates activate with Tasks/002"
+        run: echo "::notice::manifest absent on this ref - Rust and frontend gates skipped"
 
   # 3. Supply chain: Trivy via Aqua, filesystem scan, nothing cloned.
   #
