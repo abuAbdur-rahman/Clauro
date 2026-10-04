@@ -16,7 +16,7 @@ runtime — not a prediction. The Linux column reads "not run" throughout, per `
 | Runtime version | **153.0.4234.48** — verified from `HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-…}\pv` **and** `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\`. The frame's own UA confirms it: `Chrome/153.0.0.0 … Edg/153.0.0.0`. | not resolved |
 | Host OS / toolchain | Windows, MSVC `x86_64-pc-windows-msvc`, Rust 1.96.0 | — |
 | **Tauri pinned** | **`=2.12.1`** (`tauri-build =2.7.1`) — pinned **exactly**, not `^2`, because the IPC-injection rule is version-dependent (**D92**) | same crate, not built |
-| Frontend | TS **6.0.3**, Vite **8.3.2**, React **19.3.0** (resolved from `package-lock.json`, matching the Tauri template) | same |
+| Frontend | TS **6.0.3**, Vite **8.3.2**, React **19.3.0** (resolved from `pnpm-lock.yaml`, matching the Tauri template) | same |
 | Probe binary | `spikessandbox-probe.exe`, 4.05 MB release build | — |
 | Status | **run, full results below** | **not run on this host** |
 

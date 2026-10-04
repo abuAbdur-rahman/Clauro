@@ -17,22 +17,27 @@ const HAIKU = {
 };
 
 describe("resolveLimits", () => {
+  const REF = { provider: "anthropic", id: "claude-haiku-4-5" };
+
   it("prefers conversation over adapter spec over server snapshot, per field", () => {
     const sources: LimitSources = {
       conversation: { maxOutput: 8000 },
       adapterSpec: { maxOutput: 16_000, contextWindow: 100_000 },
       serverSnapshot: { maxOutput: 64_000, contextWindow: 200_000, reasoning: true, toolCall: true },
     };
-    const out = resolveLimits(sources);
+    const out = resolveLimits(REF, sources);
     expect(out).toEqual({
       limits: { maxOutput: 8000, contextWindow: 100_000, reasoning: true, toolCall: true },
     });
   });
 
-  it("unknown everywhere is unknown, never zero", () => {
-    const out = resolveLimits({});
+  it("unknown everywhere is unknown, never zero — and names the real ref", () => {
+    // The ref travelling back is the model actually being resolved, not a
+    // placeholder (PR #2 finding): callers surface it verbatim to the user.
+    const ref = { provider: "openai", id: "gpt-unknown" };
+    const out = resolveLimits(ref, {});
     expect(out).toEqual({
-      unknown: { kind: "unknown-model", ref: { provider: "anthropic", id: "mystery" } },
+      unknown: { kind: "unknown-model", ref },
     });
     // Zero is a measurement. Unknown must never render as 0/0.
     expect(JSON.stringify(out)).not.toContain(":0");
@@ -41,7 +46,7 @@ describe("resolveLimits", () => {
   it("partial sources degrade per field without zero-guessing", () => {
     const { name, provider, id, ...haikuLimits } = HAIKU;
     expect(`${provider}/${id} ${name}`).toBe("anthropic/claude-haiku-4-5 Claude Haiku 4.5");
-    const out = resolveLimits({ serverSnapshot: { ...haikuLimits } });
+    const out = resolveLimits(REF, { serverSnapshot: { ...haikuLimits } });
     // Exactly the four limit fields survive — identity fields are stripped,
     // nothing is zero-guessed.
     expect(out).toEqual({

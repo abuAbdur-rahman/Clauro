@@ -39,8 +39,6 @@ export interface UnknownModel {
 
 export type ResolvedLimits = { limits: ModelLimits } | { unknown: UnknownModel };
 
-const UNKNOWN_REF: ModelRef = { provider: "anthropic", id: "mystery" };
-
 function first<T>(...vals: (T | undefined)[]): T | undefined {
   for (const v of vals) {
     if (v !== undefined) return v;
@@ -51,8 +49,12 @@ function first<T>(...vals: (T | undefined)[]): T | undefined {
 /**
  * Resolve limits through the chain. Every field unknown → the whole model is
  * unknown. Partial knowledge resolves per field; nothing is zero-guessed.
+ *
+ * `ref` is the model being resolved and travels back inside `UnknownModel`
+ * (CONTRACTS.md §5) — the caller must be able to name WHICH model came back
+ * unresolved, so a placeholder would be a lie (PR #2 finding).
  */
-export function resolveLimits(sources: LimitSources): ResolvedLimits {
+export function resolveLimits(ref: ModelRef, sources: LimitSources): ResolvedLimits {
   const parsed = LimitSourcesSchema.parse(sources);
   const contextWindow = first(
     parsed.conversation?.contextWindow,
@@ -80,7 +82,7 @@ export function resolveLimits(sources: LimitSources): ResolvedLimits {
     reasoning === undefined ||
     toolCall === undefined
   ) {
-    return { unknown: { kind: "unknown-model", ref: { ...UNKNOWN_REF } } };
+    return { unknown: { kind: "unknown-model", ref: { ...ref } } };
   }
   return { limits: { contextWindow, maxOutput, reasoning, toolCall } };
 }

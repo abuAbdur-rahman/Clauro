@@ -46,12 +46,14 @@ export default function ModelPicker({
 
   function choose(provider: string, model: CatalogueModel) {
     const ref: ModelRef = { provider, id: model.id };
-    const resolved = resolveLimits({ serverSnapshot: {
-      contextWindow: model.context_window,
-      maxOutput: model.max_output,
-      reasoning: model.reasoning,
-      toolCall: model.tool_call,
-    } });
+    const resolved = resolveLimits(ref, {
+      serverSnapshot: {
+        contextWindow: model.context_window,
+        maxOutput: model.max_output,
+        reasoning: model.reasoning,
+        toolCall: model.tool_call,
+      },
+    });
     if ("unknown" in resolved) {
       setNotice(`Unknown model ${ref.provider}/${ref.id} — picker still usable.`);
       return;

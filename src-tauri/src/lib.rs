@@ -73,10 +73,18 @@ fn catalogue_status(app: tauri::AppHandle) -> Result<serde_json::Value, Catalogu
     }
 }
 
+/// Cache degradation policy for the boot path: an UNREADABLE cache is an
+/// absent cache. `read_cache` keeps its typed error for callers that report
+/// on cache state (`catalogue_status`); a refresh must never abort on the
+/// fallback it is merely trying to consult (PR #2 finding).
+fn cache_or_none(dir: &std::path::Path) -> Option<catalogue::CacheRead> {
+    read_cache(dir).ok().flatten()
+}
+
 #[tauri::command]
 async fn catalogue_refresh(app: tauri::AppHandle) -> Result<serde_json::Value, CatalogueError> {
     let dir = cache_dir(&app)?;
-    let cached = read_cache(&dir)?;
+    let cached = cache_or_none(&dir);
     let fresh_bytes = fetch_models_dev().await;
     let result = match fresh_bytes {
         Ok(bytes) => {
@@ -160,4 +168,31 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // PR #2: on the refresh path an unreadable cache must degrade to "no
+    // cache", never abort the refresh — a fallback the OS blocks is a
+    // fallback the live fetch does not need. The typed error stays in
+    // `read_cache` for callers that care about it (`catalogue_status`).
+    #[test]
+    fn refresh_treats_an_unreadable_cache_as_absent() {
+        let dir = std::env::temp_dir().join(format!("clauro-cache-degrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // A directory where the cache file belongs: `read` fails with a
+        // non-NotFound error, which `read_cache` reports as CorruptCache.
+        std::fs::create_dir_all(dir.join(catalogue::CACHE_FILE)).expect("sabotage");
+
+        assert!(matches!(
+            read_cache(&dir),
+            Err(CatalogueError::CorruptCache { .. })
+        ));
+        assert!(cache_or_none(&dir).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

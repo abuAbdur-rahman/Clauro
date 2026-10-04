@@ -26,6 +26,7 @@ npm view <pkg> version license peerDependencies time.modified
 | URL | https://www.npmjs.com/package/lucide-react · https://lucide.dev |
 | React peer range | `^16.5.1 \|\| ^17 \|\| ^18 \|\| ^19` — **React 19 supported by declaration** |
 | Scope | **App shell only** (`TECH_STACK.md` §1.2, **D96**) |
+| Maintenance | **Active** — latest release **1.52.0** published **2026-10-04** (npm registry, checked the same day); we pin 1.51.0 |
 | Verified | 2026-10-04 |
 
 **Why it won.** Every icon is an inline `<svg>` element and the package is fully tree-shakable ES

@@ -3,7 +3,7 @@
 **Phase** 0 · **Depends** `002` · **Decisions** D23, D49, D50, D53, D76
 **Contracts** §5 `ProviderAdapter.limits`, §5 model catalogue shapes
 
-**Status: verified 2026-10-04 on Windows/WebView2, and on Linux CI.** `cargo test` (12 shell tests +
+**Status: verified 2026-10-04 on Windows/WebView2, and on Linux CI.** `cargo test` (13 shell tests +
 workspace), `vitest` (17), `tsc`, `eslint strictTypeChecked` all green; picker verified live against
 the real `models.dev` catalogue (8,158 models after filtering). The first CI run on Linux failed the
 keyring test — the crate's typed `Error::NoDefaultStore` (platform store init failed: no session bus
@@ -11,6 +11,15 @@ on a runner) was classified as `Failed` by a string match. Fixed test-first: `en
 `Entry::store_status()` and `classify()` matches the typed variant, so the libsecret-absent path is
 proven both locally and on both Linux CI jobs. The missing-WebView2 path remains unit-test-proven
 only — it needs a machine without the runtime.
+
+**PR #2 review (CodeRabbit, 2026-10-04): eight findings, all verified against the code before fixing.**
+Two were code, fixed test-first: `resolveLimits` takes the ref it is resolving (the hardcoded
+`anthropic/mystery` placeholder violated §5's `UnknownModel` — the caller must name the real model),
+and `catalogue_refresh` degrades an unreadable cache to no-cache (`cache_or_none`) instead of
+aborting on the fallback it merely consults. Two were CI: every action pinned to a full commit SHA
+(CWE-829) and detection guards moved *before* the setup actions that read repo files. Four were stale
+claims: README status block, `TECH_STACK.md` §5 runner label, the lucide maintenance record, and the
+verdict doc citing `package-lock.json` after the pnpm conversion.
 
 ## Failing test first
 
@@ -46,7 +55,7 @@ never a blank window, never a bare crash. `D53`.
       `resolve` prefers fresh, falls back to cache, returns honest-empty without error (unit-tested)
 - [x] Offline start shows cached models — `catalogue_refresh` failure path returns `state: "cached"`
       with the fetch error as a notice; picker renders it
-- [x] Unknown model → typed notice, picker still usable — `resolveLimits({})` → `UnknownModel`;
+- [x] Unknown model → typed notice, picker still usable — `resolveLimits(ref, {})` → `UnknownModel`;
       picker sets a notice instead of throwing
 - [x] Missing WebView2 → explained before first paint — boot gate renders the hint before the UI;
       `map_webview_result` tested (live path needs a machine without the runtime)

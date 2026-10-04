@@ -138,7 +138,7 @@ needs a key is a test that silently stops running.
 because Cargo ships WebKit2GTK sys crates while distro-native builds differ again.
 
 ```
-ubuntu-latest        WebKitGTK system version   Linux, primary
+ubuntu-24.04         WebKitGTK system version   Linux, primary
 ubuntu-24.04         WebKitGTK 2.4x, older      Linux, floor
 windows-latest       WebView2 (evergreen)       Windows, primary
 windows-latest + fixed-version WebView2 runtime   Windows, floor

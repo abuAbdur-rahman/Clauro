@@ -16,7 +16,7 @@ Native desktop. Single binary. No account, no telemetry.
 
 [![Rust](https://img.shields.io/badge/Rust-2021-f74c00?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-24c8db?logo=tauri&logoColor=white)](https://tauri.app)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x%20strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.x%20strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![React](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=white)](https://react.dev)
 [![SQLite](https://img.shields.io/badge/SQLite-rusqlite%20bundled-003b57?logo=sqlite&logoColor=white)](https://sqlite.org)
 [![SSE](https://img.shields.io/badge/transport-hand--rolled%20SSE-ff6b6b)](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
@@ -25,9 +25,11 @@ Native desktop. Single binary. No account, no telemetry.
 
 ---
 
-> **This repository currently contains the specification, not the application.**
-> 95 numbered decisions, the contracts every test hangs off, and 23
-> contract-anchored tasks. There is no `src/` yet, and `Tasks/001` gates v1.
+> **This repository contains the specification and the application built from it.**
+> 97 numbered decisions, the contracts every test hangs off, and 23
+> contract-anchored tasks. Phase 0 (`Tasks/001`–`003`) is done: the sandbox
+> verdict is recorded, the workspace is green in CI, and the keyring and
+> model catalogue are live.
 
 ## Why read a spec instead of an app
 
