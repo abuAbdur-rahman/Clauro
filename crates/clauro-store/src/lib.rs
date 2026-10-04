@@ -12,6 +12,8 @@ use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub mod transcript;
+
 /// DDL, verbatim from `CONTRACTS.md` §1 (D19, D63, D57, D7, D8, D35, D47,
 /// D52, D84). The two `PRAGMA` lines are *not* here: `journal_mode` and
 /// `foreign_keys` are connection state and are set on every `open`, not just
@@ -869,7 +871,7 @@ impl Store {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())

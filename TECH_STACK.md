@@ -231,6 +231,7 @@ table is the evidence that the rules were applied.**
 | `tauri` / `tauri-build` (Rust) | `2.12.1` / `2.7.1` | |
 | `reqwest` (Rust) | `0.13.x` → **0.13.1** | `rustls` + `webpki-roots`, no OpenSSL. `docs/dependencies.md` §4.2. |
 | `rusqlite` (Rust) | `0.40.x` | `bundled`. |
+| `serde_json` (Rust) | `1.x` | `serde`'s only sane JSON impl; hand-rolled parsing rejected. In tree since 003 (catalogue); store adopts same for block payloads. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current

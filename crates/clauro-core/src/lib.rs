@@ -6,6 +6,12 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod content;
+
+pub use content::{
+    unbroken_run_end, ContentBlock, MissingSignature, NoticeLevel, QuestionOption, ThinkingDisplay,
+};
+
 /// A placeholder proving the crate compiles and tests run headless.
 /// Real domain types (`ContentBlock`, `ToolOutcome`, `Measurement`) land with
 /// the tasks that own them.

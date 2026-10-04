@@ -608,6 +608,7 @@ dependencies = [
  "clauro-core",
  "rusqlite",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
