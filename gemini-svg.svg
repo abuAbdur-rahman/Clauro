@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181B"/>
+      <stop offset="100%" stop-color="#09090B"/>
+    </linearGradient>
+
+    <linearGradient id="coral-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F97316"/>
+      <stop offset="50%" stop-color="#D97757"/>
+      <stop offset="100%" stop-color="#C2410C"/>
+    </linearGradient>
+
+    <linearGradient id="memory-spark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FCD34D"/>
+      <stop offset="100%" stop-color="#F97316"/>
+    </linearGradient>
+
+    <linearGradient id="pane-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#27272A"/>
+      <stop offset="100%" stop-color="#18181B"/>
+    </linearGradient>
+
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect width="512" height="512" rx="128" fill="url(#bg-grad)"/>
+  <rect width="508" height="508" x="2" y="2" rx="126" fill="none" stroke="#27272A" stroke-width="4"/>
+
+  <g transform="translate(32, 16)">
+    <!-- Main Outer C Spine (Chat & Body) -->
+    <path d="M 320 128 
+             H 216 
+             A 96 96 0 0 0 120 224 
+             V 256 
+             A 96 96 0 0 0 216 352 
+             H 320" 
+          fill="none" 
+          stroke="url(#coral-grad)" 
+          stroke-width="52" 
+          stroke-linecap="round" 
+          stroke-linejoin="round"/>
+
+    <!-- Artifact Drawer Pane -->
+    <rect x="252" y="192" width="112" height="96" rx="20" 
+          fill="url(#pane-grad)" 
+          stroke="url(#coral-grad)" 
+          stroke-width="8"/>
+    
+    <!-- Code / Preview Lines inside Artifact Pane -->
+    <line x1="276" y1="224" x2="336" y2="224" stroke="#D97757" stroke-width="8" stroke-linecap="round"/>
+    <line x1="276" y1="252" x2="312" y2="252" stroke="#71717A" stroke-width="8" stroke-linecap="round"/>
+
+    <!-- Memory Node Spark (Persistent Core) -->
+    <circle cx="340" cy="116" r="28" fill="url(#memory-spark)" filter="url(#glow)"/>
+  </g>
+</svg>
