@@ -1,10 +1,21 @@
-//! `clauro-tools`: the eight handlers + registry + permission resolution.
+//! `clauro-tools`: registry, permissions, bounding, approval, availability.
 //!
-//! `CONTRACTS.md` §3. Dependencies point inward: this crate may use
-//! `clauro-core`, never `tauri`. The only crate that knows Tauri exists is
-//! `src-tauri`. Enforced mechanically in `tests/no_tauri_dep.rs`.
+//! `CONTRACTS.md` §3. Dependencies point inward: `clauro-core`, `serde_json`.
+//! Never `tauri` — enforced mechanically in `tests/no_tauri_dep.rs`.
 
-/// Placeholder. Real handlers land with the tasks that own them.
-pub fn placeholder() -> bool {
-    true
-}
+pub mod approval;
+pub mod bounding;
+pub mod materialize;
+pub mod permission;
+pub mod registry;
+
+pub use approval::{ApprovalError, ApprovalQueue, ApprovalState, HeldCall};
+pub use bounding::{bound_output, BoundedOutput, BoundingError, PREVIEW_LIMIT_CHARS};
+pub use materialize::{
+    materialize, Availability, MaterializedTool, ThreadToolState, INLINE_TOOLS_BETA,
+};
+pub use permission::resolve;
+pub use registry::{
+    eight_definitions, IncomingCall, Materialization, Registry, RegistryError, ToolDefinition,
+    EIGHT,
+};
