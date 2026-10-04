@@ -81,7 +81,26 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "memory".to_string(),
             description: "Keep small durable notes the user asked to remember, scoped to a topic. Reads merge into the reply; writes replace one topic at a time and never store secrets.".to_string(),
-            input_schema: object(),
+            // Refined by 008, which owns this contract: six commands over
+            // project-scoped topic rows.
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": {"enum": ["view", "create", "str_replace", "insert", "delete", "rename", "reset"]},
+                    "path": {"type": "string"},
+                    "category": {"type": "string"},
+                    "body": {"type": "string"},
+                    "old_str": {"type": "string"},
+                    "new_str": {"type": "string"},
+                    "text": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "old_path": {"type": "string"},
+                    "new_path": {"type": "string"},
+                    "sensitive": {"type": "boolean"},
+                    "confirm": {"type": "boolean"},
+                },
+            }),
             writes_to_disk: true,
         },
         ToolDefinition {

@@ -6,5 +6,7 @@ license.workspace = true
 
 [dependencies]
 clauro-core = { path = "../clauro-core" }
+clauro-fs = { version = "0.1.0", path = "../clauro-fs" }
+clauro-store = { version = "0.1.0", path = "../clauro-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

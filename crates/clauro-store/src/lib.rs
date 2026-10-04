@@ -170,6 +170,9 @@ pub enum StoreError {
     Sqlite(rusqlite::Error),
     /// A row the caller expected is not there.
     NotFound(String),
+    /// A write the lifecycle forbids: the per-thread memory toggle after the
+    /// first send (D9). Typed, not silent.
+    Locked(String),
     /// A `block` would move its thread's generation backwards (I3, D63).
     GenerationRegression { thread: String, got: i64, max: i64 },
     /// A compaction must advance its thread's generation strictly by one (D63,
@@ -182,6 +185,7 @@ impl fmt::Display for StoreError {
         match self {
             Self::Sqlite(e) => write!(f, "sqlite: {e}"),
             Self::NotFound(id) => write!(f, "row not found: {id}"),
+            Self::Locked(id) => write!(f, "locked after first send: {id}"),
             Self::GenerationRegression { thread, got, max } => write!(
                 f,
                 "generation regression on thread {thread}: got {got}, max is {max}"
@@ -258,6 +262,7 @@ pub struct ThreadRow {
     pub title: Option<String>,
     pub system_frozen: String,
     pub tools_frozen: String,
+    pub memory_off: bool,
 }
 
 /// Append-only: insert + read. `seq` gaps are legal; a compaction removes a
@@ -345,6 +350,7 @@ pub struct NewMemory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRow {
     pub id: String,
+    pub path: String,
     pub body: String,
     pub revision: i64,
     pub sensitive: bool,
@@ -528,7 +534,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, project_id, title, system_frozen, tools_frozen FROM thread WHERE id = ?1",
+                "SELECT id, project_id, title, system_frozen, tools_frozen, memory_off FROM thread WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(ThreadRow {
@@ -537,6 +543,7 @@ impl Store {
                         title: row.get(2)?,
                         system_frozen: row.get(3)?,
                         tools_frozen: row.get(4)?,
+                        memory_off: row.get::<_, i64>(5)? == 1,
                     })
                 },
             )
@@ -674,20 +681,53 @@ impl Store {
     pub fn get_memory(&self, id: &str) -> Option<MemoryRow> {
         self.conn
             .query_row(
-                "SELECT id, body, revision, sensitive, updated_at FROM memory WHERE id = ?1",
+                "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(MemoryRow {
                         id: row.get(0)?,
-                        body: row.get(1)?,
-                        revision: row.get(2)?,
-                        sensitive: row.get::<_, i64>(3)? == 1,
-                        updated_at: row.get(4)?,
+                        path: row.get(1)?,
+                        body: row.get(2)?,
+                        revision: row.get(3)?,
+                        sensitive: row.get::<_, i64>(4)? == 1,
+                        updated_at: row.get(5)?,
                     })
                 },
             )
             .optional()
             .expect("memory read must not fail")
+    }
+
+    /// Every note in one scope, for topic listing. Sensitivity filtering
+    /// belongs to the caller: the store returns rows, policy decides.
+    pub fn list_memories(&self, project_id: Option<&str>) -> Result<Vec<MemoryRow>, StoreError> {
+        fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRow> {
+            Ok(MemoryRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                body: row.get(2)?,
+                revision: row.get(3)?,
+                sensitive: row.get::<_, i64>(4)? == 1,
+                updated_at: row.get(5)?,
+            })
+        }
+        let rows = match project_id {
+            Some(pid) => self
+                .conn
+                .prepare(
+                    "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE project_id = ?1 ORDER BY path",
+                )?
+                .query_map([pid], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => self
+                .conn
+                .prepare(
+                    "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE project_id IS NULL ORDER BY path",
+                )?
+                .query_map([], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(rows)
     }
 
     pub fn insert_attachment(&self, a: NewAttachment) -> Result<(), StoreError> {
@@ -868,6 +908,95 @@ impl Store {
             rusqlite::params![i64::from(sensitive), updated_at, id],
         )?;
         self.must_touch(rows, id)
+    }
+
+    /// `memory.path` — rename only (D7: the six commands include rename).
+    /// Revision is untouched: the note keeps its history under a new path.
+    pub fn rename_memory_path(
+        &self,
+        id: &str,
+        new_path: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        let rows = self.conn.execute(
+            "UPDATE memory SET path = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![new_path, updated_at, id],
+        )?;
+        self.must_touch(rows, id)
+    }
+
+    /// Delete one note by its project-scoped path. Returns true when a row
+    /// went away. Individual notes are always deletable (D10); deleting a
+    /// thread never touches this table — it holds no thread reference.
+    pub fn delete_memory_by_path(
+        &self,
+        project_id: Option<&str>,
+        path: &str,
+    ) -> Result<bool, StoreError> {
+        let rows = match project_id {
+            Some(pid) => self.conn.execute(
+                "DELETE FROM memory WHERE project_id = ?1 AND path = ?2",
+                rusqlite::params![pid, path],
+            )?,
+            None => self.conn.execute(
+                "DELETE FROM memory WHERE project_id IS NULL AND path = ?1",
+                rusqlite::params![path],
+            )?,
+        };
+        Ok(rows > 0)
+    }
+
+    /// Account reset: every note in every scope, permanent (D8). Returns the
+    /// count removed.
+    pub fn delete_all_memories(&self) -> Result<usize, StoreError> {
+        Ok(self.conn.execute("DELETE FROM memory", [])?)
+    }
+
+    /// Read one thread's memory setting, if the row exists.
+    pub fn get_memory_setting(&self, thread_id: &str) -> Option<(bool, bool)> {
+        self.conn
+            .query_row(
+                "SELECT paused, include_sensitive FROM memory_setting WHERE thread_id = ?1",
+                [thread_id],
+                |row| Ok((row.get::<_, i64>(0)? == 1, row.get::<_, i64>(1)? == 1)),
+            )
+            .ok()
+    }
+
+    /// Read the singleton account setting, if the row exists.
+    pub fn get_account_setting(&self) -> Option<(bool, bool)> {
+        self.conn
+            .query_row(
+                "SELECT paused, include_sensitive FROM account_setting WHERE id = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)? == 1, row.get::<_, i64>(1)? == 1)),
+            )
+            .ok()
+    }
+
+    /// How many messages a thread holds. The per-thread memory toggle locks
+    /// after the first send (D9): `set_thread_memory_off` consults this.
+    pub fn thread_message_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM message WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// `thread.memory_off`, settable only before the first message (D9).
+    /// There is no `UPDATE thread SET memory_off` setter: the toggle writes
+    /// through this checked path, so a post-send flip is a typed error, not
+    /// a silent row change.
+    pub fn set_thread_memory_off(&self, thread_id: &str, off: bool) -> Result<(), StoreError> {
+        if self.thread_message_count(thread_id)? > 0 {
+            return Err(StoreError::Locked(thread_id.to_string()));
+        }
+        let rows = self.conn.execute(
+            "UPDATE thread SET memory_off = ?1 WHERE id = ?2",
+            rusqlite::params![i64::from(off), thread_id],
+        )?;
+        self.must_touch(rows, thread_id)
     }
 
     /// `memory_setting.*` — pause / include_sensitive (D8). Replace, not a

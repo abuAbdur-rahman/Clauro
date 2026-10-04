@@ -602,6 +602,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "clauro-loop"
+version = "0.1.0"
+dependencies = [
+ "clauro-core",
+ "clauro-store",
+ "clauro-tools",
+ "clauro-transport",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "clauro-store"
 version = "0.1.0"
 dependencies = [
@@ -624,6 +636,8 @@ name = "clauro-tools"
 version = "0.1.0"
 dependencies = [
  "clauro-core",
+ "clauro-fs",
+ "clauro-store",
  "serde",
  "serde_json",
 ]

@@ -79,10 +79,10 @@ fn every_update_targets_the_mutable_column_allowlist() {
             "project",
             BTreeSet::from(["name", "instructions", "bash_enabled", "archived_at"]),
         ),
-        ("thread", BTreeSet::from(["title"])),
+        ("thread", BTreeSet::from(["title", "memory_off"])),
         (
             "memory",
-            BTreeSet::from(["body", "revision", "sensitive", "updated_at"]),
+            BTreeSet::from(["body", "revision", "sensitive", "updated_at", "path"]),
         ),
         (
             "memory_setting",
