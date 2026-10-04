@@ -245,3 +245,23 @@ needs its own task, and its own `TECH_STACK.md` row before it lands (`AGENTS.md`
 **Deliberately not researched yet.** Tauri plugins (`plugin-dialog`, `plugin-fs`, `plugin-shell`) are
 plausible but are *security-surface* additions inside the tool host (`AGENTS.md` §8). The task that
 needs one owns the decision.
+
+---
+
+## 6. Known open advisories — deferred with reasons
+
+An open advisory nobody wrote down is an open advisory nobody owns. `Tasks/022` re-audits this
+register at release; each entry names the trigger that brings it back into scope before then.
+
+### 6.1 `glib` — unsound `Iterator` impls (Dependabot #2)
+
+| Field | Value |
+|---|---|
+| Alert | Dependabot **#2**, opened 2026-10-04, severity **medium** |
+| Package | `glib` **0.18.5** — transitive, `Cargo.lock`, Linux targets only (tauri → gtk chain) |
+| Advisory | Unsoundness in `Iterator` and `DoubleEndedIterator` impls for `glib::VariantStrIter` |
+| Affected / patched | `>=0.15.0, <0.20.0` / **0.20.0** — so the locked 0.18.5 is affected |
+| Reachable surface here | The unsound iterator walks D-Bus `GVariant` strings. Clauro's own code never touches it; the reachable path runs through tauri/gtk internals, and Clauro speaks no D-Bus. A real advisory, a negligible surface — not a dismissal. |
+| Why it cannot be fixed yet | **Proven, not assumed** — `cargo update -p glib --precise 0.20.0 --dry-run` (2026-10-04) fails with `gtk v0.18.2 requires glib ^0.18`, `gtk` required by `tauri =2.12.1`. 0.20.0 does not resolve against the chain. |
+| Revisit trigger | (a) a `glib 0.18.x` backport of the fix, (b) a tauri release raising its gtk/glib floor, or (c) `Tasks/022`'s release audit — whichever comes first. |
+| Deferred by | user decision, 2026-10-04 |
