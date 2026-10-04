@@ -1,0 +1,15 @@
+# Build output
+target/
+node_modules/
+dist/
+*.exe
+*.msi
+
+# Local machine specifics -- D88 says these never belong in the spec
+docs/dev-host.md
+
+# Generated reports and research artefacts
+.agents/
+
+# Harness scratch
+.openchamber/

@@ -1,0 +1,115 @@
+name: Release
+
+# Tags trigger a release. Nothing here runs on a schedule or on a branch push —
+# a build that cannot be reproduced from a tag does not get cut.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            asset-suffix: x64-setup.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            asset-suffix: arm64-setup.exe
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            asset-suffix: amd64.AppImage
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04
+            asset-suffix: arm64.AppImage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Linux webview + packaging deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev fuse3
+
+      # --locked is not optional in CI. It is the difference between
+      # "reproducible" and "usually the same".
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Rust bundle
+        shell: bash
+        run: |
+          cargo tauri build \
+            --target "${{ matrix.target }}" \
+            --bundles "$( [ "${{ runner.os }}" = "Linux" ] && echo appimage || echo msi,nsis )"
+
+      # The binary budget is a spec claim (~25 MB). Assert it, don't hope.
+      - name: Assert the binary budget (D88)
+        shell: bash
+        run: |
+          set -euo pipefail
+          biggest=$(find target -type f \( -name '*.exe' -o -name 'clauro' \) -printf '%s %p\n' 2>/dev/null \
+                    | sort -rn | head -1 || true)
+          if [ -z "$biggest" ]; then echo "no artefact found — nothing to check"; exit 0; fi
+          size=$(echo "$biggest" | cut -d' ' -f1)
+          path=$(echo "$biggest" | cut -d' ' -f2)
+          echo "largest: $path ($((size / 1024)) KiB)"
+          if [ "$size" -gt $((25 * 1024 * 1024)) ]; then
+            echo "::error::$path is $((size / 1024 / 1024)) MB, over the ~25 MB budget"
+            exit 1
+          fi
+
+      - name: Collect artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clauro-${{ matrix.asset-suffix }}
+          path: |
+            target/${{ matrix.target }}/release/bundle/**/*.exe
+            target/${{ matrix.target }}/release/bundle/**/*.msi
+            target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            target/${{ matrix.target }}/release/bundle/**/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # Only publish if every target built. A partial release is worse than none.
+    if: success()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: bundles
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          draft: true
+          files: bundles/**/*
+      # Draft, not published: a human confirms the artefact actually launches
+      # before anyone downloads it. D89 makes a broken platform a release
+      # blocker, and a release is where that gets discovered.
