@@ -110,7 +110,10 @@ jobs:
 
       - name: Note skipped gates
         if: "steps.rust.outputs.present == 'false' && steps.web.outputs.present == 'false'"
-        run: echo "::notice::spec-only repo, Rust and frontend gates activate with Tasks/002" | cat
+        # bash explicitly: the default shell is PowerShell on Windows, where
+        # "cat" is Get-Content and pipes an object rather than a string.
+        shell: bash
+        run: echo "::notice::spec-only repo, Rust and frontend gates activate with Tasks/002"
 
   # 3. Supply chain: Trivy via Aqua, filesystem scan, nothing cloned.
   #
@@ -197,7 +200,7 @@ jobs:
           set -euo pipefail
           if git grep -nIE '(api[_-]?key|secret|passwd|password)[[:space:]]*[=:][[:space:]]*[A-Za-z0-9_-]{16,}' \
                -- ':!*.lock' ':!.github/**' ':!scripts/**'; then
-            echo "::error::possible secret committed - see the matches above" | cat
+            echo "::error::possible secret committed - see the matches above"
             exit 1
           fi
           echo "no key-shaped assignments"
