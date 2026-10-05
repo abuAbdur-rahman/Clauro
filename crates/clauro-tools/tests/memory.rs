@@ -12,9 +12,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 fn dir() -> PathBuf {
+    // Counter plus clock: Windows clock granularity is coarse, so nanos
+    // alone collide under parallel tests sharing one DB by accident.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let d = std::env::temp_dir().join(format!(
-        "clauro-008-{}-{}",
+        "clauro-008-{}-{}-{}",
         std::process::id(),
+        n,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
