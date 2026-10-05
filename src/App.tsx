@@ -84,7 +84,8 @@ export default function App() {
         <ArtifactDrawer
           threadId={THREAD}
           engine={{ platform: "windows", opaqueProven: true }}
-          sourceHtml=""
+          source=""
+          mediaType="text/html"
           title=""
         />
       </div>

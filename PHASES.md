@@ -171,10 +171,30 @@ loop), Phase 4 (compaction needs tools to compact around).
 |---|---|---|---|---|
 | `Tasks/012-bash-tool.md` | ✅ backend 11+5 | §3 | D28, D29, D30, D46, D66, D67 | D19, D28, D29, D30, D46, D55, D66, D67 |
 | `Tasks/013-artifact-drawer.md` | ◐ tool + drawer states green; webview proofs need 021 | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77 |
-| `Tasks/014-artifact-compile-and-channel.md` | ⬜ not started | §3 | D4, D5, D6, D12 | D2, D4, D5, D6, D12, D78 |
+| `Tasks/014-artifact-compile-and-channel.md` | ◐ compile/channel/CSP green; webview + Tailwind CSS need 021 / 022 | §3 | D4, D5, D6, D12, D110, D111 | D2, D4, D5, D6, D12, D78, D102 |
 
 **Gate:** artifacts render live and the iframe has no reachable path to app internals; a denied
 network request from inside an artifact fails; `bash` runs only after approval.
+
+**Gate status: ◐ partially met, and the reason is the platform, not the work.** `bash` is fully paid
+for: approval is a typed state machine with resume and a `Rejection`, and the runner's group kill is
+asserted against a live process tree (`Tasks/012`, `crates/clauro-fs/tests/runner.rs`). The artifact
+half is verified as far as a headless host allows — the policy is assembled in Rust with every `D3`
+directive asserted, the handshake validates origin *and* source on both sides, the port carries a
+closed allowlist, SVG is sanitised, in-frame navigation is contained and logged, and a compiled JSX
+artifact mounts and responds to a click (`Tasks/014`, 70 tests).
+
+What cannot be met yet, and why, in the order it blocks:
+
+1. **"No reachable path to app internals"** and **"a denied network request fails"** are claims
+   about a running engine. `Tasks/001` proved the same properties in a throwaway probe app on
+   WebView2; the *product* frame is unobserved, because `tauri-driver` lands in `021`. Both stay open.
+2. **"Artifacts render live"** in the product: the drawer's states and pipeline are tested, but
+   nothing calls `setCompiling`/`setLive`, because there is still no tool-result handler — `src/` is
+   the Phase-0 shell, the same gap recorded against the Phase 2 gate above.
+3. Artifacts render **without Tailwind** until `022` vendors the stylesheet (`D111`). The frame's
+   stylesheet slot exists and is deliberately empty; the prompt already tells the model to use
+   predefined utility classes, so this is visible rather than silent.
 
 **Unblocks:** Phase 5 (the drawer is the visual centrepiece of the shell).
 

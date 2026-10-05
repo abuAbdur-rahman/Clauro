@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalogue;
+mod csp;
 mod keyring_store;
 mod platform;
 
@@ -142,6 +143,17 @@ async fn fetch_models_dev() -> Result<Vec<u8>, CatalogueError> {
         })
 }
 
+// ── artifact policy ─────────────────────────────────────────────────────────
+
+/// The artifact frame's CSP for one render (D3). The web app asks for this
+/// value and embeds it; it cannot supply its own, and `csp.rs` holds the only
+/// copy. Nothing in the shell's own policy can widen this one: multiple
+/// policies intersect, so the frame keeps the stricter of the two.
+#[tauri::command]
+fn artifact_csp(nonce: String) -> String {
+    csp::artifact_csp(&nonce)
+}
+
 // ── platform commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -164,6 +176,7 @@ pub fn run() {
             keyring_available,
             catalogue_status,
             catalogue_refresh,
+            artifact_csp,
             webview_status
         ])
         .run(tauri::generate_context!())

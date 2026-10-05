@@ -240,6 +240,8 @@ table is the evidence that the rules were applied.**
 | `jsdom` | `^30` | Component tests need a DOM; node env has none. Alternative (no component tests, eyeball only) rejected: drawer states are acceptance criteria. |
 | `@testing-library/react` | `^16` | React 19-compatible renderer queries. Alternative (manual DOM asserts) rejected: role-based queries match the a11y contract. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
+| `sucrase` (JS) | `^3.35` → **3.35.1** | The JSX/TS transform for artifacts, in a Worker (**D4**). MIT. Alternatives rejected: Babel (`@babel/standalone` is ~3 MB against a 202 kB transform, and its plugin set is the wrong shape for one job); TypeScript's own compiler (~8 MB, and `transpileModule` still emits `React.createElement`-shaped output with no pragma control); esbuild-wasm (a WASM runtime to do what Sucrase does in JS). Measured, not assumed — see `docs/build-baseline.md`. Last release 2025-11-19; the newest of the three candidate transforms by a wide margin. |
+| `dompurify` (JS) | `^3.4` → **3.4.16** | SVG sanitisation, dynamically imported so it is never in the main chunk (**D4**). Alternatives rejected: hand-rolled allowlists (a sanitiser is a bug farm, and this one has a CVE history we would be re-opening); the browser's own `Sanitizer` API (not in any shipping engine). **Licence is `(MPL-2.0 OR Apache-2.0)` and we take the Apache-2.0 option**, which is MIT-compatible; recorded explicitly because MPL is file-level copyleft and a reviewer should not have to go looking. Last release 2026-09-23. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
 `@tauri-apps/cli` expect.

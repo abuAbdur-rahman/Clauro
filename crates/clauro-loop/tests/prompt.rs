@@ -74,6 +74,35 @@ fn prompt_carries_inventory_preconditions_bounding_and_memories() {
     }
 }
 
+/// A7: the artifact contract is in the prompt, or the model writes artifacts
+/// that cannot work. Every clause here is one this repo has decided, and each
+/// has a D-number; none of them are advice, they are the frame's limits.
+#[test]
+fn prompt_states_the_artifact_contract() {
+    let defs = clauro_tools::eight_definitions();
+    let text = build_system_prompt(&PromptInputs {
+        tools: &defs,
+        memory_instructions: None,
+    });
+    for marker in [
+        // D5: predefined utility classes only.
+        "predefined",
+        // D4: storage is unavailable, and it is the usual blank-artifact cause.
+        "localStorage",
+        "indexedDB",
+        // D3: no network, so nothing may be fetched or linked.
+        "no network",
+        // D110: the JSX pragma is ours and it is a DOM builder.
+        "h(",
+        // The compiled-shape contract, so a static artifact needs no script.
+        "script type=\"text/jsx\"",
+        // The size the frame will accept.
+        "1 MB",
+    ] {
+        assert!(text.contains(marker), "prompt must say {marker}: {text}");
+    }
+}
+
 #[test]
 fn prompt_snapshot_pins_our_wording() {
     // Any wording change fails here first, forcing a conscious D39 re-check.
@@ -108,7 +137,11 @@ fn insta_like_snapshot(text: &str) {
                 "question"
             ]
         ),
-        "33508ece49863540",
+        // Pin moved 2026-10-05 by `Tasks/014`: the Artifacts paragraph (D4, D5,
+        // D110) joined the prompt. D39 re-read before moving it — the wording
+        // is ours, describing our own frame's limits, and borrows nothing from
+        // any first-party material.
+        "ccbcfa44e3478a93",
         "prompt wording moved — re-read for D39, then update the pin"
     );
 }

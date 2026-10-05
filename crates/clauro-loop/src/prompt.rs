@@ -35,6 +35,9 @@ pub fn build_system_prompt(input: &PromptInputs<'_>) -> String {
         "\nOutput. Long tool results reach you as a short preview plus a path you can re-read. Ask for the rest by path when the rest matters.\n",
     );
     out.push_str(
+        "\nArtifacts. The artifact tool renders one self-contained document in a side drawer. Its source is HTML, and any part that needs behaviour goes in a <script type=\"text/jsx\"> block whose default export is a function returning an element tree. Inside those blocks JSX is compiled against a single helper, h(tag, props, ...children), which builds DOM nodes; there is no framework, no import, and no require. Style only with predefined utility class names: arbitrary values and invented classes have no stylesheet behind them. The artifact has no network, so nothing it writes may fetch or link anything. localStorage, sessionStorage and indexedDB are unavailable, and reading one renders a blank artifact. Each source is capped at 1 MB. Pass an existing artifactId to revise an artifact instead of starting a new one; every revision is kept as a new version.\n",
+    );
+    out.push_str(
         "\nMemory (/memories). The user may ask you to remember small durable notes, one topic at a time. Store only what was asked for, replace a topic instead of duplicating it, and never store secrets, credentials, or identifiers.\n",
     );
     if let Some(instructions) = input.memory_instructions {

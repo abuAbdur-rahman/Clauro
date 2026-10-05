@@ -9,6 +9,12 @@
     /* Bundler mode */
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
+    /* `src/artifact/frame-runtime.js` is shipped to the sandbox as raw text,
+       never compiled or bundled. It must still be *seen* by the project so the
+       linter and the editor know it exists; `checkJs` stays off because nothing
+       type-checks it, by design. */
+    "allowJs": true,
+    "checkJs": false,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,

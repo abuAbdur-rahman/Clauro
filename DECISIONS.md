@@ -1192,6 +1192,41 @@ applies to the four mutable tables only; history rows are never merged. (4) Chec
 in ledger rows, not message fields — a field is silently overwritable by an upsert path, a row is
 not. Both recorded in `CONTRACTS.md` §1.
 
+**D110 — Artifact JSX compiles to a host-owned `h()` that builds DOM nodes. No JS runtime is bundled.**
+
+Decided 2026-10-05 by `Tasks/014`. `D4` settled *that* JSX/TS compiles in-browser with Sucrase and
+never said what it compiles **to**. Sucrase is a transform, not a runtime: its `jsx` transform emits
+calls to whatever pragma you name. The obvious answer is React, and it is the wrong one here - it puts
+~150 KB and a second component model, with its own escaping semantics, inside the one place the
+product's security claims live, in exchange for a function that makes one DOM node.
+
+So the frame ships `h(tag, props, ...children)` - twenty-odd lines, written here, building `Node`s
+directly. Two consequences, both intended. An artifact's only capability is the DOM it can already
+reach, and the prompt can tell the model a plain, checkable thing (`h("div", { class: "p-4" }, ...)`)
+instead of a framework's rules. Markup is HTML with `<script type="text/jsx">` blocks, so a purely
+static artifact needs **no script at all** - no transform, no timeout, nothing to go wrong.
+
+Rejected: shipping React in the frame (size + a second escaping model inside the boundary); writing
+compiled output as a string into the document (no error attribution, and it re-opens the injection
+question DOMPurify exists to close); TypeScript-only artifacts (forces JSX authors to learn
+`React.createElement` call shapes, which is the thing JSX exists to avoid).
+
+**D111 — The artifact's Tailwind CSS is vendored by `Tasks/022`, not here; `014` owns the constraint,
+not the bytes.**
+
+Decided 2026-10-05 by `Tasks/014`. `D5` requires artifacts to use only *predefined* utility classes
+and calls that "precisely what makes a no-build-step Tailwind possible inside them" - which is true
+only if the CSS actually exists in the frame. It does not yet: the app's own Tailwind build
+tree-shakes to the classes `src/` uses, so a utility an artifact asks for may be absent, and an
+artifact that renders unstyled looks broken and reads as a sandbox failure.
+
+Deliberately **not** solved here. The bytes are a vendoring and bundle-budget decision, it lands in
+`022` alongside the Sucrase budget line that task already owns, and shipping a whole prebuilt
+stylesheet is exactly the kind of "looks like diligence, actually inflates the binary" move that
+`AGENTS.md` §5a warns against. `014` therefore states the constraint in the system prompt and wires
+a stylesheet slot the frame can be given, and leaves the slot empty rather than faking it. Artifacts
+render with **no** Tailwind until `022` fills it - visible, honest, and tracked.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
