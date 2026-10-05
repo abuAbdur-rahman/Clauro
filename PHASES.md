@@ -129,17 +129,18 @@ transcript to measure).
 | `Tasks/008-memory-tool.md` | ✅ backend 8/10; two UI criteria unstarted | §1, §3 | D7, D8, D9, D10, D11, D35, D43, D51 |
 | `Tasks/009-question-tool.md` | ◐ in progress — gate never wired to the loop | §2, §3 | D40, D41, D42, D43 |
 | `Tasks/010-fs-tool.md` | ◐ backend 11/11; ingest/serve/session-dirs uncalled (018/shell later) | §3 | D31, D32, D33, D34, D39, D44, D47, D52, D79, D109 |
-| `Tasks/011-web-search-and-fetch.md` | ⬜ not started | §3 | D39, D48, D56 |
+| `Tasks/011-web-search-and-fetch.md` | ◐ backend 9/9; live HTTP untested by rule, DDG shape assumed | §3 | D39, D48, D56 |
 
 **Gate:** the turn loop runs to `end_turn`; the five model-callable tools built so far (`memory`,
 `question`, `fs`, `web-search`, `web-fetch`) are callable; `compact` is absent from the request
 schema; no handler throws. `artifact` and `bash` arrive in Phase 3, so **two of the eight tools are
 not yet callable at this gate** — that is expected, not a failure.
 
-**Gate status:** ⬜ **not met.** The loop does run to `end_turn` and nothing throws — those two halves
-hold and are well tested. Three of the five named tools exist and are callable (`memory`,
-`question`, `fs`); `web-search` and `web-fetch` are unstarted, so **the gate's own list is
-short two**, not three. And `question` is listed as callable when its turn boundary does not exist.
+**Gate status:** ⬜ **not met.** The loop does run to `end_turn`, nothing throws, and all five
+named tools now exist and are callable through the registry (`memory`, `question`, `fs`,
+`web-search`, `web-fetch`). What remains is the wiring the Progress section names — permissions,
+approval routing, question-gate calls, and output bounding at the loop — plus any transcript
+renderer. And `question` is listed as callable when its turn boundary does not exist.
 
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.

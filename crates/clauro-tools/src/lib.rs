@@ -12,6 +12,7 @@ pub mod permission;
 pub mod question;
 pub mod registry;
 pub mod secret;
+pub mod web;
 
 pub use approval::{ApprovalError, ApprovalQueue, ApprovalState, HeldCall};
 pub use bounding::{bound_output, BoundedOutput, BoundingError, PREVIEW_LIMIT_CHARS};
@@ -33,3 +34,8 @@ pub use registry::{
     EIGHT,
 };
 pub use secret::looks_secret;
+pub use web::{
+    current_year, register_web, reqwest_getter, FetchConfig, Getter, HttpError, HttpRequest,
+    HttpResponse, SearchConfig, WebHost, DDG_HTML_ENDPOINT, FETCH_DEFAULT_MAX_BYTES,
+    FETCH_DEFAULT_MAX_REDIRECTS,
+};

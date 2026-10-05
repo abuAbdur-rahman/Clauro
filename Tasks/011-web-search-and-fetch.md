@@ -5,14 +5,22 @@
 The two cheapest tools in v1 and the two most often got wrong by clients that *describe* the tool
 instead of *steering* selection.
 
+**Status: backend complete and verified 2026-10-05 on this Windows host.**
+`cargo test -p clauro-tools --test web` 9/9. Both handlers reachable — the
+loop dispatches through the registry (`run.rs:263`), so `web-search` and
+`web-fetch` are callable. Unwired/untestable headless: `reqwest_getter`
+constructs but never touches a live host (no network in tests, by rule); the
+DDG anchor scan pins a shape assumption that provider drift can rot — it
+fails visibly as `NoResults` when it does.
+
 ## Failing tests first
 
-- The current year is present in the serialised search prompt — **assert on the request body**, not
-  on a comment
-- A fetch failure returns `error`; it does not throw
-- Fetched HTML → markdown with scripts and styles stripped
-- A redirect loop terminates with a typed error, bounded hops
-- A response over the size cap is truncated **and the model is told it was**
+- [x] The current year is present in the serialised search prompt — **assert on the request body**, not
+  on a comment — `crates/clauro-tools/tests/web.rs:77`
+- [x] A fetch failure returns `error`; it does not throw — `web.rs:121` (search), `:206` (fetch + scheme)
+- [x] Fetched HTML → markdown with scripts and styles stripped — `web.rs:134`
+- [x] A redirect loop terminates with a typed error, bounded hops — `web.rs:155` (A↔B loop, revisit detection)
+- [x] A response over the size cap is truncated **and the model is told it was** — `web.rs:181`
 
 ## Do
 
@@ -37,10 +45,10 @@ Neither tool writes to disk (`writesToDisk: false`), so neither enters the conse
 
 ## Acceptance criteria
 
-- [ ] Year asserted present in the request body
-- [ ] Fetch failures are typed results, never throws
-- [ ] HTML → markdown, scripts and styles stripped
-- [ ] Redirect loops bounded
-- [ ] No description text matches any reference implementation's wording (`D39`, same check as `007`)
-- [ ] Oversized responses truncated **and disclosed**
-- [ ] Both tool descriptions steering, not merely descriptive
+- [x] Year asserted present in the request body — `web.rs:77`
+- [x] Fetch failures are typed results, never throws — `web.rs:121`, `:206`
+- [x] HTML → markdown, scripts and styles stripped — `web.rs:134` (+ DDG anchor shape pinned at `:233`)
+- [x] Redirect loops bounded — `web.rs:155`
+- [x] No description text matches any reference implementation's wording (`D39`, same check as `007`) — blurbs pinned in `crates/clauro-tools/tests/descriptions.rs`, human-read; both steer ("pass the current year", "prefer a more targeted tool")
+- [x] Oversized responses truncated **and disclosed** — `web.rs:181`
+- [x] Both tool descriptions steering, not merely descriptive — same pin (see above)

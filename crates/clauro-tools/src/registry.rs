@@ -112,13 +112,23 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "web-search".to_string(),
             description: "Search the public web and return short cited hits. Pass the current year with the query so time-sensitive questions anchor correctly.".to_string(),
-            input_schema: object(),
+            // Refined by 011, which owns this contract: query in, cited hits out.
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}},
+            }),
             writes_to_disk: false,
         },
         ToolDefinition {
             name: "web-fetch".to_string(),
             description: "Read one page into text. Prefer a more targeted tool when one is present; large pages arrive truncated with the remainder addressable.".to_string(),
-            input_schema: object(),
+            // Refined by 011: url in, markdown out, hops and bytes bounded.
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {"url": {"type": "string"}},
+            }),
             writes_to_disk: false,
         },
         ToolDefinition {

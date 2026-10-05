@@ -8,6 +8,8 @@ license.workspace = true
 clauro-core = { path = "../clauro-core" }
 clauro-fs = { version = "0.1.0", path = "../clauro-fs" }
 clauro-store = { version = "0.1.0", path = "../clauro-store" }
+html2text = "0.17"
+reqwest = { version = "0.13.1", default-features = false, features = ["rustls", "webpki-roots", "blocking"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"

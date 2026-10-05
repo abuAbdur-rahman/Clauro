@@ -236,6 +236,7 @@ table is the evidence that the rules were applied.**
 | `rusqlite` (Rust) | `0.40.x` | `bundled`. |
 | `serde_json` (Rust) | `1.x` | `serde`'s only sane JSON impl; hand-rolled parsing rejected. In tree since 003 (catalogue); store adopts same for block payloads. |
 | `sha2` (Rust) | `0.10.x` | Content hashing for per-project upload dedupe. Boring standard; alternatives (blake3: newer, narrower audit base; hand-rolled: never for hashing). |
+| `html2text` (Rust) | `0.17.x` | HTML→markdown for `web-fetch`. Hand-rolled tag stripping is a bug farm; the maintained line, not the stale 0.12 one. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
