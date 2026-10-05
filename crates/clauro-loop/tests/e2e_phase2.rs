@@ -33,7 +33,21 @@ struct Trees {
 
 fn trees() -> Trees {
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let tmp = std::env::temp_dir().join(format!("clauro-e2e-{}-{n}", std::process::id()));
+    // Fresh by construction: pid + counter + nanos, and never reuse an
+    // existing dir (Windows reuses pids; a crashed run's litter must not
+    // become this run's dirty database).
+    let mut stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = loop {
+        let candidate =
+            std::env::temp_dir().join(format!("clauro-e2e-{}-{n}-{stamp}", std::process::id()));
+        if std::fs::create_dir(&candidate).is_ok() {
+            break candidate;
+        }
+        stamp += 1;
+    };
     let session = tmp.join("sessions").join("s1-title");
     let project = tmp.join("projects").join("p1-proj");
     std::fs::create_dir_all(&session).expect("session");

@@ -27,9 +27,21 @@ struct Trees {
 
 fn trees() -> Trees {
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    // pid + counter: unique across reruns (Drop removes, but crashed runs
-    // linger) and across concurrent processes running the same suite.
-    let tmp = std::env::temp_dir().join(format!("clauro-010-{}-{n}", std::process::id()));
+    // Fresh by construction: pid + counter + nanos, and never reuse an
+    // existing dir — Windows reuses pids, and a crashed run's litter must not
+    // seed a dirty database.
+    let mut stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = loop {
+        let candidate =
+            std::env::temp_dir().join(format!("clauro-010-{}-{n}-{stamp}", std::process::id()));
+        if std::fs::create_dir(&candidate).is_ok() {
+            break candidate;
+        }
+        stamp += 1;
+    };
     let session = tmp.join("sessions").join("s1-title");
     let project = tmp.join("projects").join("p1-proj");
     std::fs::create_dir_all(&session).expect("session dir");
@@ -332,8 +344,18 @@ fn session_dirs_keyed_by_id_survive_retitle() {
 fn lookup_by_id_ignores_the_slug() {
     use clauro_tools::{find_session_dir, session_dir};
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let root = std::env::temp_dir().join(format!("clauro-010dir-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&root).expect("root");
+    let mut stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let root = loop {
+        let candidate =
+            std::env::temp_dir().join(format!("clauro-010dir-{}-{n}-{stamp}", std::process::id()));
+        if std::fs::create_dir(&candidate).is_ok() {
+            break candidate;
+        }
+        stamp += 1;
+    };
     // Created under the first title; the thread is retitled afterwards and
     // nothing on disk moves (D32).
     let created = session_dir(&root, "s9", "My First Title!!");

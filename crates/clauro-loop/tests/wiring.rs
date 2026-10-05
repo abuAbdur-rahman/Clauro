@@ -25,7 +25,19 @@ struct Trees {
 
 fn trees() -> Trees {
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let tmp = std::env::temp_dir().join(format!("clauro-wiring-{}-{n}", std::process::id()));
+    // Fresh by construction (see e2e_phase2): never reuse an existing dir.
+    let mut stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = loop {
+        let candidate =
+            std::env::temp_dir().join(format!("clauro-wiring-{}-{n}-{stamp}", std::process::id()));
+        if std::fs::create_dir(&candidate).is_ok() {
+            break candidate;
+        }
+        stamp += 1;
+    };
     let session = tmp.join("sessions").join("s1-t");
     std::fs::create_dir_all(&session).expect("session");
     let main = Store::open(&tmp.join("test.db")).expect("db");
