@@ -129,8 +129,9 @@ impl ApprovalQueue {
         Ok(vec![call.clone()])
     }
 
-    /// Reject: a typed `error` result for this call. Siblings stay held —
-    /// the loop continues with nothing deleted.
+    /// Reject: a `rejected` result for this call (`CONTRACTS.md` §3 — declined
+    /// commands are rejections, not errors). Siblings stay held — the loop
+    /// continues with nothing deleted.
     pub fn reject(&mut self, id: &str) -> Result<ToolOutcome, ApprovalError> {
         let call = self.find_mut(id)?;
         if call.state != ApprovalState::Pending {
@@ -140,7 +141,7 @@ impl ApprovalQueue {
             });
         }
         call.state = ApprovalState::Rejected;
-        Ok(ToolOutcome::Error {
+        Ok(ToolOutcome::Rejected {
             message: format!("{} declined by the user", call.tool),
         })
     }

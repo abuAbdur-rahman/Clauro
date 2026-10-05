@@ -163,7 +163,13 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "bash".to_string(),
             description: "Run one shell command after the user approves it, every time, with nothing remembered between runs. Off unless the project opts in.".to_string(),
-            input_schema: object(),
+            // Refined by 012, which owns this contract: command only —
+            // neither `stdin` nor `env` reaches the model tool (D29).
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {"command": {"type": "string"}},
+            }),
             writes_to_disk: true,
         },
         ToolDefinition {

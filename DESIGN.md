@@ -152,6 +152,13 @@ tool boundary, and a non-zero exit is `ok` with output attached.
 No trust-on-first-use, no seeded allowlist. The interrupting cost *is* the feature: a persisted
 allowlist would let a prompt-injected model run unattended with nothing in the UI saying so.
 
+**`bash` opt-in notes, exact copy.** On Anthropic: "bash is now available to this conversation."
+On the OpenAI-compatible adapter: "bash needs a new thread here — this one keeps its frozen tool
+set." The UI must never claim a fresh thread is required when it is not. The approval dialog shows
+the exact command and the working directory it runs in, with Approve and Reject side by side; a
+rejection lands in the transcript as a rejected result, and a non-zero exit lands as `ok` with its
+output attached.
+
 ## 5. Motion and density
 
 Transitions are 120–180 ms and only on things that genuinely move: drawer collapse, card expand,

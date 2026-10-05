@@ -9,6 +9,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod runner;
+
 /// Conservative design target, budgeted from the drive root, not from `~`
 /// (D79). `MAX_PATH` is opt-out since Windows 10 1607 and bypassable with the
 /// `\\?\` prefix, so this is a floor for surprise, not a filesystem truth.

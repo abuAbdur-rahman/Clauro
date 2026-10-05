@@ -226,9 +226,10 @@ impl TurnLoop {
         id: &str,
     ) -> Result<(), ApprovalError> {
         let outcome = self.approvals_for(thread_id).reject(id)?;
-        let message = match &outcome {
-            ToolOutcome::Error { message } => message.clone(),
-            _ => String::new(),
+        let (status, message) = match &outcome {
+            ToolOutcome::Rejected { message } => (ToolStatus::Rejected, message.clone()),
+            ToolOutcome::Error { message } => (ToolStatus::Error, message.clone()),
+            _ => (ToolStatus::Error, String::new()),
         };
         store
             .insert_tool_result(NewToolResult {
@@ -236,7 +237,7 @@ impl TurnLoop {
                 thread_id: thread_id.to_string(),
                 tool_call_id: id.to_string(),
                 tool_name: String::new(),
-                status: ToolStatus::Error,
+                status,
                 preview: message,
                 preview_path: None,
                 full_path: None,

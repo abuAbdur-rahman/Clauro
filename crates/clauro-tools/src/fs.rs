@@ -652,3 +652,11 @@ pub fn register_fs(reg: &mut Registry, host: Arc<FsHost>) {
         host.dispatch(input, ctx)
     });
 }
+
+impl FsHost {
+    /// The session root this host confines children and writes to.
+    #[must_use]
+    pub fn session_root(&self) -> &Path {
+        &self.session_root
+    }
+}

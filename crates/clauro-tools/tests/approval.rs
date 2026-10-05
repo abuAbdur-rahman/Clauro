@@ -56,8 +56,8 @@ fn rejected_call_becomes_typed_error_loop_continues() {
     q.mark_pending("h2").expect("p2");
     let outcome = q.reject("h1").expect("reject");
     assert!(
-        matches!(outcome, ToolOutcome::Error { .. }),
-        "reject is a typed error result: {outcome:?}"
+        matches!(outcome, ToolOutcome::Rejected { .. }),
+        "reject is a rejected result (D66): {outcome:?}"
     );
     // h2 untouched, nothing deleted.
     q.approve("h2").expect("a2");

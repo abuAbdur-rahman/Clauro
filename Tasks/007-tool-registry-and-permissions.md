@@ -105,9 +105,10 @@ equivalent ourselves — one code path, one test surface.
       covers all four including the panic. Note: no schema validation at the boundary — input arrives
       as raw `serde_json::Value` and each handler validates itself, which is a deviation from the
       Zod-at-every-boundary rule in `AGENTS.md` §5 worth a decision
-- [x] Approval walks typed states with resume on approve and typed `error` on reject (**D109**) —
+- [x] Approval walks typed states with resume on approve and typed outcome on reject (**D109**) —
       states at `src/approval.rs:16-21`, transitions at `:66-124`, resume/reject at `:127-149`;
-      `tests/approval.rs:12,29,50,69` all pass. **Wired since the loop change:** ask-effects hold at
+      `tests/approval.rs:12,29,50,69` all pass (declines surface as `rejected` per `CONTRACTS.md` §3,
+      which beats D109's loose "error" wording). **Wired since the loop change:** ask-effects hold at
       `crates/clauro-loop/src/run.rs` dispatch, `approve_call` resumes on the next turn
       (`crates/clauro-loop/tests/wiring.rs:ask_holds_then_dispatches_after_approve`).
 - [x] No runtime tool loading; the set is fixed at eight (**D108**) — `src/registry.rs:15-24` (`EIGH`),
