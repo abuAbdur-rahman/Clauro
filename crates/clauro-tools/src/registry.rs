@@ -106,7 +106,17 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "artifact".to_string(),
             description: "Render a self-contained document, page, or graphic in the side drawer from a title, media type, and source. Runs with no network and no access to the app.".to_string(),
-            input_schema: object(),
+            // Refined by 013, which owns this contract: our schema, HTML/SVG only.
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["title", "mediaType", "source"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "mediaType": {"enum": ["text/html", "image/svg+xml"]},
+                    "source": {"type": "string"},
+                    "artifactId": {"type": "string"},
+                },
+            }),
             writes_to_disk: true,
         },
         ToolDefinition {

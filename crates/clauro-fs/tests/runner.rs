@@ -141,9 +141,10 @@ fn killing_kills_the_group_not_just_the_shell() {
     #[cfg(not(windows))]
     let script = format!("sleep 60 & echo $! > '{}'; wait", pidfile.display());
     let mut child = spawn_command(&script, &dir, &[], &[]).expect("spawn");
-    // Wait for the grandchild pid to land (bounded: 100 * 50ms).
+    // Wait for the grandchild pid to land. PowerShell first-use module init
+    // is slow (seconds, worse under parallel builds): bound generously.
     let mut grandchild: Option<String> = None;
-    for _ in 0..100 {
+    for _ in 0..300 {
         if let Ok(text) = std::fs::read_to_string(&pidfile) {
             let trimmed = text.trim().to_string();
             if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
@@ -151,7 +152,7 @@ fn killing_kills_the_group_not_just_the_shell() {
                 break;
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let grandchild = grandchild.expect("grandchild pid recorded");
     kill_group(child.pid()).expect("group kill");

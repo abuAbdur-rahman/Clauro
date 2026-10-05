@@ -92,8 +92,11 @@ Three states, and they are the whole design:
    as a hang
 3. **live** — the rendered page
 
-Tabs: **Preview** (the sandboxed render) and **Code** (the source, syntax-highlighted, read-only).
-Plus copy and download.
+Tabs: none in v1 — one live render, no history, no pinning, no Preview/Code
+tabs and no download. (`SPEC.md` §5 defers all of those to v2: the render
+must be trustworthy before a user can pin history. An earlier draft of this
+section promised tabs, copy and download; that contradicted the spec and was
+corrected.)
 
 The render is **completely offline.** No CDN, no network, `connect-src 'none'`. Artifacts may only
 use Tailwind's *predefined* utility classes — which is precisely what makes a no-build-step Tailwind

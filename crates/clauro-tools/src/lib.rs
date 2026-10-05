@@ -4,6 +4,7 @@
 //! `serde_json`. Never `tauri` — enforced mechanically in `tests/no_tauri_dep.rs`.
 
 pub mod approval;
+pub mod artifact;
 pub mod bash;
 pub mod bounding;
 pub mod fs;
@@ -16,6 +17,9 @@ pub mod secret;
 pub mod web;
 
 pub use approval::{ApprovalError, ApprovalQueue, ApprovalState, HeldCall};
+pub use artifact::{
+    create_artifact, register_artifact, ArtifactError, ArtifactMeta, ARTIFACT_MAX_SOURCE_BYTES,
+};
 pub use bash::{bash_ask_rule, granted_with_bash, register_bash};
 pub use bounding::{bound_output, BoundedOutput, BoundingError, PREVIEW_LIMIT_CHARS};
 pub use fs::{

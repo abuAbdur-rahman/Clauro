@@ -659,4 +659,10 @@ impl FsHost {
     pub fn session_root(&self) -> &Path {
         &self.session_root
     }
+
+    /// The store handle, for handlers that persist rows.
+    #[must_use]
+    pub fn store_handle(&self) -> &Arc<Mutex<Store>> {
+        &self.store
+    }
 }
