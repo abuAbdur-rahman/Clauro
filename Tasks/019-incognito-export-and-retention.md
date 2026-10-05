@@ -1,11 +1,13 @@
 # Task 019 — Incognito, export, and retention
 
-**Phase** 5 · **Depends** `004` · **Decisions** D19, D37, D38, D57, D67 · **Contracts** §1
+**Phase** 5 · **Depends** `004` · **Decisions** D19, D37, D38, D57, D67, D99 · **Contracts** §1
 
 ## Failing tests first
 
 - An incognito thread **never** appears in history, search, or memory
 - Export of an incognito thread is impossible from the UI
+- Fork of an incognito thread is impossible from the UI (**D99**)
+- Fork copies the thread's prefix rows into a new thread under new ids; the source rows are byte-identical after (**D99**)
 - Thread export → HTML and Markdown, both readable
 - Memory export → JSON, round-trips
 - **Thread export strips thinking blocks** — they are account-bound on current models and a
@@ -41,6 +43,8 @@ not depend on how the binary was compiled.
 
 - [ ] Incognito excluded from history, search, memory
 - [ ] Incognito unexportable from the UI
+- [ ] Incognito unforkable from the UI (**D99**)
+- [ ] Fork carries the prefix into a new thread; source history untouched (**D99**)
 - [ ] Thread export → HTML and Markdown
 - [ ] Memory export → JSON, round-trips
 - [ ] **Thinking blocks stripped on export**

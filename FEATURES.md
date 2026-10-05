@@ -20,6 +20,9 @@ re-inventing a wheel, and we are also not copying one.
 **LobeHub is NOT open source** — its licence requires a commercial agreement for any derivative
 work. It was read for observation only and nothing was taken from it (D59, D60).
 **Anthropic and Google material is proprietary** — behaviour may be mirrored, wording may not.
+**Open WebUI is inspiration only** — custom licence with a branding clause, incompatible with our MIT
+lineage. Behaviour may be mirrored in our own words and implementation; no code or wording crosses
+over (D103).
 
 ---
 
@@ -79,6 +82,13 @@ key needed to make that decision — which is why no open question requires one.
 | Structured semantic index | Only LibreChat does this, with no second implementation to validate the schema against. **v2 candidate.** |
 | `attach` (copy a directory in, sync back) | Designed, not built. First thing added if `fs` proves too confined (D44). |
 | Artifact versions, Preview/Code tabs, download | v2. The render core ships in v1; the polish waits. |
+| Hosted-service traits (accounts, share links, channels, server automations, cross-user analytics) | Never. Not a hosted service (D104). |
+| Parallel multi-model panes, sibling-branch history | Unplanned. Each needs its own D-number (D104). |
+| Shared calendar | Never — sync and multi-user state (D107). A pure-local calendar stays unplanned. |
+| Image-gen-as-tool | v2/v3 media (D107). |
+| Standalone shared notes | Never — Projects plus memory Topics cover the local need (D107). |
+| Eval-arena and ELO leaderboards | Never — leaderboards need crowds (D107). |
+| Video-call | Never — same row as voice. |
 | Voice, connectors/MCP, Chrome, Word, Cowork | Server-side, or a different product. |
 
 ---

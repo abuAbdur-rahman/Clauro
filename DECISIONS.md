@@ -1091,6 +1091,107 @@ while `CONTRACTS.md` §5's four rules are Anthropic event *semantics* we own eit
 a fixture — and six stars with one maintainer is a supply-chain surface on the most load-bearing
 crate in the project. Revisit when it reaches a real release cadence.
 
+**D98 — The composer queues follow-ups sent mid-stream; stop offers drain-or-discard.**
+
+Decided 2026-10-04. Observed behaviour (inspiration only, D103): sending while a turn is
+running appends instead of blocking, and stopping aborts the fetch while asking whether the unsent
+queue drains or is discarded. Fits serial dispatch (D85): the queue is a per-thread FIFO in the
+host, rendered as removable chips, drained in order when the loop goes idle. No parallel calls, no
+new block kinds. Owned by `Tasks/023` (loop) with the keep-work half already in `Tasks/006` (D68).
+
+**D99 — Regenerate and edit-resend append new rows; fork copies a prefix into a new thread.**
+
+Decided 2026-10-04. Append-only (D19) already permits a correction as a new row at a higher `seq`;
+regenerate-last and edit-resend are that rule applied to the composer — no branching tree, no
+sibling navigation. Fork-from-here copies the thread's prefix rows into a new thread under new ids;
+the source history is untouched, which keeps the prefix guarantee and the generation counter (D63)
+intact. Incognito threads cannot be forked from the UI, for the same reason they cannot be exported
+(D37): a fork is a history record. Owned by `Tasks/006` (regenerate) and `Tasks/019` (fork).
+
+**D100 — Transcript HTML is purified before render; streaming markdown parses at most once per frame.**
+
+Decided 2026-10-04. Clauro purifies SVG inside the artifact frame (A6) but left the transcript-HTML
+path implicit — observed gap. Behaviour, in our own words: any model or tool HTML reaching the
+transcript DOM passes the purifier first; long generations reparse at most once per animation frame;
+long code blocks collapse with a hidden-line count. Zero new security surface beyond the existing
+purifier. Owned by `Tasks/006`.
+
+**D101 — A second `question` call in one assistant turn is refused as a typed `tool_result`.**
+
+Decided 2026-10-04. C8 caps one question per turn but left the mixed-call hole: a turn calling
+`question` alongside another tool. The host enforces sole-call — `question` must be the only call in
+the turn — refused silently like the other question refusals (D43), so the model cannot probe the
+guard. Five lines of validation, no new surface. Owned by `Tasks/009`.
+
+**D102 — In-frame navigation is contained: same-origin stays in the frame, external targets blocked.**
+
+Decided 2026-10-04. MISSION already names self-navigation as a probed-not-closed hole (D90).
+Behaviour: link clicks inside the artifact frame never escape the frame; same-origin targets are
+contained, external targets are dropped with a logged note. Testable alongside the `Tasks/001` and
+`Tasks/014` probes; extends A4 without weakening D2. Owned by `Tasks/014`.
+
+**D103 — Open WebUI is observation-only inspiration; nothing is ported from it.**
+
+Decided 2026-10-04. Open WebUI ships under a custom licence with a branding-preservation
+requirement, incompatible with Clauro's MIT lineage (SPEC §1). Same rule as LobeHub (D59, D60) and
+the same wording bar as first-party material (D39): behaviour may be mirrored with our own
+implementation in our own words — no code, no prompt text, no component or class names cross over.
+The Rust-vs-web stack makes line-porting moot; the rule stands regardless of stack.
+
+**D104 — Deferred shapes are recorded here, not built; each needs its own task to promote.**
+
+Decided 2026-10-04. Parked with reasons: artifact version stepper + download (v2 — the render must
+be trustworthy before history can be pinned); web allow/block lists + fetch caps + truncation
+disclosure (v2 tightening of `Tasks/011`); Topics path-group browsing + dedup-on-add + batch ops +
+injection budgets (after `Tasks/008` lands); bounded file grep over attachments (v2 `fs`,
+`Tasks/010`); system-theme boot without flash (with `Tasks/020`); camera-frame-as-attachment,
+cached TTS, single-endpoint STT, image-gen-as-tool (v2/v3 media); parallel multi-model panes +
+sibling-branch history (unplanned — needs its own D-number); standalone notes, channels, server
+automations, RBAC/SSO, cross-user analytics (never — MISSION is not a hosted service).
+
+**D105 — The queue drains as in-order turns, never merged; chips remove, edit, or send-now.**
+
+Decided 2026-10-04. D98 left drain shape open; the observed merge-into-one alternative changes
+meaning (N intents become 1 turn), so this pins it: each queued item dispatches as its own turn, in
+order, when the loop goes idle. Queue chips support three ops — remove, edit, send-now (send-now
+stops generation without draining, then sends that item). No new block kinds. Owned by `Tasks/023`.
+
+**D106 — A truncated turn resumes via continue-append, not via regenerate.**
+
+Decided 2026-10-04. Observed affordance with an append-only-compatible shape: `continue` flips a
+finished-but-truncated assistant message back to unfinished and resumes it, appending to the same
+turn. Regenerate stays for redoing a turn; continue is for finishing one. No rewrite, no sibling.
+Owned by `Tasks/006`.
+
+**D107 — Scope rows made explicit: calendar, image-gen, standalone notes, eval-arena, video-call.**
+
+Decided 2026-10-04. D104 parked these inside umbrella rows; the audit found each deniable without
+its own line, so each gets one in SPEC §5: shared calendar (never — sync/multi-user state; a
+pure-local calendar stays unplanned), image-gen-as-tool (v2/v3 media), standalone shared notes
+(never — Projects plus memory Topics cover the local need; sharing drags sync back in), eval-arena
+and ELO (never — leaderboards need crowds; the local usage footer is the allowed complement),
+video-call (never — appended to the voice row). No implementation, only rows.
+
+**D108 — Sandbox and CSP are host-fixed; no runtime code-load or dependency install exists.**
+
+Decided 2026-10-04. The observed failure mode is a user toggle re-adding a sandbox token and an
+empty-default CSP string: both void the opaque-origin claim, so no user-facing control may weaken
+sandbox tokens or CSP — A1/A3 state this outright. Separately, the observed plugin class (authored
+source executed in a fresh namespace, frontmatter shell-installing packages) has no Clauro analog:
+the tool set is fixed at eight, nothing loads code at runtime, nothing installs dependencies.
+Owned by `Tasks/013`/`014` (fixed flags) and `Tasks/007` (fixed registry).
+
+**D109 — Approval has typed states; served files carry disposition; one writer; ledger over fields.**
+
+Decided 2026-10-04. Four hardening lines from the audit. (1) Ask-mode approval is a typed state
+machine — queued, pending, approved, rejected — with resume/drain on approve and a typed `error`
+result on reject; tests assert the states, not just that approval exists. Owned by `Tasks/007`.
+(2) Served tool-output files use attachment disposition with nosniff for non-media types — an XSS
+rule A4/A6/T8 did not state. Owned by `Tasks/010`. (3) Single writer assumed: last-writer-wins
+applies to the four mutable tables only; history rows are never merged. (4) Checkpoint state lives
+in ledger rows, not message fields — a field is silently overwritable by an upsert path, a row is
+not. Both recorded in `CONTRACTS.md` §1.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
@@ -1172,6 +1273,7 @@ than a feature that is honestly absent.
 | Title-as-path | Unstable and unsafe. D32 |
 | A separate Gems feature | Duplicates Projects. D35 |
 | Agent half of a coding harness | Enormous surface, wrong product. |
+| Hosted-service traits — accounts, share links, channels, server automations, cross-user analytics | Not a hosted service. MISSION §"what it is not"; D103, D104 |
 | Voice, connectors/MCP, Chrome, Word add-in, Cowork | Server-side or a different product. |
 
 ## 8. Later, and why
@@ -1261,6 +1363,7 @@ document), and **guided learning** (the model quizzes you on what it just taught
 | Gemini app | proprietary | Gems, Canvas, staged research progress |
 | LibreChat (`LibreChat-AI/LibreChat@main`, MIT) | MIT | Summary accounting channel + pre-invoke marker (D57), boundary-marked checkpoints, incremental fold summariser, model-tokenomics resolution chain |
 | LobeHub (`lobehub/lobehub@canary`) | **LobeHub Community License — NOT open source (D59)** | Observation only: structural boundary detection as an idea (D61). No code reused. |
+| Open WebUI (`open-webui/open-webui`) | **Custom licence with branding clause — inspiration only (D103)** | Observed behaviour, mirrored in our own words and implementation. No code reused. |
 
 Full research with per-claim confidence ratings: `.agents/research/`. Read `DECISIONS.md` there for
 the 22 STEAL / 20 SKIP / 20 ADAPT derivation behind these decisions.

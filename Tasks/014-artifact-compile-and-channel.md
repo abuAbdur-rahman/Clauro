@@ -1,6 +1,6 @@
 # Task 014 — Artifact compile, CSP, and the message channel
 
-**Phase** 3 · **Depends** `013` · **Decisions** D4, D5, D6, D12, D78
+**Phase** 3 · **Depends** `013` · **Decisions** D4, D5, D6, D12, D78, D102
 **Contracts** §3
 
 ## Failing tests first
@@ -11,6 +11,8 @@
 - SVG containing `<script>` is neutralised
 - A message not on the allowlist is ignored
 - A message whose `event.source` is not the artifact frame is ignored
+- A same-origin link click inside the frame does not navigate the host webview (**D102**)
+- An external link target from inside the frame is blocked and logged (**D102**)
 - An artifact referencing `localStorage` renders blank **and the model was told it would**
 
 ## Do
@@ -55,6 +57,7 @@ disable only the named directives, never the boolean form (`D78`), which switche
 - [ ] SVG `<script>` neutralised
 - [ ] Allowlist enforced both directions
 - [ ] `event.source` validated on every message
+- [ ] Same-origin in-frame clicks contained; external targets blocked and logged (**D102**)
 - [ ] CSP built in Rust; `connect-src 'none'` verified
 - [ ] Tailwind-only constraint in the system prompt
 - [ ] Binary size re-measured against the `002` baseline

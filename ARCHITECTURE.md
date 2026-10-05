@@ -165,7 +165,7 @@ directly. Three consequences worth stating plainly:
 
 ## 4. Storage and the surface
 
-Eleven tables. The rule that matters: **history is append-only, and a compaction is a ledger entry,
+Twelve tables. The rule that matters: **history is append-only, and a compaction is a ledger entry,
 not a deletion** (**D84**).
 
 ```

@@ -5,6 +5,18 @@
 **Both halves are runnable on this host.** Windows is the primary platform (**D88**): the WebView2 half runs against the installed WebView2 runtime 153.0.4234.48, compiled and linked by the Windows-side MSVC toolchain. **The WebView2 verdict is the one that gates a release; the WebKitGTK verdict is best-effort** (**D89**).
 **Decisions** D2, D6, D45, D77, **D88, D89** · **Contracts** none (deliberately — this task has no failing test because it writes no code; it produces a written verdict)
 
+**Status: Windows half VERIFIED 2026-10-04. This task is NOT complete — the WebKitGTK half was never
+run.** Verdict committed at `docs/spikes/sandbox-verdict.md`; Windows cells are observed values from
+the probe app, not predictions. The Linux column reads "not run" throughout, per `AGENTS.md` §8a,
+and stays empty until someone genuinely runs it — it is never filled in by inference.
+
+Only **one** probe app was ever written (`spikes/sandbox-probe`, WebView2). The WebKitGTK app was
+never created, which is why the column is empty. Three findings need a follow-up run under `014`:
+`event.origin` and `event.source === contentWindow` were never captured even on Windows
+(`spikes/sandbox-probe/src/App.tsx:352,442,453` hardcodes `null`), and the `fetch` row was probed
+cross-origin rather than same-origin as this table specifies. Both are harness gaps, not engine
+findings.
+
 ## Why first
 
 No document anywhere states whether WebKitGTK holds an opaque origin. It cannot be researched —
@@ -98,13 +110,28 @@ pinned version in the verdict file.
 
 ## Acceptance criteria
 
-- [ ] Both apps build and run on their target engines
-- [ ] Every probe in the table above runs on both engines, results recorded verbatim
-- [ ] The `privileged_probe` sentinel file does **not** exist after all four IPC attempts
-- [ ] The exact pinned Tauri version (≥ the CVE-2024-35222 fix) is recorded
-- [ ] Verdict file committed
-- [ ] If "Windows only": `D45` implementation is already designed — confirm the notice copy
-- [ ] The throwaway apps are deleted, or clearly marked and excluded from the workspace
+- [ ] Both apps build and run on their target engines — **PARTIAL.** WebView2 app built and ran
+      (`docs/spikes/sandbox-verdict.md:20`); **no WebKitGTK app was ever created**
+- [ ] Every probe in the table above runs on both engines, results recorded verbatim — **PARTIAL.**
+      Windows recorded verbatim (`sandbox-verdict.md:38-45,52-57,81-86`); `event.origin` and
+      `event.source` never captured (`sandbox-verdict.md:64-65,72-73`); Linux column empty
+- [x] The `privileged_probe` sentinel file does **not** exist after all four IPC attempts —
+      `sandbox-verdict.md:87` (`false`, checked in-app and from the shell after exit); positive
+      control at `spikes/sandbox-probe/src-tauri/src/lib.rs:71`. Caveat: harness is gitignored, so
+      this is not re-runnable from a clean clone
+- [x] The exact pinned Tauri version (≥ the CVE-2024-35222 fix) is recorded — `=2.12.1` pinned
+      exactly, not `^2` (`sandbox-verdict.md:18`; `src-tauri/Cargo.toml:18,22`). Minor gap: the
+      verdict does not state *which* version carries the CVE fix, so "≥ the fix" is asserted
+- [x] Verdict file committed — `docs/spikes/sandbox-verdict.md`, tracked since `adc581b`
+- [ ] If "Windows only": `D45` implementation is already designed — confirm the notice copy —
+      **PARTIAL.** Behaviour is designed (`DECISIONS.md:393-396`, `DESIGN.md:131`, `SPEC.md:30-31`)
+      but **the notice copy does not exist** — the only `notice` strings in `src/` are
+      model-catalogue notices (`src/ModelPicker.tsx:58,75-81`). Also the conditional is not yet
+      triggered: Linux was never disproved, only never run
+- [x] The throwaway apps are deleted, or clearly marked and excluded from the workspace —
+      `.gitignore:22` and excluded from `Cargo.toml:3-12` members, proven by `cargo test --workspace`
+      passing without touching it. Caveat: marked only in root `.gitignore`;
+      `spikes/sandbox-probe/README.md:1` is still untouched Tauri boilerplate
 
 ## What this task does NOT do
 

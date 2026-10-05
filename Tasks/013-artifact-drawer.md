@@ -1,6 +1,6 @@
 # Task 013 — Artifact drawer
 
-**Phase** 3 · **Depends** `001` verdict · **Decisions** D1, D2, D3, D45, D63, D77
+**Phase** 3 · **Depends** `001` verdict · **Decisions** D1, D2, D3, D45, D63, D77, D108
 **Contracts** §1, §2
 
 **Gated on `Task/001`.** If WebKitGTK does not hold an opaque origin, artifacts ship Windows-only and
@@ -55,6 +55,7 @@ nothing to do with artifacts.
 - [ ] No reachable path to Tauri internals
 - [ ] `parent.document` refused; `event.origin` is `"null"`
 - [ ] Outbound request from inside the frame fails
+- [ ] No user-facing control weakens sandbox tokens or CSP — flags are host-fixed (**D108**)
 - [ ] Windows and Linux both render — or Linux disables with a notice
 - [ ] Artifact tool schema is ours, documented
 - [ ] `DESIGN.md` §3 matches the shipped behaviour

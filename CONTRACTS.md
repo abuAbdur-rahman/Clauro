@@ -1,6 +1,6 @@
 # Clauro — CONTRACTS.md
 
-**The shapes every test hangs off.** `DECISIONS.md` (D1–D97) says *why*. This file says *what you can
+**The shapes every test hangs off.** `DECISIONS.md` (D1–D109) says *why*. This file says *what you can
 assert against*. Nothing here is a new decision — every type traces to one.
 
 **Rule:** if a type in this file cannot cite a D-number, it is either missing a decision or it is a
@@ -13,6 +13,10 @@ new decision wearing a type's clothes. Both are bugs.
 Append-only by default (**D19**). No table has an `UPDATE` path except the four marked mutable. That
 is not a style preference: **D19's prefix rule only holds if history is never rewritten**, and
 **D63's generation counter only means something if the surface is monotonic.**
+
+Single writer assumed (**D109**): last-writer-wins applies to the four mutable tables only —
+history rows are never merged. Checkpoint state lives in ledger rows, not message fields: a field
+is silently overwritable by an upsert path, a row is not.
 
 ```sql
 -- ── identity ───────────────────────────────────────────────────────────────
@@ -219,9 +223,12 @@ CREATE INDEX idx_compaction_thread ON compaction_event(thread_id, generation DES
 --   project.bash_enabled                  -- per-project opt-in (D28, D67)
 --   project.archived_at                   -- soft delete
 --   thread.title                          -- title is never a path (D32)
+--   thread.memory_off                     -- per-thread toggle, locked after first send (D9)
 --   memory.body, memory.revision          -- str_replace bumps revision (D7)
+--   memory.path                           -- rename only (D7: the six commands)
 --   memory.sensitive, memory.updated_at   -- the sensitive-topics opt-in (D8)
 --   memory_setting.*                     -- pause / include_sensitive (D8)
+--   account_setting.*                    -- account-scope pause / reset (D8)
 --   artifact.compiled_path                -- set once after the Worker transform
 --
 -- Each has exactly one documented write path. Anything else is a bug.
@@ -317,7 +324,7 @@ is truncated at write time and nothing is lost.
 | `fs` | ✅ | rooted at the session workspace (D31, **D44 — v1 has no chosen-directory root**, so the project directory is reachable only *through* the session's own path). Anything resolving outside the workspace is refused with a typed error. **`edit` requires a prior `read` of that path this session — enforced by host state, not by a prompt** (D33). |
 | `compact` | ❌ | **host-driven only, never in the request schema** (D14). Exposed as `/compact`. |
 | `bash` | ✅ | off by default (D28), per-project opt-in opens a fresh thread (D67), **every** invocation approved, nothing persisted (D66). Host-owned runner: process-group kill, credential scrub, fd0 `/dev/null`, no `stdin`/`env` on the model-facing tool, env order `scrub → overrides → env → managed`. |
-| `question` | ❌ | one call per assistant turn, always offers skip (D42), secret-shaped prompts refused (D43), renders **inline** (D41 — both MIT references do the opposite; this is deliberate). |
+| `question` | ❌ | one call per assistant turn, always offers skip (D42), secret-shaped prompts refused (D43), renders **inline** (D41 — both MIT references do the opposite; this is deliberate). A second call in the same turn is refused as a typed `tool_result` (D101 sole-call guard). |
 
 ### Permission resolution
 
@@ -354,6 +361,22 @@ export function resolve(tool: string, rules: readonly PermissionRule[]): 'deny'|
 //   resolve('fs',   [{deny:'bash'}])                      === 'allow'  // no match -> default
 export const DEFAULT_EFFECT: 'allow' = 'allow';
 ```
+
+### Ask-mode approval states
+
+Ask-mode approval is a typed state machine, not a boolean (**D109**). Tests assert the states,
+not just that approval exists:
+
+```ts
+export type ApprovalState =
+  | { state: 'queued' }                    // held call waiting for a verdict
+  | { state: 'pending' }                   // shown to the user, no verdict yet
+  | { state: 'approved' }                  // resumes the loop; queued siblings drain in order
+  | { state: 'rejected'; message: string }; // becomes a typed `error` tool_result, loop continues
+```
+
+A rejected approval never throws and never deletes the held call's row — the rejection is an
+ordinary `error` result in the append-only log.
 
 ---
 
@@ -547,6 +570,8 @@ export interface UnknownModel {
 
 **Transcript**
 - [ ] A cancelled turn leaves every dispatched call closed (D65) and keeps completed work (D68).
+- [ ] Follow-ups sent mid-stream queue visibly; stop offers drain-or-discard (D98). Regenerate and edit-resend append new rows, never rewrite (D99).
+- [ ] Transcript HTML is purified before render; streaming markdown reparses at most once per frame (D100).
 - [ ] Reasoning renders as one collapsible inline region, one shape, both providers (D54).
 - [ ] Incognito: a thread flagged incognito never appears in history, search, or memory (D37).
 
@@ -557,7 +582,7 @@ export interface UnknownModel {
 - [ ] `bash` is off by default; enabling opens a fresh thread; every command is individually approved
       and nothing is persisted (D28, D66, D67).
 - [ ] `question` is capped at one per assistant turn, always offers skip, and refuses secret-shaped
-      prompts (D42, D43).
+      prompts (D42, D43). A second call in the same turn is refused as a typed `tool_result` (D101).
 
 **Artifacts**
 - [ ] The iframe's `contentWindow` has **no** reachable path to Tauri internals (D2).
