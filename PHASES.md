@@ -167,11 +167,11 @@ loop), Phase 4 (compaction needs tools to compact around).
 
 **Purpose:** the two things with real blast radius. Both are gated for a reason.
 
-| Task | Contract | D-refs | Gate |
-|---|---|---|---|
-| `Tasks/012-bash-tool.md` | §3 | D28, D29, D30, D46, D66, D67 | D19, D28, D29, D30, D46, D55, D66, D67 |
-| `Tasks/013-artifact-drawer.md` | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77 |
-| `Tasks/014-artifact-compile-and-channel.md` | §3 | D4, D5, D6, D12 | D2, D4, D5, D6, D12, D78 |
+| Task | State | Contract | D-refs | Gate |
+|---|---|---|---|---|
+| `Tasks/012-bash-tool.md` | ✅ backend 11+5 | §3 | D28, D29, D30, D46, D66, D67 | D19, D28, D29, D30, D46, D55, D66, D67 |
+| `Tasks/013-artifact-drawer.md` | ◐ tool + drawer states green; webview proofs need 021 | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77 |
+| `Tasks/014-artifact-compile-and-channel.md` | ⬜ not started | §3 | D4, D5, D6, D12 | D2, D4, D5, D6, D12, D78 |
 
 **Gate:** artifacts render live and the iframe has no reachable path to app internals; a denied
 network request from inside an artifact fails; `bash` runs only after approval.

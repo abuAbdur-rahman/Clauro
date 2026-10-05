@@ -135,75 +135,111 @@ fn output_truncates_with_spill_kept() {
 #[test]
 fn killing_kills_the_group_not_just_the_shell() {
     let dir = tmp();
+    // Image-name detection is only sound if the host has no stray of that
+    // image. Asserted before the spawn, with the reason named.
+    #[cfg(windows)]
+    assert_eq!(
+        tasklist_count("ping.exe"),
+        0,
+        "a ping.exe already running on this host would make this test's \
+         image-name detection unsound; re-run once none is running"
+    );
+    #[cfg(not(windows))]
     let pidfile = dir.join("grandchild.pid");
     #[cfg(windows)]
-    let script = windows_launcher(&pidfile);
+    let script = windows_launcher();
     #[cfg(not(windows))]
     let script = format!("sleep 60 & echo $! > '{}'; wait", pidfile.display());
     let mut child = spawn_command(&script, &dir, &[], &[]).expect("spawn");
-    // Wait for the grandchild pid to land. PowerShell first-use module init
-    // is slow (seconds, worse under parallel builds): bound generously.
-    let mut grandchild: Option<String> = None;
-    for _ in 0..300 {
-        if let Ok(text) = std::fs::read_to_string(&pidfile) {
-            let trimmed = text.trim().to_string();
-            if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
-                grandchild = Some(trimmed);
-                break;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    // Descendants must be up before the kill, or the assertion is vacuous.
+    #[cfg(windows)]
+    {
+        assert!(
+            wait_for(30, group_alive),
+            "grandchildren must be running before the group kill"
+        );
+        kill_group(child.pid()).expect("group kill");
+        let _ = child.wait();
+        assert!(
+            wait_for(15, || !group_alive()),
+            "grandchildren must die with the group, not outlive it"
+        );
     }
-    let grandchild = grandchild.expect("grandchild pid recorded");
-    kill_group(child.pid()).expect("group kill");
-    let _ = child.wait();
-    assert!(
-        !grandchild_alive(&grandchild),
-        "grandchild must die with the group"
-    );
+    #[cfg(not(windows))]
+    {
+        let grandchild = wait_for_pid(&pidfile);
+        assert!(
+            grandchild_alive(&grandchild),
+            "grandchild must be running before the group kill"
+        );
+        kill_group(child.pid()).expect("group kill");
+        let _ = child.wait();
+        assert!(
+            wait_for(15, || !grandchild_alive(&grandchild)),
+            "grandchild must die with the group, not outlive it"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(windows)]
-fn windows_launcher(pidfile: &std::path::Path) -> String {
-    // Base64 UTF-16LE for -EncodedCommand: no quote character survives to
-    // cmd, so nothing can mangle the nesting. The script starts a grandchild
-    // sleeper, records its pid, then sleeps itself to keep the tree alive.
-    // NOTE: Out-File without -Encoding writes UTF-16+BOM, which never parses
-    // as a pid. Ascii keeps the pidfile machine-readable.
-    let ps = format!(
-        "$p=Start-Process powershell -ArgumentList '-Command','Start-Sleep 60' -PassThru;$p.Id|Out-File -Encoding ascii '{}';Start-Sleep 60",
-        pidfile.display()
-    );
-    let mut utf16 = Vec::new();
-    for c in ps.encode_utf16() {
-        utf16.extend_from_slice(&c.to_le_bytes());
+/// Poll `check` until it holds, or the budget in tenths of a second expires.
+fn wait_for(tenths: u32, mut check: impl FnMut() -> bool) -> bool {
+    for _ in 0..tenths {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut b64 = String::new();
-    for chunk in utf16.chunks(3) {
-        let mut n: u32 = 0;
-        for (i, &b) in chunk.iter().enumerate() {
-            n |= (b as u32) << (8 * (2 - i));
-        }
-        let pad = 3 - chunk.len();
-        for i in 0..4 - pad {
-            b64.push(ALPHABET[((n >> (6 * (3 - i))) & 63) as usize] as char);
-        }
-        for _ in 0..pad {
-            b64.push('=');
-        }
-    }
-    format!("powershell -NoProfile -EncodedCommand {b64}")
+    check()
 }
 
 #[cfg(windows)]
-fn grandchild_alive(pid: &str) -> bool {
+fn windows_launcher() -> String {
+    // Two generations below the tracked shell, and no PowerShell anywhere.
+    // An earlier draft recorded the grandchild's pid through
+    // `Start-Process ... | Out-File`, which made the test depend on
+    // PowerShell's first-use module initialisation — seconds of it under a
+    // parallel `cargo test --workspace`, and once past a 30s budget the test
+    // failed on the host's PowerShell, not on the group kill.
+    //
+    // `start /B` runs the grandchild without a window and without waiting, so
+    // the launcher stays alive as its parent while the grandchildren live.
+    // They are identified by image name instead of by pid, which is sound
+    // because `tasklist_count` is asserted to be zero before the spawn: any
+    // ping.exe seen afterwards belongs to this tree.
+    "start /B ping -n 61 127.0.0.1 >NUL & ping -n 61 127.0.0.1 >NUL".to_string()
+}
+
+#[cfg(windows)]
+fn group_alive() -> bool {
+    tasklist_count("ping.exe") > 0
+}
+
+#[cfg(windows)]
+fn tasklist_count(image: &str) -> usize {
     std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(pid))
-        .unwrap_or(true)
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.to_ascii_lowercase().contains(&image.to_ascii_lowercase()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(not(windows))]
+fn wait_for_pid(pidfile: &std::path::Path) -> String {
+    wait_for(300, || {
+        std::fs::read_to_string(pidfile)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
+            .is_some()
+    })
+    .then(|| std::fs::read_to_string(pidfile).expect("pid recorded"))
+    .expect("grandchild pid recorded")
 }
 
 #[cfg(not(windows))]

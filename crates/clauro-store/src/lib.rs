@@ -135,7 +135,7 @@ CREATE UNIQUE INDEX idx_attachment_global_hash ON attachment(content_hash) WHERE
 CREATE UNIQUE INDEX idx_attachment_project_hash ON attachment(project_id, content_hash) WHERE project_id IS NOT NULL;
 
 CREATE TABLE artifact (
-  id            TEXT PRIMARY KEY,
+  id            TEXT NOT NULL,
   thread_id     TEXT NOT NULL REFERENCES thread(id),
   version       INTEGER NOT NULL DEFAULT 1,
   title         TEXT NOT NULL,
@@ -143,7 +143,7 @@ CREATE TABLE artifact (
   source_path   TEXT NOT NULL,
   compiled_path TEXT,
   created_at    INTEGER NOT NULL,
-  UNIQUE (thread_id, id, version)
+  PRIMARY KEY (thread_id, id, version)
 );
 
 CREATE TABLE compaction_event (
@@ -1054,6 +1054,28 @@ impl Store {
                 )
                 .ok(),
         }
+    }
+
+    /// Highest committed version of one artifact, if any. Refresh bumps,
+    /// never rewrites: one live artifact per `(thread, artifact_id)`.
+    pub fn max_artifact_version(&self, thread_id: &str, artifact_id: &str) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT MAX(version) FROM artifact WHERE thread_id = ?1 AND id = ?2",
+                rusqlite::params![thread_id, artifact_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Insert an artifact row at an explicit version (refresh path).
+    pub fn insert_artifact_version(&self, a: &NewArtifact, version: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO artifact (id, thread_id, version, title, media_type, source_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![a.id, a.thread_id, version, a.title, a.media_type, a.source_path, a.created_at],
+        )?;
+        Ok(())
     }
 
     /// `artifact.compiled_path` — set once after the Worker transform.

@@ -237,6 +237,8 @@ table is the evidence that the rules were applied.**
 | `serde_json` (Rust) | `1.x` | `serde`'s only sane JSON impl; hand-rolled parsing rejected. In tree since 003 (catalogue); store adopts same for block payloads. |
 | `sha2` (Rust) | `0.10.x` | Content hashing for per-project upload dedupe. Boring standard; alternatives (blake3: newer, narrower audit base; hand-rolled: never for hashing). |
 | `html2text` (Rust) | `0.17.x` | HTML→markdown for `web-fetch`. Hand-rolled tag stripping is a bug farm; the maintained line, not the stale 0.12 one. |
+| `jsdom` | `^30` | Component tests need a DOM; node env has none. Alternative (no component tests, eyeball only) rejected: drawer states are acceptance criteria. |
+| `@testing-library/react` | `^16` | React 19-compatible renderer queries. Alternative (manual DOM asserts) rejected: role-based queries match the a11y contract. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current

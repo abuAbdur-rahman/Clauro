@@ -179,7 +179,7 @@ CREATE UNIQUE INDEX idx_attachment_project_hash ON attachment(project_id, conten
 
 -- ── artifacts (D1: OUR schema) ─────────────────────────────────────────────
 CREATE TABLE artifact (
-  id            TEXT PRIMARY KEY,
+  id            TEXT NOT NULL,
   thread_id     TEXT NOT NULL REFERENCES thread(id),
   version       INTEGER NOT NULL DEFAULT 1,
   title         TEXT NOT NULL,
@@ -187,7 +187,7 @@ CREATE TABLE artifact (
   source_path   TEXT NOT NULL,             -- artifacts/<artifact-id>/<version>/source
   compiled_path TEXT,                      -- written after the Worker transform
   created_at    INTEGER NOT NULL,
-  UNIQUE (thread_id, id, version)
+  PRIMARY KEY (thread_id, id, version)
 );
 
 -- ── compaction ledger (D84) ────────────────────────────────────────────────

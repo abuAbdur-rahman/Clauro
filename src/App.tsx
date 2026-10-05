@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "./catalogue";
 import ModelPicker from "./ModelPicker";
 import { useThreadStore } from "./thread";
+import { ArtifactDrawer } from "./ArtifactDrawer";
 
 const THREAD = "thread-001";
 
@@ -62,17 +63,30 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 p-4 font-mono text-sm text-neutral-300">
-      <h1 className="text-base">Clauro — model catalogue (003)</h1>
-      <p className="mt-1 text-xs text-neutral-500">
-        thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
-      </p>
-      {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
-      <div className="mt-3 max-w-2xl">
-        {payload ? (
-          <ModelPicker payload={payload} threadId={THREAD} />
-        ) : (
-          <p className="text-neutral-500">Loading catalogue…</p>
-        )}
+      <div className="flex gap-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-base">Clauro — model catalogue (003)</h1>
+          <p className="mt-1 text-xs text-neutral-500">
+            thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
+          </p>
+          {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
+          <div className="mt-3 max-w-2xl">
+            {payload ? (
+              <ModelPicker payload={payload} threadId={THREAD} />
+            ) : (
+              <p className="text-neutral-500">Loading catalogue…</p>
+            )}
+          </div>
+        </div>
+        {/* Engine gate is prop-driven: the shell passes the real verdict once
+            the Tauri runtime check exists (021). Windows-verified is the dev
+            default per AGENTS.md §8a. */}
+        <ArtifactDrawer
+          threadId={THREAD}
+          engine={{ platform: "windows", opaqueProven: true }}
+          sourceHtml=""
+          title=""
+        />
       </div>
     </div>
   );
