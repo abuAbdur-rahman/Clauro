@@ -24,12 +24,13 @@ interchangeable:
 two structural pieces — `007` and `023`, the registry and the loop — and the `memory` handler. What
 is missing is the wiring between them, and it is worth being blunt about the shape of it:
 
-- **Three components are built, tested, and called by nothing.** `resolve()` and `ApprovalQueue`
-  (`crates/clauro-loop/src/run.rs:263` dispatches without consulting either), `QuestionGate`'s
-  `note_call`/`reset`, and `resolve_answer` all have no caller outside their own tests. So
-  permissions are not enforced at dispatch, ask-mode approval is never routed, `D101`'s mixed-call
-  refusal is unproven, and no answer is ever persisted. `D26` itself still holds — a denied tool *is*
-  absent from the request — but the enforcement point is not wired.
+- **The loop now consults the registry components at dispatch** (`run.rs`
+  dispatches through `resolve()`, holds ask-effects in `ApprovalQueue`,
+  tells `QuestionGate` about every non-question call with per-message reset,
+  refuses mixed questions by lookahead, and bounds `Ok` previews via
+  `bound_output`). Still uncalled: `resolve_answer` (answer persistence needs
+  the UI card), and no host drives a turn. `D26` holds twice over — denied
+  tools are absent from the request *and* refused if emitted.
 - **`src-tauri` registers seven commands and none reaches the loop.** `clauro-loop` is not a
   dependency of the shell crate. Nothing drives a turn from the UI yet.
 - **Two silent `let _ =` drops** at `crates/clauro-loop/src/run.rs:290,513,529` sit on the exact
@@ -124,10 +125,10 @@ transcript to measure).
 
 | Task | State | Contract | D-refs |
 |---|---|---|---|
-| `Tasks/007-tool-registry-and-permissions.md` | ◐ built + tested; `resolve()`/`ApprovalQueue` uncalled | §3 | D19, D26, D27, D39, D51, D55 |
-| `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop complete; `D27` absent, no host drives it | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
+| `Tasks/007-tool-registry-and-permissions.md` | ◐ wired at dispatch; `resolve_answer` still uncalled | §3 | D19, D26, D27, D39, D51, D55 |
+| `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop enforces permissions/approval/gate/bounding; no host drives it | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
 | `Tasks/008-memory-tool.md` | ✅ backend 8/10; two UI criteria unstarted | §1, §3 | D7, D8, D9, D10, D11, D35, D43, D51 |
-| `Tasks/009-question-tool.md` | ◐ in progress — gate never wired to the loop | §2, §3 | D40, D41, D42, D43 |
+| `Tasks/009-question-tool.md` | ◐ gate wired to the loop; answers unpersisted (no card UI) | §2, §3 | D40, D41, D42, D43 |
 | `Tasks/010-fs-tool.md` | ◐ backend 11/11; ingest/serve/session-dirs uncalled (018/shell later) | §3 | D31, D32, D33, D34, D39, D44, D47, D52, D79, D109 |
 | `Tasks/011-web-search-and-fetch.md` | ◐ backend 9/9; live HTTP untested by rule, DDG shape assumed | §3 | D39, D48, D56 |
 
@@ -150,10 +151,12 @@ handler, so a handler written before it has no defined caller.
 > `ApprovalQueue`** — grep for both across `crates/clauro-loop/src/` returns zero matches. Same for
 > `QuestionGate`'s `note_call`/`reset`. The components are real, tested, and unreachable.
 >
-> Read the per-task state column as "built", not "working". Before this phase's gate can pass, the
-> loop needs to consult permissions, route ask-mode approval through `ApprovalQueue`, tell
-> `QuestionGate` about each call and reset it per turn, and bound output on the way out — `bound_output`
-> currently has no caller outside its own test, so **`D27` is unenforced at the loop**.
+> Read the per-task state column as "built", not "working". The loop now
+> consults permissions, routes ask-mode approval through `ApprovalQueue` with
+> hold-and-resume, tells `QuestionGate` about each call with per-message
+> reset, refuses mixed questions by lookahead, and bounds output on the way
+> out — `D27` is enforced at dispatch. Still unwired: `resolve_answer`, and
+> any host driving a turn.
 
 **Unblocks:** Phase 3 (`fs` proves the workspace tree before `bash` exists; `artifact` needs the
 loop), Phase 4 (compaction needs tools to compact around).

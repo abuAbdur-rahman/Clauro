@@ -141,10 +141,15 @@ fn present_card(prompt: &str, options: &[(String, String)]) -> String {
     out
 }
 
-/// Bind the `question` handler and return the turn gate. The gate outlives
-/// the call: the loop holds it for `note_call` / `reset`.
-pub fn register_question(reg: &mut crate::registry::Registry) -> QuestionGate {
-    let gate = QuestionGate::new();
+/// Bind the `question` handler onto a caller-held gate, so the loop and the
+/// handler observe one turn state: the loop calls `note_call` for every other
+/// dispatch and `reset` per assistant message; the handler records its own
+/// invocations. Prefer this over [`register_question`] wherever a turn loop
+/// drives dispatch.
+pub fn register_question_with_gate(
+    reg: &mut crate::registry::Registry,
+    gate: QuestionGate,
+) -> QuestionGate {
     let gate_in_handler = gate.clone();
     let _ = reg.set_handler("question", move |input: &Value, _ctx: &ToolContext| {
         let prompt = input.get("prompt").and_then(Value::as_str).unwrap_or("");
@@ -182,4 +187,9 @@ pub fn register_question(reg: &mut crate::registry::Registry) -> QuestionGate {
         }
     });
     gate
+}
+
+/// Bind the `question` handler and return a fresh turn gate.
+pub fn register_question(reg: &mut crate::registry::Registry) -> QuestionGate {
+    register_question_with_gate(reg, QuestionGate::new())
 }

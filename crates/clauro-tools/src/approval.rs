@@ -34,6 +34,7 @@ pub struct HeldCall {
 pub enum ApprovalError {
     UnknownId(String),
     WrongState { id: String, state: ApprovalState },
+    Store(String),
 }
 
 impl fmt::Display for ApprovalError {
@@ -43,6 +44,7 @@ impl fmt::Display for ApprovalError {
             Self::WrongState { id, state } => {
                 write!(f, "call {id} cannot advance from {state:?}")
             }
+            Self::Store(e) => write!(f, "approval persist failed: {e}"),
         }
     }
 }
@@ -62,14 +64,22 @@ impl ApprovalQueue {
         }
     }
 
-    /// Hold a call for approval. Enters as queued.
+    /// Hold a call for approval. Enters as queued. Re-holding an id the
+    /// queue already knows resets it to a fresh queued entry: a repeated call
+    /// id is a new decision, never a second row for the old verdict.
     pub fn hold(&mut self, id: &str, tool: &str, input: Value) -> ApprovalState {
-        self.calls.push_back(HeldCall {
-            id: id.to_string(),
-            tool: tool.to_string(),
-            input,
-            state: ApprovalState::Queued,
-        });
+        if let Some(existing) = self.calls.iter_mut().find(|c| c.id == id) {
+            existing.tool = tool.to_string();
+            existing.input = input;
+            existing.state = ApprovalState::Queued;
+        } else {
+            self.calls.push_back(HeldCall {
+                id: id.to_string(),
+                tool: tool.to_string(),
+                input,
+                state: ApprovalState::Queued,
+            });
+        }
         ApprovalState::Queued
     }
 
@@ -78,6 +88,18 @@ impl ApprovalQueue {
             .iter_mut()
             .find(|c| c.id == id)
             .ok_or_else(|| ApprovalError::UnknownId(id.to_string()))
+    }
+
+    /// Hold and present in one step: the loop's ask path. Total after the
+    /// reset-in-hold above — no caller needs to handle a mid-step failure.
+    pub fn hold_pending(
+        &mut self,
+        id: &str,
+        tool: &str,
+        input: Value,
+    ) -> Result<ApprovalState, ApprovalError> {
+        self.hold(id, tool, input);
+        self.mark_pending(id)
     }
 
     /// Present the call for a decision. Queued → pending.

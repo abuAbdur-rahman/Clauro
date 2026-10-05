@@ -15,11 +15,10 @@ orphans, which is `D65` exactly. And the prompt hash is enforced on **every** tu
 
 **Three things this file claims that the code does not deliver.**
 
-1. **`D27` is not enforced at the loop.** The "Do" section below says the loop "bound the output on
-   the way out (`D27`)". `run.rs:551-584` stores `preview` verbatim, and `bound_output`
-   (`crates/clauro-tools/src/bounding.rs:56`) has **no caller outside its own test**. Bounding is
-   proven in its own module and absent from the loop. It is not an acceptance criterion, which is
-   exactly why it slipped through.
+1. **`D27` is enforced at the loop since the wiring change.** `Ok` previews go
+   through `bound_output` at dispatch (`run.rs:dispatch_bounded`) and rows carry
+   both paths. The original gap (verbatim preview stored at `run.rs:551-584`)
+   is closed.
 2. **`D76`'s variation is not expressible through this API.** `run.rs:619` hardcodes
    `tool_choice: {"type":"auto"}`, and `PreparedThread` (`run.rs:51-59`) has no `tool_choice` or
    effort field — only `thinking_budget` and `max_tokens`. The hash-stability half is real, but the

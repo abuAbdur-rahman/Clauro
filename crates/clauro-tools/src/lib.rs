@@ -26,8 +26,8 @@ pub use materialize::{
 pub use memory::memory_handler;
 pub use permission::resolve;
 pub use question::{
-    register_question, resolve_answer, AnswerResolution, QuestionError, QuestionGate,
-    QUESTION_REFUSAL, SKIP_ID,
+    register_question, register_question_with_gate, resolve_answer, AnswerResolution,
+    QuestionError, QuestionGate, QUESTION_REFUSAL, SKIP_ID,
 };
 pub use registry::{
     eight_definitions, IncomingCall, Materialization, Registry, RegistryError, ToolDefinition,

@@ -190,6 +190,7 @@ fn phase_two_turn_runs_end_to_end() {
         max_tokens: 1024,
         tools: granted,
         thinking_budget: 10_000,
+        rules: Vec::new(),
     };
 
     let mut exchange = Script {

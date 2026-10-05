@@ -18,10 +18,13 @@
 //! still open at that point close as `aborted` through `cancel_turn` (006).
 
 use crate::queue::{QueuedItem, StopOffer, ThreadQueue};
-use clauro_core::{ToolContext, ToolOutcome, ToolStatus};
+use clauro_core::{Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
 use clauro_store::transcript::OpenCall;
 use clauro_store::{MessageRole, NewBlock, NewMessage, NewToolResult, NewUsage, Store, StoreError};
-use clauro_tools::{IncomingCall, MaterializedTool, Registry, INLINE_TOOLS_BETA};
+use clauro_tools::{
+    bound_output, resolve, ApprovalError, ApprovalQueue, IncomingCall, MaterializedTool,
+    QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
+};
 use clauro_transport::{
     build_normal_request, BuiltRequest, InboundKind, NormalBuildInput, NormalisedEvent,
     ThinkingConfig, ToolHeader,
@@ -56,6 +59,9 @@ pub struct PreparedThread {
     /// Materialised availability surface. `compact` never reaches the schema.
     pub tools: Vec<MaterializedTool>,
     pub thinking_budget: u32,
+    /// Permission rules consulted on every dispatch (D26). Empty means the
+    /// default: everything dispatchable.
+    pub rules: Vec<PermissionRule>,
 }
 
 /// How a turn ended.
@@ -64,6 +70,9 @@ pub enum TurnEnd {
     EndTurn,
     Stopped,
     TransportError,
+    /// An ask-effect call was held for approval. Nothing dispatched for it;
+    /// the driver approves and the next turn resumes with it.
+    AwaitingApproval,
 }
 
 /// What a turn did.
@@ -73,6 +82,8 @@ pub struct TurnReport {
     pub dispatched: Vec<String>,
     pub assistant_messages: usize,
     pub stop_offer: Option<StopOffer>,
+    /// Held call ids awaiting approval, in hold order.
+    pub pending_approvals: Vec<String>,
 }
 
 /// Why a turn refused to run.
@@ -86,6 +97,7 @@ pub enum LoopError {
     },
     ThreadMissing(String),
     Store(StoreError),
+    Approval(clauro_tools::ApprovalError),
 }
 
 /// Everything varying per turn. Bundles what `run_turn` needs beyond the
@@ -113,10 +125,13 @@ struct OpenBlock {
     tool: Option<ToolHeader>,
 }
 
-/// The loop: per-thread queues, stop flags, and the driver.
+/// The loop: per-thread queues, stop flags, approvals, question gates, and
+/// the driver.
 pub struct TurnLoop {
     queues: HashMap<String, ThreadQueue>,
     stops: HashMap<String, Arc<AtomicBool>>,
+    approvals: HashMap<String, ApprovalQueue>,
+    gates: HashMap<String, QuestionGate>,
 }
 
 impl TurnLoop {
@@ -125,7 +140,111 @@ impl TurnLoop {
         Self {
             queues: HashMap::new(),
             stops: HashMap::new(),
+            approvals: HashMap::new(),
+            gates: HashMap::new(),
         }
+    }
+
+    /// The thread's question gate, shared with the `question` handler when the
+    /// driver binds it via `register_question_with_gate`. Same `Arc` every
+    /// call: the loop and the handler observe one turn state.
+    pub fn question_gate(&mut self, thread_id: &str) -> QuestionGate {
+        self.gates.entry(thread_id.to_string()).or_default().clone()
+    }
+
+    fn approvals_for(&mut self, thread_id: &str) -> &mut ApprovalQueue {
+        self.approvals.entry(thread_id.to_string()).or_default()
+    }
+
+    fn gate_for(&mut self, thread_id: &str) -> QuestionGate {
+        self.question_gate(thread_id)
+    }
+
+    /// Record one dispatch on the thread's question gate. The question
+    /// handler records itself; everything else is recorded here, so the gate
+    /// observes the whole turn (D101).
+    fn gate_note(&mut self, thread_id: &str, name: &str) {
+        self.question_gate(thread_id).note_call(name);
+    }
+
+    /// Dispatch with output bounding on the way out (D27): the full preview
+    /// text goes to storage and the row keeps the bounded slice plus both
+    /// re-readable paths. A bounding failure keeps the raw preview so the
+    /// turn continues — storage trouble must not kill a good result.
+    fn dispatch_bounded(
+        &self,
+        registry: &Registry,
+        material: &clauro_tools::Materialization,
+        ctx: &ToolContext,
+        workspace_dir: &Path,
+        pending: &PendingTool,
+    ) -> ToolOutcome {
+        let outcome = registry.dispatch(
+            &IncomingCall {
+                name: pending.name.clone(),
+                input: serde_json::from_str(&pending.input)
+                    .unwrap_or(Value::String(pending.input.clone())),
+                epoch: material.epoch,
+            },
+            &ToolContext {
+                call_id: pending.id.clone(),
+                ..ctx.clone()
+            },
+        );
+        match outcome {
+            ToolOutcome::Ok { preview, .. } => {
+                match bound_output(workspace_dir, &pending.id, &preview) {
+                    Ok(bounded) => ToolOutcome::Ok {
+                        preview: bounded.preview,
+                        preview_path: Some(bounded.preview_path.to_string_lossy().into_owned()),
+                        full_path: Some(bounded.full_path.to_string_lossy().into_owned()),
+                    },
+                    Err(_) => ToolOutcome::Ok {
+                        preview,
+                        preview_path: None,
+                        full_path: None,
+                    },
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Approve a held call. It dispatches at the start of the next turn, in
+    /// hold order with any other approved siblings.
+    pub fn approve_call(&mut self, thread_id: &str, id: &str) -> Result<(), ApprovalError> {
+        self.approvals_for(thread_id).approve(id)?;
+        Ok(())
+    }
+
+    /// Reject a held call: a typed `error` result row, loop continues, the
+    /// held row stays rejected and nothing else is touched (D109).
+    pub fn reject_call(
+        &mut self,
+        store: &Store,
+        thread_id: &str,
+        id: &str,
+    ) -> Result<(), ApprovalError> {
+        let outcome = self.approvals_for(thread_id).reject(id)?;
+        let message = match &outcome {
+            ToolOutcome::Error { message } => message.clone(),
+            _ => String::new(),
+        };
+        store
+            .insert_tool_result(NewToolResult {
+                id: Store::new_id("tr"),
+                thread_id: thread_id.to_string(),
+                tool_call_id: id.to_string(),
+                tool_name: String::new(),
+                status: ToolStatus::Error,
+                preview: message,
+                preview_path: None,
+                full_path: None,
+                output_bytes: 0,
+                created_at: now_ms(),
+            })
+            .map_err(|e| ApprovalError::Store(e.to_string()))?;
+        Ok(())
     }
 
     fn queue_for(&mut self, thread_id: &str) -> &mut ThreadQueue {
@@ -230,13 +349,43 @@ impl TurnLoop {
             dispatched: Vec::new(),
             assistant_messages: 0,
             stop_offer: None,
+            pending_approvals: Vec::new(),
         };
+
+        // Approved held calls dispatch first, in hold order, before any new
+        // exchange step. They carry their own message: the tool_use blocks
+        // they answer already sit in an earlier one.
+        let resumed = self
+            .approvals_for(thread_id)
+            .drain_approved()
+            .into_iter()
+            .map(|h| PendingTool {
+                index: 0,
+                id: h.id,
+                name: h.tool,
+                input: h.input.to_string(),
+            })
+            .collect::<Vec<_>>();
+        if !resumed.is_empty() {
+            let msg_id = self.insert_assistant(store, thread_id, seq)?;
+            seq += 1;
+            report.assistant_messages += 1;
+            for pending in &resumed {
+                self.gate_note(thread_id, &pending.name);
+                let outcome =
+                    self.dispatch_bounded(registry, &material, &ctx, workspace_dir, pending);
+                self.persist_result(store, thread_id, &msg_id, pending, &outcome)?;
+                report.dispatched.push(pending.id.clone());
+            }
+        }
 
         loop {
             if self.stopped(thread_id) {
                 report.end = TurnEnd::Stopped;
                 break;
             }
+            // One assistant message, one gate window (D42, D101).
+            self.gate_for(thread_id).reset();
             let request = self.build_request(store, thread_id, prepared);
             let events = match exchange.step(&request) {
                 Ok(events) => events,
@@ -253,29 +402,82 @@ impl TurnLoop {
             report.assistant_messages += 1;
             let pendings = self.persist_step(store, thread_id, &turn_id, &msg_id, &events)?;
 
+            // D101 at the loop: a question beside any other call — or a second
+            // question — in one message is refused upfront, whatever the order.
+            let question_ids: Vec<&PendingTool> =
+                pendings.iter().filter(|p| p.name == "question").collect();
+            let mixed = question_ids.len() > 1 || (question_ids.len() == 1 && pendings.len() > 1);
+
             let mut dispatched_here = Vec::new();
             let mut halted = false;
+            let mut held = false;
             for pending in &pendings {
                 if self.stopped(thread_id) {
                     halted = true;
                     break;
                 }
-                let outcome = registry.dispatch(
-                    &IncomingCall {
-                        name: pending.name.clone(),
-                        input: serde_json::from_str(&pending.input)
-                            .unwrap_or(Value::String(pending.input.clone())),
-                        epoch: material.epoch,
-                    },
-                    &ToolContext {
-                        call_id: pending.id.clone(),
-                        ..ctx.clone()
-                    },
-                );
-                self.persist_result(store, thread_id, &msg_id, pending, &outcome)?;
-                dispatched_here.push(pending.id.clone());
+                if pending.name == "question" && mixed {
+                    self.persist_result(
+                        store,
+                        thread_id,
+                        &msg_id,
+                        pending,
+                        &ToolOutcome::Error {
+                            message: QUESTION_REFUSAL.to_string(),
+                        },
+                    )?;
+                    dispatched_here.push(pending.id.clone());
+                    continue;
+                }
+                if pending.name != "question" {
+                    self.gate_note(thread_id, &pending.name);
+                }
+                match resolve(&pending.name, &prepared.rules) {
+                    Effect::Deny => {
+                        self.persist_result(
+                            store,
+                            thread_id,
+                            &msg_id,
+                            pending,
+                            &ToolOutcome::Error {
+                                message: format!(
+                                    "tool {} is not permitted by policy",
+                                    pending.name
+                                ),
+                            },
+                        )?;
+                        dispatched_here.push(pending.id.clone());
+                    }
+                    Effect::Ask => {
+                        let queue = self.approvals_for(thread_id);
+                        queue
+                            .hold_pending(&pending.id, &pending.name, pending_input(pending))
+                            .map_err(LoopError::Approval)?;
+                        report.pending_approvals.push(pending.id.clone());
+                        held = true;
+                        break;
+                    }
+                    Effect::Allow => {
+                        let outcome = self.dispatch_bounded(
+                            registry,
+                            &material,
+                            &ctx,
+                            workspace_dir,
+                            pending,
+                        );
+                        self.persist_result(store, thread_id, &msg_id, pending, &outcome)?;
+                        dispatched_here.push(pending.id.clone());
+                    }
+                }
             }
             report.dispatched.extend(dispatched_here.iter().cloned());
+            if held {
+                // The turn pauses for a decision; nothing dispatched for the
+                // held call, so nothing to close. Approved calls resume on a
+                // later turn.
+                report.end = TurnEnd::AwaitingApproval;
+                break;
+            }
             if halted {
                 // Calls still open close as aborted; resolved ones are
                 // untouched, completed rows stay (D65, D68).
@@ -628,6 +830,11 @@ impl TurnLoop {
         }
         request
     }
+}
+
+/// Rebuild the input value a held call was dispatched with.
+fn pending_input(pending: &PendingTool) -> Value {
+    serde_json::from_str(&pending.input).unwrap_or(Value::String(pending.input.clone()))
 }
 
 impl Default for TurnLoop {

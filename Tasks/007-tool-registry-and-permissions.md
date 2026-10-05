@@ -105,20 +105,19 @@ equivalent ourselves — one code path, one test surface.
       covers all four including the panic. Note: no schema validation at the boundary — input arrives
       as raw `serde_json::Value` and each handler validates itself, which is a deviation from the
       Zod-at-every-boundary rule in `AGENTS.md` §5 worth a decision
-- [ ] Approval walks typed states with resume on approve and typed `error` on reject (**D109**) —
-      **PARTIAL: the state machine is real, it has no consumer.** States at `src/approval.rs:16-21`,
-      transitions at `:66-124`, resume/reject at `:127-149`; `tests/approval.rs:12,29,50,69` all pass.
-      But grep for `ApprovalQueue` across `crates/clauro-loop/src/` returns **zero matches** —
-      `run.rs:263` dispatches directly, so ask-mode is never gated at execution. See Status
+- [x] Approval walks typed states with resume on approve and typed `error` on reject (**D109**) —
+      states at `src/approval.rs:16-21`, transitions at `:66-124`, resume/reject at `:127-149`;
+      `tests/approval.rs:12,29,50,69` all pass. **Wired since the loop change:** ask-effects hold at
+      `crates/clauro-loop/src/run.rs` dispatch, `approve_call` resumes on the next turn
+      (`crates/clauro-loop/tests/wiring.rs:ask_holds_then_dispatches_after_approve`).
 - [x] No runtime tool loading; the set is fixed at eight (**D108**) — `src/registry.rs:15-24` (`EIGH`),
       `:193` rejects a ninth, `:218` rejects binding an unknown name; `tests/registry.rs:22,40`;
       `tests/no_tauri_dep.rs:29` also passes
 - [x] 5 MB output fully stored, preview bounded, re-read identical — `src/bounding.rs:12` (8 KiB
       preview cap), `:56-85`; `tests/bounding.rs:19-42` writes 5 MiB, stores it whole, and re-reads
-      byte-identical; char-boundary safety at `tests/bounding.rs:45` (`D27`). **Caveat: `bound_output`
-      has no caller outside its own test** — the loop stores `preview` verbatim at
-      `crates/clauro-loop/src/run.rs:551-584`, so `D27` is proven at the bounding module but not at
-      the loop. See Status
+      byte-identical; char-boundary safety at `tests/bounding.rs:45` (`D27`). **Wired since the loop
+      change:** `Ok` previews are bounded at dispatch (`run.rs:dispatch_bounded`) and rows carry
+      both paths (`crates/clauro-loop/tests/wiring.rs:big_previews_store_paths_and_stay_bounded`).
 - [x] Stale tool call detected — `src/registry.rs:241-245` checks the epoch before any handler
       lookup; `tests/registry.rs:56-90` (`D19`)
 - [ ] No description text matches any reference implementation's wording — **PARTIAL: drift guard,

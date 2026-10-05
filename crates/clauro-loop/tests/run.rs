@@ -151,6 +151,7 @@ fn prepared(thread_tools: Vec<clauro_tools::MaterializedTool>) -> PreparedThread
         max_tokens: 1024,
         tools: thread_tools,
         thinking_budget: 10_000,
+        rules: Vec::new(),
     }
 }
 

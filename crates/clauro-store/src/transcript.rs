@@ -33,6 +33,16 @@ pub struct ToolResultRef {
     pub status: ToolStatus,
 }
 
+/// One tool result whole, for callers that need the stored paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResultFull {
+    pub tool_call_id: String,
+    pub status: ToolStatus,
+    pub preview: String,
+    pub preview_path: Option<String>,
+    pub full_path: Option<String>,
+}
+
 /// The I1 verdict: unpaired ids plus blocks too malformed to judge.
 // Malformed payloads are reported, not paired: guessing an id for a corrupt
 // row would manufacture the pairing the check is supposed to verify.
@@ -149,6 +159,30 @@ impl Store {
                 })
         })
         .collect()
+    }
+
+    /// One result whole, including the bounded-output paths.
+    pub fn get_tool_result_full(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Option<ToolResultFull> {
+        self.conn
+            .query_row(
+                "SELECT tool_call_id, status, preview, preview_path, full_path FROM tool_result WHERE thread_id = ?1 AND tool_call_id = ?2",
+                rusqlite::params![thread_id, tool_call_id],
+                |row| {
+                    let status: String = row.get(1)?;
+                    Ok(ToolResultFull {
+                        tool_call_id: row.get(0)?,
+                        status: status.parse::<ToolStatus>().unwrap_or(ToolStatus::Error),
+                        preview: row.get(2)?,
+                        preview_path: row.get(3)?,
+                        full_path: row.get(4)?,
+                    })
+                },
+            )
+            .ok()
     }
 
     /// One block whole: kind, payload, and thinking signature intact (D72).

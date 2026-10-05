@@ -69,16 +69,13 @@ question fails as a typed `tool_result`.
 
 ## Acceptance criteria
 
-- [ ] One question per turn, enforced — **PARTIAL. Handler-side cap works; the turn boundary does
-      not exist.** Gate at `src/question.rs:28-68`, recorder at `:160`, tested
-      `tests/question.rs:63-75`. But nothing calls `gate.reset()`, so after a thread's first question
-      every later one is refused forever. See Status
-- [ ] A second or mixed call in the same turn refused as a typed `tool_result` (**D101**) —
-      **PARTIAL. The second-call half is MET; the mixed half passes only because the test drives the
-      gate itself.** `src/question.rs:157-159` (cap) and `:64-67` (`must_refuse` also trips on
-      `other_calls`); `tests/question.rs:63-75` (second) and `:77-96` (mixed) both pass. But the mixed
-      test calls `gate.note_call("fs")` at `tests/question.rs:82`, and the loop never does — so
-      `D101` is unproven in the integrated path. See Status
+- [x] One question per turn, enforced — gate at `src/question.rs`, recorder in the
+      handler; the loop resets per assistant message and notes every non-question dispatch
+      (`crates/clauro-loop/src/run.rs` gate reset + `gate_note`). `tests/question.rs:63-75` plus
+      loop-level mixed coverage below.
+- [x] A second or mixed call in the same turn refused as a typed `tool_result` (**D101**) —
+      second-call via handler cap; mixed via loop lookahead refusing question pendings upfront
+      (`crates/clauro-loop/tests/wiring.rs:mixed_question_call_refused_others_dispatch`).
 - [x] Skip always offered — `src/question.rs:25-26` (`SKIP_ID`, `"Skip / decide for me"`), appended
       when absent at `:175-176`; `tests/question.rs:51-61` asserts the card text contains it. Guaranteed
       in the text itself, so a client rendering options generically cannot lose it (`D42`)
