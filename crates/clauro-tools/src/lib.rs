@@ -8,6 +8,7 @@ pub mod bounding;
 pub mod materialize;
 pub mod memory;
 pub mod permission;
+pub mod question;
 pub mod registry;
 pub mod secret;
 
@@ -18,6 +19,10 @@ pub use materialize::{
 };
 pub use memory::memory_handler;
 pub use permission::resolve;
+pub use question::{
+    register_question, resolve_answer, AnswerResolution, QuestionError, QuestionGate,
+    QUESTION_REFUSAL, SKIP_ID,
+};
 pub use registry::{
     eight_definitions, IncomingCall, Materialization, Registry, RegistryError, ToolDefinition,
     EIGHT,
