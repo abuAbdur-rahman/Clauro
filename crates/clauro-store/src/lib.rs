@@ -1028,6 +1028,34 @@ impl Store {
         Ok(())
     }
 
+    /// Path of the attachment already stored for `(project, hash)`, if any.
+    /// Backs per-project upload dedupe (D52): same bytes, same project means
+    /// the existing copy, never a second file.
+    pub fn attachment_path_for_hash(
+        &self,
+        project_id: Option<&str>,
+        content_hash: &str,
+    ) -> Option<String> {
+        match project_id {
+            Some(pid) => self
+                .conn
+                .query_row(
+                    "SELECT path FROM attachment WHERE project_id = ?1 AND content_hash = ?2",
+                    rusqlite::params![pid, content_hash],
+                    |row| row.get(0),
+                )
+                .ok(),
+            None => self
+                .conn
+                .query_row(
+                    "SELECT path FROM attachment WHERE project_id IS NULL AND content_hash = ?1",
+                    [content_hash],
+                    |row| row.get(0),
+                )
+                .ok(),
+        }
+    }
+
     /// `artifact.compiled_path` — set once after the Worker transform.
     pub fn set_artifact_compiled_path(&self, id: &str, path: &str) -> Result<(), StoreError> {
         let rows = self.conn.execute(

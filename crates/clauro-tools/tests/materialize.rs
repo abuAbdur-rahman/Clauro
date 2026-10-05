@@ -137,19 +137,74 @@ fn openai_path_freezes_the_granted_array() {
 }
 
 #[test]
-fn change_messages_are_immutable_once_recorded() {
-    // The store has no update path on message/block (004 scan test), so a
-    // recorded tool-change message reads back identical: append-only joins
-    // the prefix retroactively (D94) and cannot be moved, reworded, or
-    // deleted afterwards.
+fn change_messages_persist_append_only() {
+    // The materialised system message is what lands in the store, byte for
+    // byte. Move/reword/delete have no API to call afterwards: the 004 scan
+    // test fails the build on any write path touching message/block.
+    use clauro_store::{MessageRole, NewBlock, NewMessage, NewProject, NewThread, Store};
+    let dir = std::env::temp_dir().join(format!(
+        "clauro-007chg-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let store = Store::open(&dir.join("test.db")).expect("open");
+    store
+        .insert_project(NewProject {
+            id: "p".to_string(),
+            name: "p".to_string(),
+            instructions: String::new(),
+            bash_enabled: false,
+        })
+        .expect("project");
+    store
+        .insert_thread(NewThread {
+            id: "t".to_string(),
+            project_id: Some("p".to_string()),
+            title: None,
+            incognito: false,
+            memory_off: false,
+            system_frozen: "s".to_string(),
+            tools_frozen: "[]".to_string(),
+        })
+        .expect("thread");
+    store
+        .insert_message(NewMessage {
+            id: "m".to_string(),
+            thread_id: "t".to_string(),
+            seq: 1,
+            role: MessageRole::System,
+            created_at: 1,
+        })
+        .expect("message");
     let avail = materialize(None, &all_but_bash());
     let mut granted = all_but_bash();
     granted.granted.insert("bash".to_string());
     let after = materialize(Some(&avail), &granted);
-    let first = after.system_messages.clone();
-    let reread = after.system_messages;
-    assert_eq!(first, reread);
-    assert!(!first.is_empty());
+    assert!(!after.system_messages.is_empty());
+    for (i, msg) in after.system_messages.iter().enumerate() {
+        store
+            .insert_block(NewBlock {
+                id: format!("b{i}"),
+                message_id: "m".to_string(),
+                seq: i as i64,
+                kind: "text".to_string(),
+                payload: msg.to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .expect("append");
+        let back = store.get_block_full(&format!("b{i}")).expect("must read");
+        assert_eq!(back.payload, msg.to_string(), "stored exactly as emitted");
+    }
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

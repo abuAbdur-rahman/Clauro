@@ -124,7 +124,24 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "fs".to_string(),
             description: "Read, list, write, and edit files inside the session workspace only. Paths outside are refused, and edit needs a prior read of the same path.".to_string(),
-            input_schema: object(),
+            // Refined by 010, which owns this contract: read/list/glob/grep
+            // over session + project, writes and edits session-only.
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": {"enum": ["read", "list", "glob", "grep", "write", "edit"]},
+                    "path": {"type": "string"},
+                    "scope": {"enum": ["session", "project"]},
+                    "pattern": {"type": "string"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "content": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean"},
+                },
+            }),
             writes_to_disk: true,
         },
         ToolDefinition {
