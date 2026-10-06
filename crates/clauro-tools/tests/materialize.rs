@@ -1,0 +1,221 @@
+//! Task 007 — tool availability, both adapters (RED).
+//!
+//! D94 supersedes frozen-tools on the Claude API: every tool rides the first
+//! request's array (unavailable ones `defer_loading: true`), and the set
+//! changes only via `tool_addition` / `tool_removal` system messages — never
+//! a rewritten array, never a new thread. The OpenAI-compatible adapter keeps
+//! the frozen array. Both behaviours asserted, because they differ on purpose.
+//! D26 throughout: a denied tool is absent from the serialised request.
+
+use clauro_tools::{materialize, ThreadToolState};
+use std::collections::BTreeSet;
+
+fn state(granted: &[&str], denied: &[&str]) -> ThreadToolState {
+    ThreadToolState {
+        granted: granted.iter().map(|s| s.to_string()).collect(),
+        denied: denied.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn all_but_bash() -> ThreadToolState {
+    state(
+        &[
+            "memory",
+            "artifact",
+            "web-search",
+            "web-fetch",
+            "fs",
+            "question",
+        ],
+        &[],
+    )
+}
+
+#[test]
+fn first_request_carries_all_eight_with_defer_flags() {
+    let avail = materialize(None, &all_but_bash());
+    // D14: compact is host-driven only, never in request schema — 7 visible.
+    assert_eq!(avail.anthropic_tools.len(), 7, "seven model-callable tools");
+    assert!(
+        avail.anthropic_tools.iter().all(|t| t.name != "compact"),
+        "compact absent from schema (D14)"
+    );
+    let bash = avail
+        .anthropic_tools
+        .iter()
+        .find(|t| t.name == "bash")
+        .expect("bash declared");
+    assert!(bash.deferred, "ungranted tools defer_loading: true");
+    let fs = avail
+        .anthropic_tools
+        .iter()
+        .find(|t| t.name == "fs")
+        .expect("fs declared");
+    assert!(!fs.deferred);
+    assert!(
+        avail
+            .beta_headers
+            .iter()
+            .any(|h| h.contains("inline-tools-2026-09-15")),
+        "availability needs its beta header: {:?}",
+        avail.beta_headers
+    );
+}
+
+#[test]
+fn granting_bash_yields_addition_not_rewrite() {
+    let before = materialize(None, &all_but_bash());
+    let mut granted = all_but_bash();
+    granted.granted.insert("bash".to_string());
+    let after = materialize(Some(&before), &granted);
+    assert_eq!(
+        after.anthropic_tools, before.anthropic_tools,
+        "the array is never rewritten afterwards"
+    );
+    assert!(
+        after
+            .additions
+            .iter()
+            .any(|a| a.to_string().contains("bash")),
+        "granting produces tool_addition naming it: {:?}",
+        after.additions
+    );
+    assert!(
+        after
+            .system_messages
+            .iter()
+            .any(|m| m.to_string().contains("bash")),
+        "the addition rides a system message: {:?}",
+        after.system_messages
+    );
+}
+
+#[test]
+fn revoking_yields_removal() {
+    let before = materialize(None, &all_but_bash());
+    let mut revoked = all_but_bash();
+    revoked.granted.remove("fs");
+    let after = materialize(Some(&before), &revoked);
+    assert_eq!(after.anthropic_tools, before.anthropic_tools);
+    assert!(
+        after.removals.iter().any(|r| r.to_string().contains("fs")),
+        "{:?}",
+        after.removals
+    );
+}
+
+#[test]
+fn denied_tools_are_absent_everywhere() {
+    let avail = materialize(None, &state(&["fs"], &["bash", "memory"]));
+    assert!(
+        !avail.anthropic_tools.iter().any(|t| t.name == "bash"),
+        "denied is removed from the request, not filtered (D26)"
+    );
+    assert!(
+        !avail.openai_tools.iter().any(|t| t.name == "memory"),
+        "denied is absent on both adapters"
+    );
+    // Newly denied after declaration: array frozen, removal block instead.
+    let before = materialize(None, &all_but_bash());
+    let mut s = all_but_bash();
+    s.denied.insert("fs".to_string());
+    s.granted.remove("fs");
+    let after = materialize(Some(&before), &s);
+    assert_eq!(after.anthropic_tools, before.anthropic_tools);
+    assert!(after.removals.iter().any(|r| r.to_string().contains("fs")));
+}
+
+#[test]
+fn openai_path_freezes_the_granted_array() {
+    let a = materialize(None, &all_but_bash());
+    let mut granted = all_but_bash();
+    granted.granted.insert("bash".to_string());
+    let b = materialize(Some(&a), &granted);
+    assert_eq!(
+        a.openai_tools, b.openai_tools,
+        "OpenAI-compatible: frozen array, no mid-thread changes"
+    );
+    assert!(
+        b.openai_tools.iter().all(|t| !t.deferred),
+        "no deferral concept here: absent means absent"
+    );
+}
+
+#[test]
+fn change_messages_persist_append_only() {
+    // The materialised system message is what lands in the store, byte for
+    // byte. Move/reword/delete have no API to call afterwards: the 004 scan
+    // test fails the build on any write path touching message/block.
+    use clauro_store::{MessageRole, NewBlock, NewMessage, NewProject, NewThread, Store};
+    let dir = std::env::temp_dir().join(format!(
+        "clauro-007chg-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let store = Store::open(&dir.join("test.db")).expect("open");
+    store
+        .insert_project(NewProject {
+            id: "p".to_string(),
+            name: "p".to_string(),
+            instructions: String::new(),
+            bash_enabled: false,
+        })
+        .expect("project");
+    store
+        .insert_thread(NewThread {
+            id: "t".to_string(),
+            project_id: Some("p".to_string()),
+            title: None,
+            incognito: false,
+            memory_off: false,
+            system_frozen: "s".to_string(),
+            tools_frozen: "[]".to_string(),
+        })
+        .expect("thread");
+    store
+        .insert_message(NewMessage {
+            id: "m".to_string(),
+            thread_id: "t".to_string(),
+            seq: 1,
+            role: MessageRole::System,
+            created_at: 1,
+        })
+        .expect("message");
+    let avail = materialize(None, &all_but_bash());
+    let mut granted = all_but_bash();
+    granted.granted.insert("bash".to_string());
+    let after = materialize(Some(&avail), &granted);
+    assert!(!after.system_messages.is_empty());
+    for (i, msg) in after.system_messages.iter().enumerate() {
+        store
+            .insert_block(NewBlock {
+                id: format!("b{i}"),
+                message_id: "m".to_string(),
+                seq: i as i64,
+                kind: "text".to_string(),
+                payload: msg.to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .expect("append");
+        let back = store.get_block_full(&format!("b{i}")).expect("must read");
+        assert_eq!(back.payload, msg.to_string(), "stored exactly as emitted");
+    }
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn availability_threads_sets_for_membership() {
+    let s = all_but_bash();
+    assert!(s.granted.contains("fs"));
+    assert!(!s.granted.contains("bash"));
+    let _: BTreeSet<String> = s.denied;
+}

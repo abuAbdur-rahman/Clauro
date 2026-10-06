@@ -6,6 +6,7 @@ members = [
   "crates/clauro-transport",
   "crates/clauro-tokens",
   "crates/clauro-tools",
+  "crates/clauro-loop",
   "crates/clauro-fs",
   "src-tauri",
 ]

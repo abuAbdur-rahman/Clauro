@@ -248,6 +248,61 @@ needs one owns the decision.
 
 ---
 
+## 7. Adopted for the app shell — vendored shadcn (`Tasks/025`, **D112**)
+
+Checked against the live registry on 2026-10-06. shadcn is a copy, not a
+package: Radix primitives plus `cva`/`clsx`/`tailwind-merge` pasted into
+`src/components/ui/`, so vendoring *is* the install and each file carries no
+version of its own — the versions below are the npm packages underneath.
+
+| Package | Resolved | Licence | URL | Maintenance (checked 2026-10-06) |
+|---|---|---|---|---|
+| `@radix-ui/react-dialog` | **1.1.23** | MIT | https://www.npmjs.com/package/@radix-ui/react-dialog | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-select` | **2.3.7** | MIT | https://www.npmjs.com/package/@radix-ui/react-select | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-separator` | **1.1.15** | MIT | https://www.npmjs.com/package/@radix-ui/react-separator | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-slot` | **1.3.3** | MIT | https://www.npmjs.com/package/@radix-ui/react-slot | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-tooltip` | **1.2.16** | MIT | https://www.npmjs.com/package/@radix-ui/react-tooltip | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-collapsible` | **1.1.20** | MIT | https://www.npmjs.com/package/@radix-ui/react-collapsible | Active Radix line, registry-fresh Oct 2026 |
+| `@radix-ui/react-label` | **2.1.15** | MIT | https://www.npmjs.com/package/@radix-ui/react-label | Active Radix line, registry-fresh Oct 2026 |
+| `class-variance-authority` | **0.7.1** | Apache-2.0 — compatible | https://www.npmjs.com/package/class-variance-authority | Stable — 2024-11-26; the API surface is frozen, not abandoned |
+| `clsx` | **2.1.1** | MIT | https://www.npmjs.com/package/clsx | Active — 2026-09-18 |
+| `tailwind-merge` | **3.7.0** | MIT | https://www.npmjs.com/package/tailwind-merge | Active — 2026-09-13 |
+| `tw-animate-css` | **1.4.0** | MIT | https://www.npmjs.com/package/tw-animate-css | Active — 2026-02-28 |
+| `@testing-library/user-event` (dev) | **14.6.7** | MIT | https://www.npmjs.com/package/@testing-library/user-event | Active — 2026-09-02 |
+
+**Why this won.** Every interactive surface in Phase 5 (rail, approval
+dialog, model picker, palette) needs focus trapping, portal layering, and
+keyboard handling. Radix owns exactly that layer and shadcn owns the Tailwind
+theme wiring over it. A hand-rolled dialog is a bug farm with a focus trap.
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Hand-rolled Sidebar/Dialog/Select | Focus traps, `aria` wiring, and portal stacking re-discovered by us — the expensive instinct (§5a) |
+| `tailwindcss-animate` 1.0.7 | Tailwind v3 JS plugin, stale since 2023; `tw-animate-css` is the v4 CSS-native line |
+| `cmdk` for the palette shell (now) | Recorded, not removed — `Tasks/020` decides with the behaviour in front of it |
+| `@radix-ui/react-icons` | Fifteen icons (decided already in **D96**) |
+
+**Scope is the app shell, exactly like `lucide-react` (D96).** Nothing Radix
+ever enters the artifact frame (`D2`, `D3`, `D83`).
+
+### 7.1 Chat batch (`Tasks/026`)
+
+| Package | Resolved | Licence | Use |
+|---|---|---|---|
+| `@radix-ui/react-avatar` | **1.2.6** | MIT | Message-row avatars (`MessageAvatar` slot) |
+| `@radix-ui/react-dropdown-menu` | **2.1.24** | MIT | Message actions (copy/retry/feedback in `MessageFooter`) |
+| `@radix-ui/react-progress` | **1.1.16** | MIT | Compaction/usage progress |
+| `@radix-ui/react-scroll-area` | **1.2.18** | MIT | Themed transcript scrollbars |
+
+**Deferred with owner:** `message-scroller` follow-output lives in the
+`@shadcn/react` headless package — a non-Radix dependency needing its own
+vetting, owned by the transcript loop (`006`). Presentational `Message` is
+vendored; scroll behaviour is not.
+
+---
+
 ## 6. Known open advisories — deferred with reasons
 
 An open advisory nobody wrote down is an open advisory nobody owns. `Tasks/022` re-audits this

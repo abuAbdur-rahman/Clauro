@@ -72,7 +72,7 @@ one without a new D-number.
 | **Start here** | [`AGENTS.md`](AGENTS.md) — the document set and the rules that exist because we got them wrong |
 | What this is, and what it is not | [`MISSION.md`](MISSION.md) |
 | What must exist in v1 | [`SPEC.md`](SPEC.md) |
-| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D97**) |
+| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D114**) |
 | The shapes tests assert against | [`CONTRACTS.md`](CONTRACTS.md) |
 | How it fits together | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | How it feels | [`DESIGN.md`](DESIGN.md) |
@@ -80,8 +80,16 @@ one without a new D-number.
 
 ## Status
 
-`Tasks/001` — the dual-engine artifact sandbox spike — gates v1. Nothing is
-built on top of it yet, deliberately.
+`Tasks/001` — the dual-engine artifact sandbox spike — produced its verdict
+(`docs/spikes/sandbox-verdict.md`). The **Windows/WebView2 half is verified**; the Linux/WebKitGTK
+column is empty because the WebKitGTK probe app was never written, and per `AGENTS.md` §8a it stays
+empty until someone runs it rather than being filled in by inference.
+
+`Tasks/002`–`008` and `023` are implemented and their acceptance criteria are ticked with
+`path:line` evidence in the task files. **What those ticks do not say is that the phase works
+end to end** — `PHASES.md` §Progress is the honest view, including the four components that have full
+test coverage and no caller outside their own tests, and the two CI floor jobs that are labels rather
+than floors yet.
 
 CI is live and does real work: the spec's own invariants
 (`scripts/check-docs.py`), the platform matrix, an Aqua Trivy scan for

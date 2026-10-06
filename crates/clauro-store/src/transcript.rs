@@ -18,6 +18,7 @@ use rusqlite::OptionalExtension;
 pub struct FullBlock {
     pub id: String,
     pub message_seq: i64,
+    pub role: String,
     pub seq: i64,
     pub kind: String,
     pub payload: String,
@@ -30,6 +31,16 @@ pub struct FullBlock {
 pub struct ToolResultRef {
     pub tool_call_id: String,
     pub status: ToolStatus,
+}
+
+/// One tool result whole, for callers that need the stored paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResultFull {
+    pub tool_call_id: String,
+    pub status: ToolStatus,
+    pub preview: String,
+    pub preview_path: Option<String>,
+    pub full_path: Option<String>,
 }
 
 /// The I1 verdict: unpaired ids plus blocks too malformed to judge.
@@ -101,7 +112,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT b.id, m.seq, b.seq, b.kind, b.payload, b.generation, b.signature \
+                "SELECT b.id, m.seq, m.role, b.seq, b.kind, b.payload, b.generation, b.signature \
                  FROM block b JOIN message m ON b.message_id = m.id \
                  WHERE m.thread_id = ?1 ORDER BY m.seq, b.seq",
             )
@@ -110,11 +121,12 @@ impl Store {
             Ok(FullBlock {
                 id: row.get(0)?,
                 message_seq: row.get(1)?,
-                seq: row.get(2)?,
-                kind: row.get(3)?,
-                payload: row.get(4)?,
-                generation: row.get(5)?,
-                signature: row.get(6)?,
+                role: row.get(2)?,
+                seq: row.get(3)?,
+                kind: row.get(4)?,
+                payload: row.get(5)?,
+                generation: row.get(6)?,
+                signature: row.get(7)?,
             })
         })
         .expect("transcript read must run")
@@ -149,22 +161,47 @@ impl Store {
         .collect()
     }
 
+    /// One result whole, including the bounded-output paths.
+    pub fn get_tool_result_full(
+        &self,
+        thread_id: &str,
+        tool_call_id: &str,
+    ) -> Option<ToolResultFull> {
+        self.conn
+            .query_row(
+                "SELECT tool_call_id, status, preview, preview_path, full_path FROM tool_result WHERE thread_id = ?1 AND tool_call_id = ?2",
+                rusqlite::params![thread_id, tool_call_id],
+                |row| {
+                    let status: String = row.get(1)?;
+                    Ok(ToolResultFull {
+                        tool_call_id: row.get(0)?,
+                        status: status.parse::<ToolStatus>().unwrap_or(ToolStatus::Error),
+                        preview: row.get(2)?,
+                        preview_path: row.get(3)?,
+                        full_path: row.get(4)?,
+                    })
+                },
+            )
+            .ok()
+    }
+
     /// One block whole: kind, payload, and thinking signature intact (D72).
     pub fn get_block_full(&self, id: &str) -> Option<FullBlock> {
         self.conn
             .query_row(
-                "SELECT b.id, m.seq, b.seq, b.kind, b.payload, b.generation, b.signature \
+                "SELECT b.id, m.seq, m.role, b.seq, b.kind, b.payload, b.generation, b.signature \
                  FROM block b JOIN message m ON b.message_id = m.id WHERE b.id = ?1",
                 [id],
                 |row| {
                     Ok(FullBlock {
                         id: row.get(0)?,
                         message_seq: row.get(1)?,
-                        seq: row.get(2)?,
-                        kind: row.get(3)?,
-                        payload: row.get(4)?,
-                        generation: row.get(5)?,
-                        signature: row.get(6)?,
+                        role: row.get(2)?,
+                        seq: row.get(3)?,
+                        kind: row.get(4)?,
+                        payload: row.get(5)?,
+                        generation: row.get(6)?,
+                        signature: row.get(7)?,
                     })
                 },
             )

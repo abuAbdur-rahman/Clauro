@@ -22,3 +22,48 @@ build then measured **8.08 MB**, *smaller despite two added dependencies*. The 8
 here rather than deleted so the discrepancy cannot be rediscovered as a mystery.
 
 Re-measure on every dependency addition that touches the shell or the bundle.
+
+## Re-measurement — 2026-10-05, `Tasks/014` (artifact compile, CSP, channel)
+
+`D4` named Sucrase as "the single largest known contributor to the binary budget beyond the shell
+itself" and put it at ~1 MB. **Both halves of that were wrong, and the correction is kept visible
+rather than quietly rewritten (`AGENTS.md` §5a).** Sucrase is a *frontend* dependency, so it never
+touches `clauro.exe` at all — the Rust binary moved from 8.08 MB to **8.00 MB**, i.e. noise in the
+wrong direction (three added `str` literals and one module). The real cost is the bundle, and it is
+not ~1 MB.
+
+| Asset | Bytes | Loads when |
+|---|---|---|
+| `clauro.exe` (release) | **8.00 MB** — was 8.08 MB | always |
+| `index-*.js` (main chunk) | **340.76 kB** (104.63 kB gzip) — was **325.35 kB** (99.22 kB gzip) | always |
+| `compile.worker-*.js` | **202.65 kB** | only when an artifact has JSX to compile |
+| `purify.es-*.js` | **28.08 kB** (11.08 kB gzip) | only when an artifact is SVG |
+| `index-*.css` | 10.45 kB — unchanged | always |
+
+**Main chunk: +15.4 kB**, and that is the whole honest cost of this task. The two large pieces are
+in separate chunks because `D4` says exactly that: Sucrase is reachable only from
+`compile.worker.ts`, and DOMPurify is behind a dynamic import. An earlier draft of this work had
+Sucrase statically imported by the host-side `compile.ts` and DOMPurify statically imported by
+`sanitize.ts` — together +100 kB in the chunk every launch pays for. Two tests now fail if either
+regresses (`compile.test.ts` import graph, `sanitize.test.ts` dynamic import).
+
+Headroom against the ~25 MB budget is therefore unchanged: **~17 MB**, and the artifact pipeline
+spent 15 kB of it rather than the megabyte `D4` feared.
+
+## Re-measurement — 2026-10-06, `Tasks/028` (Phase 3 gate e2e, O3)
+
+The movement since the `014` row is **not** this task's: `024`–`027` landed the feature layout,
+vendored shadcn/Radix, and the chat UI batch. `028` added no dependencies and one small
+component seam (`fetchPolicy`/`createWorker` props); the artifact chunks are byte-identical,
+which is the property that matters — the D4 separation holds across four unrelated landings.
+
+| Asset | Bytes | Delta vs `014` row | Loads when |
+|---|---|---|---|
+| `clauro.exe` (release) | **8.00 MB** (not re-built; no Rust deps changed) | — | always |
+| `index-*.js` (main chunk) | **458.65 kB** (143.24 kB gzip) | **+117.89 kB** (`025`–`027`: Radix/shadcn + chat UI) | always |
+| `compile.worker-*.js` | **202.65 kB** | **0** | only for JSX artifacts |
+| `purify.es-*.js` | **28.08 kB** (11.08 kB gzip) | **0** | only for SVG artifacts |
+| `index-*.css` | 57.18 kB (10.21 kB gzip) | **+46.73 kB** (`025`–`027` component styles) | always |
+
+Headroom: binary unchanged, frontend main chunk now ~0.52 MB total. Still two orders of
+magnitude inside the ~25 MB budget; no action.

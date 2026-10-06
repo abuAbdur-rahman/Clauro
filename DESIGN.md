@@ -51,6 +51,10 @@ rather than a flat notepad.
 Gemini's Gems are folded in: a Gems-style "personal expert" is a project with instructions and files
 and nothing else. One concept, not two.
 
+The rail renders on the vendored shadcn `Sidebar` (`Tasks/025`, **D112**) — collapsible icon rail,
+keyboard shortcut, mobile sheet — owned by `Tasks/018`. No hand-rolled collapse: the a11y contract
+(focus, `aria`, escape) ships with the primitive.
+
 ### 2.2 Transcript
 
 Append-only, and the UI reflects that honestly. **Nothing disappears and nothing is deleted.** A
@@ -61,7 +65,8 @@ affordance; it does not pretend the earlier blocks never existed.
 
 | Block | Rendering |
 |---|---|
-| text | markdown, streamed |
+| text | markdown, streamed, in a `ghost` bubble — full-width, unframed (Claude-like assistant row, shots 03/05) |
+| user turn | `align="end"` bubble (shots 04/07) — the only framed row |
 | thinking | **collapsible inline region, one shape for both providers.** Collapsed by default; shows a one-line preview. Never a side pane — that competes with the drawer for the same space during exactly the turns where both matter. |
 | tool_use / tool_result | one row. Name, status, bounded preview, expandable. `ok`, `error`, `aborted`, `rejected` are visually distinct, and **all four are results** — nothing reads as a crash. |
 | question_card | inline card, see §2.3 |
@@ -92,8 +97,16 @@ Three states, and they are the whole design:
    as a hang
 3. **live** — the rendered page
 
-Tabs: **Preview** (the sandboxed render) and **Code** (the source, syntax-highlighted, read-only).
-Plus copy and download.
+The drawer column itself stays a plain layout slot (its tests pin `aside`/sandbox tokens), not a
+shadcn `Sidebar` — the drawer is a render surface with security assertions, not navigation chrome.
+What shadcn owns around it: the projects rail (`Sidebar`, `018`), `bash` approval (`Dialog` —
+never a palette action, `012`/`020`), and the model picker (`Select`, `025`).
+
+Tabs: none in v1 — one live render, no history, no pinning, no Preview/Code
+tabs and no download. (`SPEC.md` §5 defers all of those to v2: the render
+must be trustworthy before a user can pin history. An earlier draft of this
+section promised tabs, copy and download; that contradicted the spec and was
+corrected.)
 
 The render is **completely offline.** No CDN, no network, `connect-src 'none'`. Artifacts may only
 use Tailwind's *predefined* utility classes — which is precisely what makes a no-build-step Tailwind
@@ -151,6 +164,13 @@ tool boundary, and a non-zero exit is `ok` with output attached.
 **Nothing is remembered without asking.** `bash` approvals are per-invocation and persist nothing.
 No trust-on-first-use, no seeded allowlist. The interrupting cost *is* the feature: a persisted
 allowlist would let a prompt-injected model run unattended with nothing in the UI saying so.
+
+**`bash` opt-in notes, exact copy.** On Anthropic: "bash is now available to this conversation."
+On the OpenAI-compatible adapter: "bash needs a new thread here — this one keeps its frozen tool
+set." The UI must never claim a fresh thread is required when it is not. The approval dialog shows
+the exact command and the working directory it runs in, with Approve and Reject side by side; a
+rejection lands in the transcript as a rejected result, and a non-zero exit lands as `ok` with its
+output attached.
 
 ## 5. Motion and density
 

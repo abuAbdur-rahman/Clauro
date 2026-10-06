@@ -135,7 +135,7 @@ CREATE UNIQUE INDEX idx_attachment_global_hash ON attachment(content_hash) WHERE
 CREATE UNIQUE INDEX idx_attachment_project_hash ON attachment(project_id, content_hash) WHERE project_id IS NOT NULL;
 
 CREATE TABLE artifact (
-  id            TEXT PRIMARY KEY,
+  id            TEXT NOT NULL,
   thread_id     TEXT NOT NULL REFERENCES thread(id),
   version       INTEGER NOT NULL DEFAULT 1,
   title         TEXT NOT NULL,
@@ -143,7 +143,7 @@ CREATE TABLE artifact (
   source_path   TEXT NOT NULL,
   compiled_path TEXT,
   created_at    INTEGER NOT NULL,
-  UNIQUE (thread_id, id, version)
+  PRIMARY KEY (thread_id, id, version)
 );
 
 CREATE TABLE compaction_event (
@@ -170,6 +170,9 @@ pub enum StoreError {
     Sqlite(rusqlite::Error),
     /// A row the caller expected is not there.
     NotFound(String),
+    /// A write the lifecycle forbids: the per-thread memory toggle after the
+    /// first send (D9). Typed, not silent.
+    Locked(String),
     /// A `block` would move its thread's generation backwards (I3, D63).
     GenerationRegression { thread: String, got: i64, max: i64 },
     /// A compaction must advance its thread's generation strictly by one (D63,
@@ -182,6 +185,7 @@ impl fmt::Display for StoreError {
         match self {
             Self::Sqlite(e) => write!(f, "sqlite: {e}"),
             Self::NotFound(id) => write!(f, "row not found: {id}"),
+            Self::Locked(id) => write!(f, "locked after first send: {id}"),
             Self::GenerationRegression { thread, got, max } => write!(
                 f,
                 "generation regression on thread {thread}: got {got}, max is {max}"
@@ -248,6 +252,17 @@ pub struct NewThread {
     pub memory_off: bool,
     pub system_frozen: String,
     pub tools_frozen: String,
+}
+
+/// One thread row, for the loop's frozen-prefix check (D19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRow {
+    pub id: String,
+    pub project_id: Option<String>,
+    pub title: Option<String>,
+    pub system_frozen: String,
+    pub tools_frozen: String,
+    pub memory_off: bool,
 }
 
 /// Append-only: insert + read. `seq` gaps are legal; a compaction removes a
@@ -335,6 +350,7 @@ pub struct NewMemory {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryRow {
     pub id: String,
+    pub path: String,
     pub body: String,
     pub revision: i64,
     pub sensitive: bool,
@@ -512,6 +528,28 @@ impl Store {
         Ok(())
     }
 
+    /// One thread row. The loop reads `system_frozen` to prove the prefix it
+    /// is about to extend is the one the thread started with (D19).
+    pub fn get_thread(&self, id: &str) -> Result<Option<ThreadRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, project_id, title, system_frozen, tools_frozen, memory_off FROM thread WHERE id = ?1",
+                [id],
+                |row| {
+                    Ok(ThreadRow {
+                        id: row.get(0)?,
+                        project_id: row.get(1)?,
+                        title: row.get(2)?,
+                        system_frozen: row.get(3)?,
+                        tools_frozen: row.get(4)?,
+                        memory_off: row.get::<_, i64>(5)? == 1,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     pub fn insert_message(&self, m: NewMessage) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO message (id, thread_id, seq, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -643,20 +681,53 @@ impl Store {
     pub fn get_memory(&self, id: &str) -> Option<MemoryRow> {
         self.conn
             .query_row(
-                "SELECT id, body, revision, sensitive, updated_at FROM memory WHERE id = ?1",
+                "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE id = ?1",
                 [id],
                 |row| {
                     Ok(MemoryRow {
                         id: row.get(0)?,
-                        body: row.get(1)?,
-                        revision: row.get(2)?,
-                        sensitive: row.get::<_, i64>(3)? == 1,
-                        updated_at: row.get(4)?,
+                        path: row.get(1)?,
+                        body: row.get(2)?,
+                        revision: row.get(3)?,
+                        sensitive: row.get::<_, i64>(4)? == 1,
+                        updated_at: row.get(5)?,
                     })
                 },
             )
             .optional()
             .expect("memory read must not fail")
+    }
+
+    /// Every note in one scope, for topic listing. Sensitivity filtering
+    /// belongs to the caller: the store returns rows, policy decides.
+    pub fn list_memories(&self, project_id: Option<&str>) -> Result<Vec<MemoryRow>, StoreError> {
+        fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRow> {
+            Ok(MemoryRow {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                body: row.get(2)?,
+                revision: row.get(3)?,
+                sensitive: row.get::<_, i64>(4)? == 1,
+                updated_at: row.get(5)?,
+            })
+        }
+        let rows = match project_id {
+            Some(pid) => self
+                .conn
+                .prepare(
+                    "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE project_id = ?1 ORDER BY path",
+                )?
+                .query_map([pid], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => self
+                .conn
+                .prepare(
+                    "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE project_id IS NULL ORDER BY path",
+                )?
+                .query_map([], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        Ok(rows)
     }
 
     pub fn insert_attachment(&self, a: NewAttachment) -> Result<(), StoreError> {
@@ -839,6 +910,95 @@ impl Store {
         self.must_touch(rows, id)
     }
 
+    /// `memory.path` — rename only (D7: the six commands include rename).
+    /// Revision is untouched: the note keeps its history under a new path.
+    pub fn rename_memory_path(
+        &self,
+        id: &str,
+        new_path: &str,
+        updated_at: i64,
+    ) -> Result<(), StoreError> {
+        let rows = self.conn.execute(
+            "UPDATE memory SET path = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![new_path, updated_at, id],
+        )?;
+        self.must_touch(rows, id)
+    }
+
+    /// Delete one note by its project-scoped path. Returns true when a row
+    /// went away. Individual notes are always deletable (D10); deleting a
+    /// thread never touches this table — it holds no thread reference.
+    pub fn delete_memory_by_path(
+        &self,
+        project_id: Option<&str>,
+        path: &str,
+    ) -> Result<bool, StoreError> {
+        let rows = match project_id {
+            Some(pid) => self.conn.execute(
+                "DELETE FROM memory WHERE project_id = ?1 AND path = ?2",
+                rusqlite::params![pid, path],
+            )?,
+            None => self.conn.execute(
+                "DELETE FROM memory WHERE project_id IS NULL AND path = ?1",
+                rusqlite::params![path],
+            )?,
+        };
+        Ok(rows > 0)
+    }
+
+    /// Account reset: every note in every scope, permanent (D8). Returns the
+    /// count removed.
+    pub fn delete_all_memories(&self) -> Result<usize, StoreError> {
+        Ok(self.conn.execute("DELETE FROM memory", [])?)
+    }
+
+    /// Read one thread's memory setting, if the row exists.
+    pub fn get_memory_setting(&self, thread_id: &str) -> Option<(bool, bool)> {
+        self.conn
+            .query_row(
+                "SELECT paused, include_sensitive FROM memory_setting WHERE thread_id = ?1",
+                [thread_id],
+                |row| Ok((row.get::<_, i64>(0)? == 1, row.get::<_, i64>(1)? == 1)),
+            )
+            .ok()
+    }
+
+    /// Read the singleton account setting, if the row exists.
+    pub fn get_account_setting(&self) -> Option<(bool, bool)> {
+        self.conn
+            .query_row(
+                "SELECT paused, include_sensitive FROM account_setting WHERE id = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)? == 1, row.get::<_, i64>(1)? == 1)),
+            )
+            .ok()
+    }
+
+    /// How many messages a thread holds. The per-thread memory toggle locks
+    /// after the first send (D9): `set_thread_memory_off` consults this.
+    pub fn thread_message_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM message WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// `thread.memory_off`, settable only before the first message (D9).
+    /// There is no `UPDATE thread SET memory_off` setter: the toggle writes
+    /// through this checked path, so a post-send flip is a typed error, not
+    /// a silent row change.
+    pub fn set_thread_memory_off(&self, thread_id: &str, off: bool) -> Result<(), StoreError> {
+        if self.thread_message_count(thread_id)? > 0 {
+            return Err(StoreError::Locked(thread_id.to_string()));
+        }
+        let rows = self.conn.execute(
+            "UPDATE thread SET memory_off = ?1 WHERE id = ?2",
+            rusqlite::params![i64::from(off), thread_id],
+        )?;
+        self.must_touch(rows, thread_id)
+    }
+
     /// `memory_setting.*` — pause / include_sensitive (D8). Replace, not a
     /// partial write: the row is the whole setting.
     pub fn upsert_memory_setting(
@@ -866,6 +1026,75 @@ impl Store {
             rusqlite::params![i64::from(paused), i64::from(include_sensitive)],
         )?;
         Ok(())
+    }
+
+    /// Path of the attachment already stored for `(project, hash)`, if any.
+    /// Backs per-project upload dedupe (D52): same bytes, same project means
+    /// the existing copy, never a second file.
+    pub fn attachment_path_for_hash(
+        &self,
+        project_id: Option<&str>,
+        content_hash: &str,
+    ) -> Option<String> {
+        match project_id {
+            Some(pid) => self
+                .conn
+                .query_row(
+                    "SELECT path FROM attachment WHERE project_id = ?1 AND content_hash = ?2",
+                    rusqlite::params![pid, content_hash],
+                    |row| row.get(0),
+                )
+                .ok(),
+            None => self
+                .conn
+                .query_row(
+                    "SELECT path FROM attachment WHERE project_id IS NULL AND content_hash = ?1",
+                    [content_hash],
+                    |row| row.get(0),
+                )
+                .ok(),
+        }
+    }
+
+    /// Highest committed version of one artifact, if any. Refresh bumps,
+    /// never rewrites: one live artifact per `(thread, artifact_id)`.
+    pub fn max_artifact_version(&self, thread_id: &str, artifact_id: &str) -> Option<i64> {
+        self.conn
+            .query_row(
+                "SELECT MAX(version) FROM artifact WHERE thread_id = ?1 AND id = ?2",
+                rusqlite::params![thread_id, artifact_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Insert an artifact row at an explicit version (refresh path).
+    pub fn insert_artifact_version(&self, a: &NewArtifact, version: i64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO artifact (id, thread_id, version, title, media_type, source_path, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![a.id, a.thread_id, version, a.title, a.media_type, a.source_path, a.created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Recorded `source_path` for one versioned row, if it exists. The e2e
+    /// asserts this against the file on disk: the row and the bytes must
+    /// agree, or a layout change breaks one side silently (found by mutation).
+    pub fn artifact_source_path(
+        &self,
+        thread_id: &str,
+        artifact_id: &str,
+        version: i64,
+    ) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT source_path FROM artifact WHERE thread_id = ?1 AND id = ?2 AND version = ?3",
+                rusqlite::params![thread_id, artifact_id, version],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
     }
 
     /// `artifact.compiled_path` — set once after the Worker transform.

@@ -1,20 +1,27 @@
 # Task 013 — Artifact drawer
 
-**Phase** 3 · **Depends** `001` verdict · **Decisions** D1, D2, D3, D45, D63, D77
+**Phase** 3 · **Depends** `001` verdict · **Decisions** D1, D2, D3, D45, D63, D77, D108
 **Contracts** §1, §2
 
 **Gated on `Task/001`.** If WebKitGTK does not hold an opaque origin, artifacts ship Windows-only and
 Linux gets a runtime disable with a notice naming the reason (`D45`). Do not start this task before
 that verdict exists — the CSP and sandbox flags would otherwise be designed twice.
 
+**Status: backend + drawer states verified 2026-10-05 (Windows host).**
+Tool 3/3 (`crates/clauro-tools/tests/artifact.rs`), drawer state/gate/sandbox
+12/12 (`src/artifact.test.ts`, `src/ArtifactDrawer.test.tsx`), app boots without
+crashing in a real browser (boot gate holds without Tauri). Webview-observable
+criteria below are **NOT RUN ON THIS HOST** — no tauri-driver until 021; the
+001 spike proved the *shape* on WebView2, the product frame is unverified.
+
 ## Failing tests first
 
-- The iframe's `contentWindow` has **no reachable path** to `window.__TAURI_INTERNALS__`
-- `parent.document` access from inside the frame is refused
-- `event.origin` from the frame is `"null"`
-- A `fetch` from inside the frame to any host **fails**
-- A refused `MessageChannel` handshake leaves the frame inert, not broken
-- On a Linux build where the gate fires: artifacts are absent **and** the notice explains why
+- [ ] The iframe's `contentWindow` has **no reachable path** to `window.__TAURI_INTERNALS__` — **NOT RUN.** Needs a real webview (021). The frame carries no Tauri API import by construction (no `api` import in the drawer tree).
+- [ ] `parent.document` access from inside the frame is refused — **NOT RUN**, same reason
+- [ ] `event.origin` from the frame is `"null"` — **NOT RUN**, same reason
+- [ ] A `fetch` from inside the frame to any host **fails** — **NOT RUN**, same reason (CSP assembly is 014's)
+- [ ] A refused `MessageChannel` handshake leaves the frame inert, not broken — **NOT RUN**, same reason (channel is 014's)
+- [x] On a Linux build where the gate fires: artifacts are absent **and** the notice explains why — `src/artifact.test.ts:66`, `src/ArtifactDrawer.test.tsx:44` (gate matrix + notice render; engine proof itself pending 021)
 
 ## Do
 
@@ -52,9 +59,10 @@ nothing to do with artifacts.
 
 ## Acceptance criteria
 
-- [ ] No reachable path to Tauri internals
-- [ ] `parent.document` refused; `event.origin` is `"null"`
-- [ ] Outbound request from inside the frame fails
-- [ ] Windows and Linux both render — or Linux disables with a notice
-- [ ] Artifact tool schema is ours, documented
-- [ ] `DESIGN.md` §3 matches the shipped behaviour
+- [ ] No reachable path to Tauri internals — **NOT RUN ON THIS HOST** (needs webview, 021)
+- [ ] `parent.document` refused; `event.origin` is `"null"` — **NOT RUN ON THIS HOST**, same
+- [ ] Outbound request from inside the frame fails — **NOT RUN ON THIS HOST**, same (CSP: 014)
+- [x] No user-facing control weakens sandbox tokens or CSP — flags are host-fixed (**D108**) — `src/artifact.test.ts:44-49` (`allow-scripts` exact, `allow-same-origin` throws); no settings UI for flags exists
+- [x] Windows and Linux both render — or Linux disables with a notice — gate matrix + notice render (see above); engine proof pending 021
+- [x] Artifact tool schema is ours, documented — `crates/clauro-tools/src/registry.rs` artifact block (`title`, `mediaType`, `source`, optional `artifactId`); strict validation in `crates/clauro-tools/src/artifact.rs` (the "classifier" the contract points at)
+- [x] `DESIGN.md` §3 matches the shipped behaviour — §3 states the D45 guarantee; tabs/download promise corrected to v2-only per `SPEC.md` §5 (D87)

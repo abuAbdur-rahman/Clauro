@@ -12,7 +12,7 @@ is then a real obligation rather than a courtesy, and the research assumed open 
 | Shell | **Tauri v2** (Rust) | Chromium-free. WebView2 on Windows, WebKitGTK on Linux. ~25 MB binary vs ~150 MB for Electron. Pinned at **2.12.1**, far above the CVE-2024-35222 fix. |
 | Language (shell) | **Rust, 2021 edition** | Required by Tauri. Also the right language for a process runner and a path-safety layer. |
 | Language (web) | **TypeScript 6.0, strict** | The whole contract surface is types. `strict` is non-negotiable. **Pinned to what Tauri's own `react-ts` template ships** — see §1.1. |
-| UI | **React 19** | The ecosystem and the concurrent-rendering model suit a streaming transcript. |
+| UI | **React 19 + vendored shadcn** (Radix primitives, `cva`/`clsx`/`tailwind-merge`, app-shell only — D112) | The ecosystem and the concurrent-rendering model suit a streaming transcript. Hand-rolled Sidebar/Dialog/Select re-opens the a11y bugs Radix closed. |
 | Icons | **`lucide-react`** (ISC) | 1,600+ inline-SVG components, tree-shakable ES modules. App shell only — see §1.2. **D96.** |
 | Build | **Vite 8** | Fast HMR; the production build is what lands in the binary. Rolldown-based. |
 | Styling | **Tailwind 4** via `@tailwindcss/vite` | No-build-step utilities. Also the reason artifacts can be told to use *only* predefined classes. |
@@ -72,15 +72,21 @@ clauro/
 │  │                    Pure arithmetic over injected measurement — no provider calls.
 │  ├─ clauro-tools/     the eight handlers + registry + permission resolution.
 │  │                    CONTRACTS.md §3.
+│  ├─ clauro-loop/      serial turn loop + system prompt + queue.
+│  │                    CONTRACTS.md §2, §3. May use core/store/transport/tools.
 │  └─ clauro-fs/        workspace tree, path safety, process runner.
 │                       CONTRACTS.md §1 Windows rules, §3 fs/bash contracts.
 └─ src-tauri/           Tauri shell: commands, capabilities, CSP assembly.
                         The only crate that knows Tauri exists.
-└─ src/                 React 19 web app.
+└─ src/                 React 19 web app, feature-based (D112):
+                        app/ (shell entry) · features/<name>/ (logic + colocated
+                        tests + index.ts barrel) · components/ (shared UI;
+                        components/ui/ is vendored shadcn, 025) · lib/ (utils).
 ```
 
 **Dependency rule:** `clauro-core` depends on nothing but `serde`. Dependencies point inward. A
-handler in `clauro-tools` may not import `tauri`.
+handler in `clauro-tools` may not import `tauri`. `clauro-loop` may use core, store, transport and
+tools — never `tauri`.
 
 ## 3. Transport
 
@@ -232,7 +238,16 @@ table is the evidence that the rules were applied.**
 | `reqwest` (Rust) | `0.13.x` → **0.13.1** | `rustls` + `webpki-roots`, no OpenSSL. `docs/dependencies.md` §4.2. |
 | `rusqlite` (Rust) | `0.40.x` | `bundled`. |
 | `serde_json` (Rust) | `1.x` | `serde`'s only sane JSON impl; hand-rolled parsing rejected. In tree since 003 (catalogue); store adopts same for block payloads. |
+| `sha2` (Rust) | `0.10.x` | Content hashing for per-project upload dedupe. Boring standard; alternatives (blake3: newer, narrower audit base; hand-rolled: never for hashing). |
+| `html2text` (Rust) | `0.17.x` | HTML→markdown for `web-fetch`. Hand-rolled tag stripping is a bug farm; the maintained line, not the stale 0.12 one. |
+| `jsdom` | `^30` | Component tests need a DOM; node env has none. Alternative (no component tests, eyeball only) rejected: drawer states are acceptance criteria. |
+| `@testing-library/react` | `^16` | React 19-compatible renderer queries. Alternative (manual DOM asserts) rejected: role-based queries match the a11y contract. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
+| `sucrase` (JS) | `^3.35` → **3.35.1** | The JSX/TS transform for artifacts, in a Worker (**D4**). MIT. Alternatives rejected: Babel (`@babel/standalone` is ~3 MB against a 202 kB transform, and its plugin set is the wrong shape for one job); TypeScript's own compiler (~8 MB, and `transpileModule` still emits `React.createElement`-shaped output with no pragma control); esbuild-wasm (a WASM runtime to do what Sucrase does in JS). Measured, not assumed — see `docs/build-baseline.md`. Last release 2025-11-19; the newest of the three candidate transforms by a wide margin. |
+| `shadcn` primitives (vendored copy, app-shell only) | Radix `dialog **1.1.23**` · `select **2.3.7**` · `separator **1.1.15**` · `slot **1.3.3**` · `tooltip **1.2.16**` · `collapsible **1.1.20**` · `label **2.1.15** + `cva **0.7.1**` + `clsx **2.1.1**` + `tailwind-merge **3.7.0**` + `tw-animate-css **1.4.0**` | **D112.** Sidebar/Dialog/Select instead of hand-rolled — a hand-rolled dialog re-opens the focus-trap bugs Radix closed. Copy, not a package: vendoring *is* the install. All MIT except `cva` (Apache-2.0) — both MIT-compatible. Scope is the app shell exactly like `lucide-react` (**D96**): nothing Radix ever enters the artifact frame (`D2`, `D3`, `D83`). Full record in `docs/dependencies.md` §7. |
+| `@testing-library/user-event` (dev) | `^14.6.7` | MIT. Real pointer/keyboard dispatch for Radix `Select` interaction tests. Alternative rejected (`fireEvent` only): Radix opens on pointer events jsdom `click` does not reproduce. |
+| Radix `avatar **1.2.6**` · `dropdown-menu **2.1.24**` · `progress **1.1.16**` · `scroll-area **1.2.18**` | MIT, Radix line | **D112, `Tasks/026`.** Message-row avatars, message actions, transcript scrollbars, compaction progress. Alternatives rejected: hand-rolled menu/focus wiring (the 025 argument, unchanged); `native-scroll` styling (scrollbars stay native-unbranded and unthemeable). Full record in `docs/dependencies.md` §7. |
+| `dompurify` (JS) | `^3.4` → **3.4.16** | SVG sanitisation, dynamically imported so it is never in the main chunk (**D4**). Alternatives rejected: hand-rolled allowlists (a sanitiser is a bug farm, and this one has a CVE history we would be re-opening); the browser's own `Sanitizer` API (not in any shipping engine). **Licence is `(MPL-2.0 OR Apache-2.0)` and we take the Apache-2.0 option**, which is MIT-compatible; recorded explicitly because MPL is file-level copyleft and a reviewer should not have to go looking. Last release 2026-09-23. |
 
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
 `@tauri-apps/cli` expect.
@@ -250,7 +265,7 @@ its own task, and each still needs a `TECH_STACK.md` row before it is installed.
 | Virtualised transcript | `@tanstack/react-virtual` 3.14 | MIT | Likely — a long thread is a flat append-only list that must not render every block. |
 | Markdown in transcript | `react-markdown` 10.1 | MIT | Likely. Sanitisation is ours to get right; not a default-export decision. |
 | Syntax highlight | `shiki` 4.5 | MIT | Likely. TextMate grammars, no eval. |
-| Command palette | `cmdk` 1.1.1 | MIT | Likely for **D42/D44**. |
+| Command palette | `cmdk` 1.1.1 | MIT | **Superseded for the shell by D112** — shadcn `Dialog` covers the palette states; `cmdk` stays recorded until `Tasks/020` decides. |
 | Hotkeys | `react-hotkeys-hook` 5.3 | MIT | Likely for **D66**. |
 | SSE framing | `reqwest-sse` 0.2.0 | MIT | **Not adopted** — §3.1, **D97.** |
 | Pseudo-terminal for `bash` | `portable-pty` 0.9.0 | MIT | Open question for **D28/D30** — a pty changes signal and exit-code semantics. |

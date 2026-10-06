@@ -1091,6 +1091,201 @@ while `CONTRACTS.md` §5's four rules are Anthropic event *semantics* we own eit
 a fixture — and six stars with one maintainer is a supply-chain surface on the most load-bearing
 crate in the project. Revisit when it reaches a real release cadence.
 
+**D98 — The composer queues follow-ups sent mid-stream; stop offers drain-or-discard.**
+
+Decided 2026-10-04. Observed behaviour (inspiration only, D103): sending while a turn is
+running appends instead of blocking, and stopping aborts the fetch while asking whether the unsent
+queue drains or is discarded. Fits serial dispatch (D85): the queue is a per-thread FIFO in the
+host, rendered as removable chips, drained in order when the loop goes idle. No parallel calls, no
+new block kinds. Owned by `Tasks/023` (loop) with the keep-work half already in `Tasks/006` (D68).
+
+**D99 — Regenerate and edit-resend append new rows; fork copies a prefix into a new thread.**
+
+Decided 2026-10-04. Append-only (D19) already permits a correction as a new row at a higher `seq`;
+regenerate-last and edit-resend are that rule applied to the composer — no branching tree, no
+sibling navigation. Fork-from-here copies the thread's prefix rows into a new thread under new ids;
+the source history is untouched, which keeps the prefix guarantee and the generation counter (D63)
+intact. Incognito threads cannot be forked from the UI, for the same reason they cannot be exported
+(D37): a fork is a history record. Owned by `Tasks/006` (regenerate) and `Tasks/019` (fork).
+
+**D100 — Transcript HTML is purified before render; streaming markdown parses at most once per frame.**
+
+Decided 2026-10-04. Clauro purifies SVG inside the artifact frame (A6) but left the transcript-HTML
+path implicit — observed gap. Behaviour, in our own words: any model or tool HTML reaching the
+transcript DOM passes the purifier first; long generations reparse at most once per animation frame;
+long code blocks collapse with a hidden-line count. Zero new security surface beyond the existing
+purifier. Owned by `Tasks/006`.
+
+**D101 — A second `question` call in one assistant turn is refused as a typed `tool_result`.**
+
+Decided 2026-10-04. C8 caps one question per turn but left the mixed-call hole: a turn calling
+`question` alongside another tool. The host enforces sole-call — `question` must be the only call in
+the turn — refused silently like the other question refusals (D43), so the model cannot probe the
+guard. Five lines of validation, no new surface. Owned by `Tasks/009`.
+
+**D102 — In-frame navigation is contained: same-origin stays in the frame, external targets blocked.**
+
+Decided 2026-10-04. MISSION already names self-navigation as a probed-not-closed hole (D90).
+Behaviour: link clicks inside the artifact frame never escape the frame; same-origin targets are
+contained, external targets are dropped with a logged note. Testable alongside the `Tasks/001` and
+`Tasks/014` probes; extends A4 without weakening D2. Owned by `Tasks/014`.
+
+**D103 — Open WebUI is observation-only inspiration; nothing is ported from it.**
+
+Decided 2026-10-04. Open WebUI ships under a custom licence with a branding-preservation
+requirement, incompatible with Clauro's MIT lineage (SPEC §1). Same rule as LobeHub (D59, D60) and
+the same wording bar as first-party material (D39): behaviour may be mirrored with our own
+implementation in our own words — no code, no prompt text, no component or class names cross over.
+The Rust-vs-web stack makes line-porting moot; the rule stands regardless of stack.
+
+**D104 — Deferred shapes are recorded here, not built; each needs its own task to promote.**
+
+Decided 2026-10-04. Parked with reasons: artifact version stepper + download (v2 — the render must
+be trustworthy before history can be pinned); web allow/block lists + fetch caps + truncation
+disclosure (v2 tightening of `Tasks/011`); Topics path-group browsing + dedup-on-add + batch ops +
+injection budgets (after `Tasks/008` lands); bounded file grep over attachments (v2 `fs`,
+`Tasks/010`); system-theme boot without flash (with `Tasks/020`); camera-frame-as-attachment,
+cached TTS, single-endpoint STT, image-gen-as-tool (v2/v3 media); parallel multi-model panes +
+sibling-branch history (unplanned — needs its own D-number); standalone notes, channels, server
+automations, RBAC/SSO, cross-user analytics (never — MISSION is not a hosted service).
+
+**D105 — The queue drains as in-order turns, never merged; chips remove, edit, or send-now.**
+
+Decided 2026-10-04. D98 left drain shape open; the observed merge-into-one alternative changes
+meaning (N intents become 1 turn), so this pins it: each queued item dispatches as its own turn, in
+order, when the loop goes idle. Queue chips support three ops — remove, edit, send-now (send-now
+stops generation without draining, then sends that item). No new block kinds. Owned by `Tasks/023`.
+
+**D106 — A truncated turn resumes via continue-append, not via regenerate.**
+
+Decided 2026-10-04. Observed affordance with an append-only-compatible shape: `continue` flips a
+finished-but-truncated assistant message back to unfinished and resumes it, appending to the same
+turn. Regenerate stays for redoing a turn; continue is for finishing one. No rewrite, no sibling.
+Owned by `Tasks/006`.
+
+**D107 — Scope rows made explicit: calendar, image-gen, standalone notes, eval-arena, video-call.**
+
+Decided 2026-10-04. D104 parked these inside umbrella rows; the audit found each deniable without
+its own line, so each gets one in SPEC §5: shared calendar (never — sync/multi-user state; a
+pure-local calendar stays unplanned), image-gen-as-tool (v2/v3 media), standalone shared notes
+(never — Projects plus memory Topics cover the local need; sharing drags sync back in), eval-arena
+and ELO (never — leaderboards need crowds; the local usage footer is the allowed complement),
+video-call (never — appended to the voice row). No implementation, only rows.
+
+**D108 — Sandbox and CSP are host-fixed; no runtime code-load or dependency install exists.**
+
+Decided 2026-10-04. The observed failure mode is a user toggle re-adding a sandbox token and an
+empty-default CSP string: both void the opaque-origin claim, so no user-facing control may weaken
+sandbox tokens or CSP — A1/A3 state this outright. Separately, the observed plugin class (authored
+source executed in a fresh namespace, frontmatter shell-installing packages) has no Clauro analog:
+the tool set is fixed at eight, nothing loads code at runtime, nothing installs dependencies.
+Owned by `Tasks/013`/`014` (fixed flags) and `Tasks/007` (fixed registry).
+
+**D109 — Approval has typed states; served files carry disposition; one writer; ledger over fields.**
+
+Decided 2026-10-04. Four hardening lines from the audit. (1) Ask-mode approval is a typed state
+machine — queued, pending, approved, rejected — with resume/drain on approve and a typed `error`
+result on reject; tests assert the states, not just that approval exists. Owned by `Tasks/007`.
+(2) Served tool-output files use attachment disposition with nosniff for non-media types — an XSS
+rule A4/A6/T8 did not state. Owned by `Tasks/010`. (3) Single writer assumed: last-writer-wins
+applies to the four mutable tables only; history rows are never merged. (4) Checkpoint state lives
+in ledger rows, not message fields — a field is silently overwritable by an upsert path, a row is
+not. Both recorded in `CONTRACTS.md` §1.
+
+**D110 — Artifact JSX compiles to a host-owned `h()` that builds DOM nodes. No JS runtime is bundled.**
+
+Decided 2026-10-05 by `Tasks/014`. `D4` settled *that* JSX/TS compiles in-browser with Sucrase and
+never said what it compiles **to**. Sucrase is a transform, not a runtime: its `jsx` transform emits
+calls to whatever pragma you name. The obvious answer is React, and it is the wrong one here - it puts
+~150 KB and a second component model, with its own escaping semantics, inside the one place the
+product's security claims live, in exchange for a function that makes one DOM node.
+
+So the frame ships `h(tag, props, ...children)` - twenty-odd lines, written here, building `Node`s
+directly. Two consequences, both intended. An artifact's only capability is the DOM it can already
+reach, and the prompt can tell the model a plain, checkable thing (`h("div", { class: "p-4" }, ...)`)
+instead of a framework's rules. Markup is HTML with `<script type="text/jsx">` blocks, so a purely
+static artifact needs **no script at all** - no transform, no timeout, nothing to go wrong.
+
+Rejected: shipping React in the frame (size + a second escaping model inside the boundary); writing
+compiled output as a string into the document (no error attribution, and it re-opens the injection
+question DOMPurify exists to close); TypeScript-only artifacts (forces JSX authors to learn
+`React.createElement` call shapes, which is the thing JSX exists to avoid).
+
+**D111 — The artifact's Tailwind CSS is vendored by `Tasks/022`, not here; `014` owns the constraint,
+not the bytes.**
+
+Decided 2026-10-05 by `Tasks/014`. `D5` requires artifacts to use only *predefined* utility classes
+and calls that "precisely what makes a no-build-step Tailwind possible inside them" - which is true
+only if the CSS actually exists in the frame. It does not yet: the app's own Tailwind build
+tree-shakes to the classes `src/` uses, so a utility an artifact asks for may be absent, and an
+artifact that renders unstyled looks broken and reads as a sandbox failure.
+
+Deliberately **not** solved here. The bytes are a vendoring and bundle-budget decision, it lands in
+`022` alongside the Sucrase budget line that task already owns, and shipping a whole prebuilt
+stylesheet is exactly the kind of "looks like diligence, actually inflates the binary" move that
+`AGENTS.md` §5a warns against. `014` therefore states the constraint in the system prompt and wires
+a stylesheet slot the frame can be given, and leaves the slot empty rather than faking it. Artifacts
+render with **no** Tailwind until `022` fills it - visible, honest, and tracked.
+
+**D112 — The frontend is feature-based, and shared UI is vendored shadcn, app-shell only.**
+
+Decided 2026-10-06 by `Tasks/024` (layout) and `Tasks/025` (shadcn). Two halves, one decision:
+the flat `src/` that served the Phase-0 shell does not survive Phase-5 surfaces, and hand-rolled
+Sidebar/Dialog/Select re-opens the a11y and focus-trap bugs Radix already closed.
+
+*Layout.* `src/features/<name>/` owns logic plus colocated tests, with an `index.ts` barrel;
+`src/components/` owns shared UI (`components/ui/` is vendored shadcn, never hand-edited except
+to tweak); `src/app/` owns the shell entry (`App.tsx`); `src/lib/` owns `utils.ts` (`cn()`).
+`frame-runtime.js` keeps shipping to the sandbox as raw text and never enters the app bundle.
+A move is proven by `tsc` clean plus the full vitest suite green with zero behaviour change —
+`Tasks/024` moved 31 files and all 95 tests passed untouched.
+
+*shadcn.* Copy, not a package: shadcn is Radix primitives plus `cva`/`clsx`/`tailwind-merge`
+pasted into `components/ui/`, so vendoring is the install and tweaking is the point. Pinned
+in `TECH_STACK.md` §7.1 with the rejected alternative (hand-rolled dialog/select/sidebar —
+a bug farm with a focus trap) and the licence record (all MIT/Apache-2.0). Scope is the app
+shell, exactly like `lucide-react` (**D96**): nothing Radix ever enters the artifact frame
+(`D2`, `D3`, `D83`), and `components.json` plus the `@/*` alias are config, not surface.
+`TECH_STACK.md` §7.2's `cmdk` row is superseded for the palette shell — the Dialog+Command
+pair covers **D42**'s palette states — but `cmdk` stays recorded until `Tasks/020` decides.
+
+Rejected: a barrel per component file (indirection with no seam); keeping the flat layout
+until Phase 5 (every new surface would invent its own structure); `@radix-ui/react-icons`
+(fifteen icons, not a library — decided already in **D96**).
+
+**D113 — The Phase 3 gate e2e proves composition with test-local adapters; no production producer
+until a host drives turns.**
+
+Decided 2026-10-06 by `Tasks/028`. The gate clause "artifacts render live" has no producer:
+nothing calls `setCompiling`/`setLive` because no tool-result handler exists yet (`src/` was the
+Phase-0 shell; `PHASES.md` records the same gap against Phase 2). Adding a production producer
+now would repeat the exact trap `AGENTS.md` §7a names — implemented, tested, no caller — so the
+e2e wires the composition inside the tests instead: the Rust half drives `artifact` through the
+real loop into versioned rows, the frontend half drives a tool result through the real store
+actions plus the real `prepareArtifact` into a live render. Each half is production code under
+test; only the last-inch driver is test-local, and it is labelled as such.
+
+The same task applies the repo's no-silent-swallow standard to the three `let _ =` drops on the
+`D65`/`D68` paths (`run.rs`): a store persist failure returns `LoopError::Store` instead of
+vanishing. The turn does not "continue" past a dead store — there is no durable way to record
+that it did — so loud failure replaces silent loss, and the task file says so rather than
+claiming both.
+
+**D114 — Linux CI is parked until after full development; CI is Windows-only until `021`
+re-enables it.**
+
+Decided 2026-10-06 by direct order (no task — this is schedule, not design). Three facts
+forced it: Linux matrix jobs never complete (35-minute wall against a 30-minute job limit on
+cold builds — no cargo cache is configured and WebKit sys crates compile from scratch);
+re-running the same red costs hours and teaches nothing; and every Linux failure so far was
+either infra (timeout) or a Windows-reproducible logic bug (pidfile newline, 8.3 names) that
+Windows CI plus WSL-native runs already cover. The Linux entries are removed from `ci.yml`,
+preserved verbatim in `.github/workflows/linux-matrix.yml.disabled` (a non-`.yml` name GitHub
+never executes), and `021` re-enables them together with the cargo cache and timeout budget
+that make them meaningful. `D50` is unchanged — a floor failure is still a release blocker —
+but an unrun floor blocks nothing; it merely stays open. Windows primary + Windows floor are
+the CI gate until then.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
@@ -1172,6 +1367,7 @@ than a feature that is honestly absent.
 | Title-as-path | Unstable and unsafe. D32 |
 | A separate Gems feature | Duplicates Projects. D35 |
 | Agent half of a coding harness | Enormous surface, wrong product. |
+| Hosted-service traits — accounts, share links, channels, server automations, cross-user analytics | Not a hosted service. MISSION §"what it is not"; D103, D104 |
 | Voice, connectors/MCP, Chrome, Word add-in, Cowork | Server-side or a different product. |
 
 ## 8. Later, and why
@@ -1261,6 +1457,7 @@ document), and **guided learning** (the model quizzes you on what it just taught
 | Gemini app | proprietary | Gems, Canvas, staged research progress |
 | LibreChat (`LibreChat-AI/LibreChat@main`, MIT) | MIT | Summary accounting channel + pre-invoke marker (D57), boundary-marked checkpoints, incremental fold summariser, model-tokenomics resolution chain |
 | LobeHub (`lobehub/lobehub@canary`) | **LobeHub Community License — NOT open source (D59)** | Observation only: structural boundary detection as an idea (D61). No code reused. |
+| Open WebUI (`open-webui/open-webui`) | **Custom licence with branding clause — inspiration only (D103)** | Observed behaviour, mirrored in our own words and implementation. No code reused. |
 
 Full research with per-claim confidence ratings: `.agents/research/`. Read `DECISIONS.md` there for
 the 22 STEAL / 20 SKIP / 20 ADAPT derivation behind these decisions.

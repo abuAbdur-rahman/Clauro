@@ -276,6 +276,7 @@ fn generation_break_is_detected_by_position() {
     let mk = |id: &str, generation: i64| FullBlock {
         id: id.to_string(),
         message_seq: 1,
+        role: "assistant".to_string(),
         seq: 0,
         kind: "text".to_string(),
         payload: "{}".to_string(),

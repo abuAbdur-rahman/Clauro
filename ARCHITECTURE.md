@@ -13,7 +13,7 @@ a D-number, cited from here. **D87.**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  React 19 · TypeScript strict · Tailwind · Zustand                       │
+│  React 19 · TS strict · Tailwind · Zustand · shadcn (D112, shell only)  │
 │                                                                          │
 │  projects rail │ transcript │ artifact drawer │ palette │ settings        │
 └───────┬──────────────────────────────────────────────┬─────────────────┘
@@ -27,7 +27,8 @@ a D-number, cited from here. **D87.**
 └───────┬────────────────────────────────┘  └──────────────────────────────┘
         │
 ┌───────▼────────────────────────────────────────────────────────────┐
-│  clauro-core       ← no tauri. models, blocks, turn loop, rules    │
+│  clauro-core       ← no tauri. models, blocks, rules                 │
+│  clauro-loop        ← serial turn loop, prompt, queue               │
 │  clauro-transport  ← SSE + the two provider adapters              │
 │  clauro-tools      ← the eight handlers, registry, permissions    │
 │  clauro-fs         ← path safety, workspace layout, process run.  │
@@ -164,7 +165,7 @@ directly. Three consequences worth stating plainly:
 
 ## 4. Storage and the surface
 
-Eleven tables. The rule that matters: **history is append-only, and a compaction is a ledger entry,
+Twelve tables. The rule that matters: **history is append-only, and a compaction is a ledger entry,
 not a deletion** (**D84**).
 
 ```

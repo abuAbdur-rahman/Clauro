@@ -1,6 +1,6 @@
 # Task 010 — `fs` tool
 
-**Phase** 2 · **Depends** `007` · **Decisions** D31, D32, D33, D34, D44, D79
+**Phase** 2 · **Depends** `007` · **Decisions** D31, D32, D33, D34, D44, D79, D109
 **Contracts** §3
 
 **Scheduled after `008`/`009` and before `012 bash` on purpose** — this task is what proves the
@@ -59,17 +59,25 @@ proprietary wording verbatim inside an MIT repo — MIT cannot relicense it. Bor
 (2000-line default, `offset`, 2000-char line truncation, unique-match failure reporting, `replaceAll`
 for renames); **none of the wording**.
 
+**Status: backend complete and verified 2026-10-05 on this Windows host.**
+`cargo test -p clauro-tools --test fs_tool` 12/12. The handler is reachable
+— `crates/clauro-loop/src/run.rs:263` dispatches through the registry, so
+`read`/`list`/`glob`/`grep`/`write`/`edit` are callable. Unwired: `ingest_local_file`
+(needs its Tauri command, `018`), `serve_metadata` (no file serving yet),
+`session_dir`/`find_session_dir` (shell assembly unbuilt).
+
 ## Acceptance criteria
 
-- [ ] Read-before-edit enforced by host state
-- [ ] Project dir readable; nothing beyond it writable
-- [ ] Traversal, symlink escape, and Windows reserved names all rejected
-- [ ] Opaque IDs authoritative; a retitled thread does not orphan files
-- [ ] **Upload copies into the session workspace** (`attachments/`), never references the original path
-- [ ] The model is given path + size + media type only — never the file's bytes inline (**D47**)
-- [ ] Dedupe is per project: same file twice in one project → one copy; same file in two projects →
-      two copies (**D52**)
-- [ ] A Windows upload whose name is a reserved device name is renamed, not rejected — the user chose
-      that file and deserves it to work (**D79**)
-- [ ] Windows DACL semantics followed; staging inside `dirname(target)`, never `%TEMP%`
-- [ ] No prompt text overlaps any reference implementation
+- [x] Read-before-edit enforced by host state — `crates/clauro-tools/tests/fs_tool.rs:117` (refused, file unchanged), `:134` (succeeds after read; ambiguous without `replace_all`)
+- [x] Project dir readable; nothing beyond it writable — `fs_tool.rs:167` (project read ok, project write refused, `../` refused)
+- [x] Traversal, symlink escape, and Windows reserved names all rejected — `fs_tool.rs:195` (live symlink test where the host allows it); MAX_PATH via `clauro-fs`, `crates/clauro-fs/tests/paths.rs` overlong case
+- [x] Opaque IDs authoritative; a retitled thread does not orphan files — `fs_tool.rs:332` (lookup by id prefix finds the original dir with files intact; slug capped at 32)
+- [x] **Upload copies into the session workspace** (`attachments/`), never references the original path — `fs_tool.rs:228` (source untouched, copy in workspace)
+- [x] The model is given path + size + media type only — never the file's bytes inline (**D47**) — `fs_tool.rs:228` (`AttachmentMeta` carries no bytes field by construction)
+- [x] Dedupe is per project: same file twice in one project → one copy; same file in two projects →
+      two copies (**D52**) — `fs_tool.rs:244`
+- [x] A Windows upload whose name is a reserved device name is renamed, not rejected — the user chose
+      that file and deserves it to work (**D79**) — `fs_tool.rs:264` (`NUL.txt` → `_NUL.txt`)
+- [x] Windows DACL semantics followed; staging inside `dirname(target)`, never `%TEMP%` — `fs_tool.rs:285` (content correct, no temp residue; inheritance itself is OS-enforced on Windows)
+- [x] Served tool-output files use attachment disposition with nosniff for non-media types (**D109**) — `fs_tool.rs:307` (SVG and PDF download despite renderability)
+- [x] No prompt text overlaps any reference implementation — fs blurb pinned in `crates/clauro-tools/tests/descriptions.rs`; error strings hand-written, human-read

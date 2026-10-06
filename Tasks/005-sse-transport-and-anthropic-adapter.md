@@ -3,6 +3,26 @@
 **Phase** 1 · **Depends** `004` · **Decisions** D20, D21, D24, D48, D56, D69–D75, D80, D81
 **Contracts** §5
 
+**Status: the parser and both adapters are complete and verified 2026-10-04.** `cargo test -p
+clauro-transport` 32/32 on this host. All four named fixtures exist and assert exactly the four
+rules they were written for; the chunk-reassembly tests hold at chunk sizes 1, 2, 3, 5, 7, 13 and
+survive a multi-byte codepoint split.
+
+**Two criteria are PARTIAL, and both are honest deferrals rather than defects — but this file
+currently describes them as delivered behaviour, and that is a false claim.** Per
+`AGENTS.md` §5a that gets corrected here rather than left standing.
+
+1. **Retry is a policy, not a retry.** `retry_delay` is fully implemented and table-tested
+   (`src/retry.rs:22-97`, `tests/retry.rs:11-63`) but **has no caller** — there is no HTTP send loop
+   anywhere in the repo, and `src/lib.rs:10` says so outright. The line below saying "Transport-level
+   backoff on 429/5xx honouring `Retry-After`" describes behaviour that does not exist yet.
+2. **The OpenAI-compatible `notice` is never rendered.** The adapter emits `Ignored` correctly
+   (`src/openai_compat.rs:69-76`, `tests/openai_compat.rs:41-61`), but the only consumer of
+   `NormalisedEvent` discards it at `crates/clauro-loop/src/run.rs:425-427`. `ContentBlock::Notice`
+   and `insert_notice` both already exist and are used for other events — nothing routes `Ignored`
+   into it. Both source files already promise 006 will do this (`src/openai_compat.rs:10`,
+   `src/anthropic.rs:90-91`), so this is a known gap, not an oversight.
+
 ## Failing tests first
 
 Four fixtures, synthetic, **no live key**:
@@ -49,11 +69,38 @@ key is needed to choose.** `D75`.
 
 ## Acceptance criteria
 
-- [ ] Four fixtures pass; all synthetic
-- [ ] `cargo test` needs no network
-- [ ] Events split across chunks reassemble
-- [ ] Unknown event → `ignored`, stream continues
-- [ ] `thinking.block_binding.prefix_mismatch_behavior` sent on the correct path with its header
-- [ ] Compaction and context-management requests are structurally impossible to combine
-- [ ] 429/5xx retried with backoff; `Retry-After` honoured
-- [ ] OpenAI-compatible adapter renders an unrecognised event as a visible notice
+- [x] Four fixtures pass; all synthetic — all four exist under
+      `crates/clauro-transport/tests/fixtures/` (`omitted_thinking.sse`, `compaction_response.sse`,
+      `dropped_block.sse`, `unknown_event.sse`, plus `openai_unknown.sse`); tests at
+      `tests/parser.rs:45,112,134,153` assert the four named rules each. Hand-written, no key, no
+      live host, no real run ids
+- [x] `cargo test` needs no network — `crates/clauro-transport/Cargo.toml` has no
+      `[dev-dependencies]` at all; every function is pure over injected bytes; `src/lib.rs:53-57`
+      states `client()` "performs no I/O". No test in any crate reads a key or opens a socket
+- [x] Events split across chunks reassemble — `tests/parser.rs:86-97` asserts identical output at
+      chunk sizes 1, 2, 3, 5, 7, 13; `:99-108` keeps a multi-byte `héllo` intact across 3-byte
+      splits; `tests/stream_limits.rs` adds four more (split codepoint, oversized line, invalid
+      bytes, distinct indices)
+- [x] Unknown event → `ignored`, stream continues — `tests/parser.rs:153-170`; also `:197-212`
+      (malformed JSON → `Ignored`, not fatal); `src/anthropic.rs:113-117`
+- [x] `thinking.block_binding.prefix_mismatch_behavior` sent on the correct path with its header —
+      `src/build.rs:64` nests it under `block_binding`, never top-level; beta header at
+      `src/build.rs:70-73` (`THINKING_BINDING_BETA` at `:19`); asserted `tests/builders.rs:29-42`
+      (`D20`). Value is hardcoded `"drop_block"`; no criterion requires caller-selectability
+- [x] Compaction and context-management requests are structurally impossible to combine — two
+      disjoint input types with no shared field (`src/build.rs:32-40` vs `:44-49`); the normal
+      builder carries `context_management` (`:83-86`), the compaction builder carries `compaction`
+      (`:108`); `tests/builders.rs:53-72` asserts the other key is absent. Neither struct has a
+      field that could set the other parameter, so the unrepresentability argument holds (`D21`)
+- [ ] 429/5xx retried with backoff; `Retry-After` honoured — **PARTIAL. Policy only; no retry.**
+      Status set `408|429|5xx` at `src/retry.rs:28`, `Retry-After` parsed at `:31-35` including
+      HTTP-date form (`:45-97`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
+      `tests/retry.rs:11-63` covers all of it. **But `retry_delay` has no caller outside its own
+      test**, and no HTTP send loop exists (`src/lib.rs:10` defers it). See Status
+- [ ] OpenAI-compatible adapter renders an unrecognised event as a visible notice — **PARTIAL. The
+      adapter half is done, the render is not.** `src/openai_compat.rs:69-76` emits `Ignored` with
+      the object type preserved and `tests/openai_compat.rs:41-61` asserts the surrounding text
+      still arrives — but the only consumer drops it at `crates/clauro-loop/src/run.rs:425-427`.
+      `ContentBlock::Notice` (`clauro-core/src/content.rs:89`) and `insert_notice`
+      (`clauro-loop/src/run.rs:528`) exist and are used for `Error` and `InputTransformed`. See
+      Status

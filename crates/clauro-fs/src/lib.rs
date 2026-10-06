@@ -9,6 +9,8 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod runner;
+
 /// Conservative design target, budgeted from the drive root, not from `~`
 /// (D79). `MAX_PATH` is opt-out since Windows 10 1607 and bypassable with the
 /// `\\?\` prefix, so this is a floor for surprise, not a filesystem truth.
@@ -123,21 +125,18 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Resolve a model-supplied `user` path inside `root`.
-///
-/// Pipeline: reject empty → percent-decode → reject absolute (drive letters,
-/// leading separators, UNC, the `\\?\` bypass) → reject `..`, reserved names →
-/// join onto the canonicalised root → resolve symlinks/junctions through the
-/// longest existing prefix → containment check → length budget.
-///
-/// The returned path is absolute and canonical up to its non-existent tail.
-pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathError> {
+/// Check a model-supplied relative path without touching the filesystem:
+/// decode → reject absolute → reject `..`, reserved names → joinable tail.
+/// Used directly for virtual paths (`/memories/...`); `resolve_in_workspace`
+/// adds canonicalisation, symlink resolution, containment, and budget.
+pub fn check_relative_path(user: &str) -> Result<PathBuf, PathError> {
     if user.is_empty() {
         return Err(PathError::Empty);
     }
     // Backslashes are separators on the development host (Windows-only, §8a),
-    // so normalise before anything else. The containment check at the end is
-    // what makes this safe rather than trusting the split.
+    // so normalise before anything else. The containment check at the end of
+    // `resolve_in_workspace` is what makes this safe rather than trusting the
+    // split.
     let decoded = percent_decode(user).replace('\\', "/");
     if decoded.starts_with('/')
         || decoded.starts_with("//")
@@ -164,7 +163,18 @@ pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathErro
     if rel.as_os_str().is_empty() {
         return Err(PathError::Empty);
     }
+    Ok(rel)
+}
 
+/// Resolve a model-supplied `user` path inside `root`.
+///
+/// Pipeline: `check_relative_path` (pure) → canonicalise the root → resolve
+/// symlinks/junctions through the longest existing prefix → containment
+/// check → length budget.
+///
+/// The returned path is absolute and canonical up to its non-existent tail.
+pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathError> {
+    let rel = check_relative_path(user)?;
     let root_canon = root
         .canonicalize()
         .map_err(|e| PathError::Io(e.to_string()))?;

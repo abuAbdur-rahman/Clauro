@@ -7,6 +7,30 @@ true of *this* codebase.
 **Approach: TDD + SDD.** Spec-driven: no code without a task in `Tasks/`. Test-driven: no code without
 a failing test first. Both are non-negotiable and the reason this project is tractable.
 
+**What is in here and what is not.** Rules that must hold on **every** change are written out below
+and appear nowhere else. Rules that apply only **before a particular kind of work** live in
+`docs/references/` and are indexed in §0. A citation like **§8a** resolves through that index, so
+existing references in `Tasks/`, `DECISIONS.md`, `eslint.config.js` and elsewhere keep working.
+
+---
+
+## 0. Reference index — the situational rule sets
+
+**Split out of this file 2026-10-06.** Each row is the full text of a rule set; nothing is summarised
+away and nothing is duplicated. The headline in the second column is the part worth holding in your
+head when the file is not open.
+
+| Ref | Rule set | Read it when |
+|---|---|---|
+| **§4** | [**Porting and attribution**](docs/references/licensing-and-attribution.md) — three MIT repos may be ported; **LobeHub and Open WebUI never**; no Anthropic wording, ever | Before porting anything from another repo, or naming anything |
+| **§5a** | [**Adopt the wheel. Record the reference.**](docs/references/dependency-policy.md) — search before hand-rolling; record name, URL, rejected alternative, maintenance date | Before adding a dependency, or before hand-rolling anything non-trivial |
+| **§6** | [**Test-first**](docs/references/testing.md) — a test that has never failed proves nothing; no test may need a live key; fixture-first for the SSE parser | Before writing the first line of a test, and before touching the parser |
+| **§7** | [**Adding a feature**](docs/references/feature-workflow.md) — belongs? decided? contracted? tasked? tagged? does it move a security claim? | Before starting any feature |
+| **§7a** | [**Closing a task**](docs/references/task-closeout.md) — tick with a `path:line`, label what was not verified, prove it is wired into a caller | Before you say a task is done, in the same commit as the code |
+| **§8** | [**What needs a human, not an agent**](docs/references/escalation.md) — six triggers; stop and ask | Whenever any of the six triggers applies |
+| **§8a** | [**Development and testing are Windows-only, for now**](docs/references/windows-development.md) — a verdict is Windows-only until labelled otherwise | Before writing the word "verified" beside any measurement |
+| **§8b** | [**Windows shell tooling**](docs/references/windows-shell.md) — the PowerShell alias trap, and the never/use table | Before reaching for a shell tool |
+
 ---
 
 ## 1. The document set — read before you write
@@ -14,7 +38,7 @@ a failing test first. Both are non-negotiable and the reason this project is tra
 | File | What it is | Read it when |
 |---|---|---|
 | `MISSION.md` | What this is and what it is not | Once, then whenever you are unsure whether a feature belongs |
-| `DECISIONS.md` | **D1–D97.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
+| `DECISIONS.md` | **D1–D114.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
 | `CONTRACTS.md` | The shapes tests assert against | Before writing any type or any test. **If your type cannot cite a D-number, stop.** |
 | `FEATURES.md` | Provenance: CALLED / PORTED / MIRRORED / ORIGINAL + terminology | Before porting anything, or naming anything |
 | `SPEC.md` | **Normative v1 scope**: what must exist, each with the task that proves it | Before estimating, scoping, or accepting a feature |
@@ -110,26 +134,12 @@ a typed `tool_result`. **D43.**
 
 ---
 
-## 4. Porting and attribution — this project borrowed, and honesty about it is a requirement
+## 4. Porting — the one-line version
 
-**Three MIT sources may be ported:** OpenCode (`anomalyco/opencode`, `dev`), DeepSeek Harness
-(`deepseek-ai/deepseek-harness`, `master`), LibreChat (`LibreChat-AI/LibreChat`, `main`).
-
-**One repo is observation-only and nothing may be taken from it:** LobeHub. Its licence requires a
-commercial agreement for any derivative work and reserves unilateral amendment. Clauro is MIT, so
-LobeHub's code, prompts and wording are all off limits. Behaviour may be described as evidence.
-**D59, D60.**
-
-**Anthropic's first-party material is proprietary.** Behaviour may be mirrored. **No wording may be
-reused** — including documentation quotes. **D39.** If you catch a verbatim quote from their docs in
-this repo, that is a bug; paraphrase it and cite the URL.
-
-**Two MIT repos contain proprietary prompt text inside them.** OpenCode's `read` and `edit` prompts
-carry first-party wording verbatim; MIT cannot relicense it. Our `fs` prompts are written from
-scratch. Behaviour is borrowed, wording is ours.
-
-**Every port carries attribution** in the file it lands in. `FEATURES.md` tracks which is which.
-If you cannot say which of the four tags a change is, it is not ready to merge.
+Full text: [`docs/references/licensing-and-attribution.md`](docs/references/licensing-and-attribution.md).
+**OpenCode, DeepSeek Harness and LibreChat may be ported. LobeHub and Open WebUI may not, in any form,
+for any reason — behaviour only, in our own words and our own implementation.** Anthropic's wording
+is never reusable. Every port carries attribution in the file it lands in.
 
 ---
 
@@ -148,122 +158,8 @@ If you cannot say which of the four tags a change is, it is not ready to merge.
 - Dependencies point inward: `clauro-core` depends on nothing but `serde`. A handler in
   `clauro-tools` may not import `tauri`.
 - **No new dependency without a line in `TECH_STACK.md` §6 explaining why the obvious alternative
-  was rejected.**
-
----
-
-## 5a. Adopt the wheel. Record the reference.
-
-**Added 2026-10-04.** The instinct to hand-roll is the expensive one, and it is the one this project
-is most likely to indulge because it feels like diligence. It is not. A hand-rolled text diff is a
-bug farm with a nice UI.
-
-**Before writing anything non-trivial, search for the library that already does it.** Both
-registries: `npm view`, and `crates.io/api/v1/crates/<name>`. This applies to parsing, diffing,
-watching a filesystem, and every algorithm someone else debugged for a decade.
-
-**Then vet it, and write down what you found.** A dependency nobody can reconstruct six months from
-memory is a dependency nobody dares remove. Every adopted dependency records:
-
-1. **Name, version, licence.** Must be MIT/ISC/Apache-2.0/CC0-compatible with our MIT licence.
-2. **The URL** — repo or registry page.
-3. **The alternative rejected, and why.** This is the part that matters. Without it the next person
-   re-litigates the decision.
-4. **The maintenance state as of the date checked.** Last release date, not download count —
-   downloads reward abandonment. `eventsource-stream` has 25M downloads and died in 2022.
-
-**Prefer the maintained thing over the popular thing.** Six stars with a release last month beats
-six hundred thousand downloads with no release since 2022.
-
-**A false claim in a spec is a bug.** When research invalidates something written down — the way
-`reqwest-sse` invalidated "both SSE crates are unmaintained" — correct it in the same change and
-keep the correction visible. Do not quietly rewrite history and do not leave the false claim standing.
-
-**Research is not installation.** `TECH_STACK.md` §7.2 and `docs/dependencies.md` §5 list wheels that
-were identified and vetted so the owning task does not re-research them. Nothing in those tables is
-installed. Each still needs its own task and its own row before it lands.
-
-**Scope discipline.** "We should use a library for this" is a claim to verify, not a licence to add
-four. A dependency crossing the artifact sandbox or the tool host is a **security-surface change**,
-not a convenience — see §8.
-
----
-
-## 6. Test-first, and what that means concretely
-
-Every task in `Tasks/` names a failing test that must exist before implementation. The discipline that
-matters:
-
-```
-1. Write the test. Run it. Watch it fail for the right reason.
-2. Write the minimum that makes it pass.
-3. Refactor with the test green.
-```
-
-**A test that has never failed proves nothing.** If you write the test and the implementation
-together, the test is a description of what you built, not a check on it. This is how the D54 / D57 /
-D64 class of bug reaches shipping — they all looked fine until something that was not considered
-rendered as 0/0.
-
-**No test requires a live API key.** That is a design constraint. A test that needs a key is a test
-that silently stops running. SSE fixtures are synthetic and live in
-`crates/clauro-transport/tests/fixtures/`.
-
-**The seams already exist** — `CONTRACTS.md` §7 lists them. Your test hangs off a contract, not off a
-prose description of a decision.
-
-**Fixture-first for the parser.** Omitted thinking, a compaction response, a dropped block, an
-unknown event. These are the four a hand-rolled SSE parser gets wrong, and three of them fail
-silently.
-
----
-
-## 7. Adding a feature
-
-1. **Does it belong?** Check `MISSION.md` §"What it is not". If it only makes sense inside a coding
-   workflow, it does not ship.
-2. **A decision exists?** If it is non-obvious, it needs a D-number *before* code. Not after.
-3. **A contract exists?** If a test can assert it, `CONTRACTS.md` needs the shape first.
-4. **A task exists?** Write `Tasks/NNN-slug.md`. No code without one.
-5. **Ported or original?** Tag it. If ported, cite the repo and commit.
-6. **Does it change a security claim?** If yes, update `MISSION.md` §"the four claims" and
-   `DESIGN.md` §3 in the same commit.
-
-## 8. What needs a human, not an agent
-
-- **Changing a security claim.** `MISSION.md` §5 and `DESIGN.md` §3 are user-facing promises.
-- **Disabling a feature on a platform.** `Tasks/001` may conclude that WebKitGTK will not hold an
-  opaque origin. That is a release decision and the user is told in the product, not in a changelog.
-- **Anything that raises the binary budget past ~25 MB.**
-- **Taking anything from LobeHub.** Ever. If it looks like the only way, it is not.
-- **Renaming a decision.** D-numbers are permanent. Supersede, never renumber.
-
-## 8a. Development and testing are Windows-only, for now
-
-**Decided 2026-10-04.** Every local build, test run, and manual verification happens on **Windows /
-WebView2**. Linux is a shipped target (`D88`) but it is **not** a development environment yet.
-
-**What this means concretely:**
-
-- The local toolchain is the Windows one: MSVC, `x86_64-pc-windows-msvc`, Windows-side node/npm.
-  **No cross-compilation, and none is needed.**
-- A probe, verdict, or measurement is **Windows-only until labelled otherwise**. Do not write
-  "verified" next to a WebKitGTK claim on the strength of a Windows run — that is the exact
-  substitution that makes a sandbox claim a lie.
-- When a task's verdict table has a Linux column, it reads **"not run on this host"** until someone
-  has actually run it on Linux. `Tasks/001` is the live example.
-- The Linux half is executed by **CI on GitHub's runners**, never by an agent on a developer machine
-  (`TECH_STACK.md` §8).
-
-**Why now, and what "later" means.** WebKitGTK development headers are not installed on the
-development host, and they need a sudo password an agent cannot supply non-interactively. Rather than
-block Phase 0 on an environment setup, we take the WebView2 half now — `D89` already makes the
-**WebView2 verdict the one that gates a release** and the WebKitGTK verdict best-effort.
-
-**This is a sequencing decision, not a platform decision.** Linux remains a first-class shipped
-platform and its CI floor remains a **release blocker** (`D50`, `Tasks/021`). Nothing here licenses
-treating WebKitGTK as unverified-and-therefore-fine: when the headers are installed, the Linux
-column gets filled in properly, and until then it stays empty.
+  was rejected.** Read [§5a](docs/references/dependency-policy.md) first — the search-before-hand-rolling
+  step and the four things every adopted dependency must record all live there.
 
 ---
 

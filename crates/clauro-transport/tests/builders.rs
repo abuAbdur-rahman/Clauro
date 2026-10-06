@@ -57,7 +57,8 @@ fn compaction_request_is_structurally_exclusive() {
         max_tokens: 4096,
         messages: vec![json!({"role": "user", "content": "hi"})],
         instructions: None,
-    });
+    })
+    .expect("short instructions build");
     assert!(
         built.body.get("compaction").is_some(),
         "compaction requests carry compaction"
@@ -74,14 +75,29 @@ fn compaction_request_is_structurally_exclusive() {
 #[test]
 fn compaction_instructions_pass_through_capped() {
     let long = "x".repeat(20_000);
-    let built = build_compaction_request(CompactionBuildInput {
+    let err = build_compaction_request(CompactionBuildInput {
         model: "claude-x".to_string(),
         max_tokens: 4096,
         messages: vec![],
         instructions: Some(long),
-    });
-    let got = built.body["compaction"]["instructions"]
-        .as_str()
-        .expect("instructions must serialise");
-    assert_eq!(got.len(), 16_384, "server cap is 16,384 chars (D75)");
+    })
+    .expect_err("overlong must reject client-side (D75)");
+    assert!(
+        err.to_string().contains("16,384"),
+        "clear error, got: {err}"
+    );
+    let ok = build_compaction_request(CompactionBuildInput {
+        model: "claude-x".to_string(),
+        max_tokens: 4096,
+        messages: vec![],
+        instructions: Some("x".repeat(100)),
+    })
+    .expect("short builds");
+    assert_eq!(
+        ok.body["compaction"]["instructions"]
+            .as_str()
+            .expect("serialise")
+            .len(),
+        100
+    );
 }

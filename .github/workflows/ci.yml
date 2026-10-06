@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main, dev]
 
-# Cancel superseded runs on the same ref. A stale green is not information.
+# Cancel superseded runs on the same branch. A stale green is not information.
+# Keyed on head_ref so a push to `dev` and the PR-sync run for a PR from `dev`
+# share one group: without this, opening a PR doubles every workflow (push run
+# + PR run that never cancel each other, because `github.ref` differs).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -38,11 +41,13 @@ jobs:
       - name: Check D-refs, task count, crate names, DDL count
         run: python3 scripts/check-docs.py
 
-  # 2. Platform matrix.
+  # 2. Platform matrix — Windows only until 021 re-enables Linux (D114).
   #
-  # Four jobs. Two are floors, and a floor failing is a release blocker, not a
-  # warning (D50, D89). "Floor" means a RUNTIME version, not a runner label:
-  # an older OS image does not give you an older WebView2.
+  # Linux primary + Linux floor are parked, not deleted: their exact definitions
+  # live in `.github/workflows/linux-matrix.yml.disabled` (a non-`.yml` name, so
+  # GitHub never executes it). They never completed — 35-minute walls against a
+  # 30-minute job limit on cold builds with no cargo cache — and re-running red
+  # teaches nothing. Windows primary + Windows floor are the gate until then.
   check:
     name: ${{ matrix.job }}
     runs-on: ${{ matrix.os }}
@@ -51,10 +56,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - job: linux primary
-            os: ubuntu-24.04
-          - job: linux floor
-            os: ubuntu-24.04
           - job: windows primary
             os: windows-latest
           - job: windows floor
@@ -106,12 +107,10 @@ jobs:
           node-version-file: ".nvmrc"
           cache: pnpm
 
-      - name: Install Linux webview deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev
+      # (Linux webview deps step removed with the Linux jobs — D114. It lives
+      # in `.github/workflows/linux-matrix.yml.disabled` and returns with them.)
+
+      # The Windows floor pins a FIXED WebView2 runtime rather than relying on
 
       # The Windows floor pins a FIXED WebView2 runtime rather than relying on
       # whatever the image happens to ship. Placeholder until Tasks/021 lands

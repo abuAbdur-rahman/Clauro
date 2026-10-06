@@ -21,10 +21,11 @@ pub use anthropic::{
     UsageWire,
 };
 pub use build::{
-    build_compaction_request, build_normal_request, BuiltRequest, CompactionBuildInput,
-    NormalBuildInput, ThinkingConfig, MAX_COMPACTION_INSTRUCTIONS, THINKING_BINDING_BETA,
+    build_compaction_request, build_normal_request, validate_compaction_swap, BuiltRequest,
+    CompactionBuildError, CompactionBuildInput, CompactionSwapError, NormalBuildInput,
+    ThinkingConfig, MAX_COMPACTION_INSTRUCTIONS, THINKING_BINDING_BETA,
 };
-pub use capabilities::{compaction_path, CompactionPath};
+pub use capabilities::{compaction_path, select_compaction_path, CompactionPath};
 pub use openai_compat::OpenAiParser;
 pub use retry::{retry_delay, MAX_ATTEMPTS};
 pub use sse::{FramerError, RawSseEvent, SseFramer, MAX_LINE_LEN};
