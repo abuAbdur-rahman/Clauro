@@ -211,15 +211,22 @@ What cannot be met yet, and why, in the order it blocks:
 
 **Purpose:** the app survives a long conversation, on any provider, without lying about cost.
 
-| Task | Contract | D-refs |
-|---|---|---|
-| `Tasks/015-token-meter.md` | §4 | D17, D25, D64, D82 |
-| `Tasks/016-client-side-compaction.md` | §4 | D12, D13, D15, D16, D17, D18, D57, D58, D61, D63, D64, D65, D70 |
-| `Tasks/017-anthropic-compaction-paths.md` | §5 | D14, D16, D21, D22, D69, D70, D74, D75, D81 |
+| Task | State | Contract | D-refs |
+|---|---|---|---|
+| `Tasks/015-token-meter.md` | ✅ `compute_trigger` + `measure` + `NoProgress` green 2026-10-06 (`clauro-tokens/tests/meter.rs:5`) | §4 | D17, D25, D64, D82 |
+| `Tasks/016-client-side-compaction.md` | ✅ balanced boundary + prefix-extension + iterations green 2026-10-06 (`clauro-tokens/tests/compaction.rs:6`, `src/compact.rs`) | §4 | D12, D13, D15, D16, D17, D18, D57, D58, D61, D63, D64, D65, D70 |
+| `Tasks/017-anthropic-compaction-paths.md` | ✅ on-demand-first + reject >16384 + swap guard + compact excluded green 2026-10-06 (`clauro-transport/tests/compaction_paths.rs:6`, `tests/builders.rs:3`) | §5 | D14, D16, D21, D22, D69, D70, D74, D75, D81, D95 |
 
 **Gate:** compaction fires on `min(ratio, usable − headroom)`; a summariser that changes nothing
 cannot authorise a retry; usage after compaction reads `usage.iterations`, not the zeroed fields; no
 `tool_use` is ever split from its result.
+
+**Gate status: ✅ met headless 2026-10-06.** `cargo test` 60 suites ok, `clippy` clean, `fmt` clean,
+`vitest` 16/114 pass. Trigger = `max(fixedCost+2048, min(ratio, usable))` (`lib.rs:compute_trigger`);
+`NoProgress.authorises_retry()==false`; billing sums + context takes last (`compact.rs:usage_from_iterations`,
+`anthropic.rs:usage_wire`); `balanced_boundary` lands only where no open `tool_use` remains.
+Two known doc debts, not gate failures: `CONTRACTS.md §4` still states D64 formula (SPEC M1 + D82 win),
+and SPEC M5 says threshold-preferred while code follows D95 on-demand-first.
 
 **Unblocks:** nothing structurally — but a v1 without this fails on any long thread.
 
