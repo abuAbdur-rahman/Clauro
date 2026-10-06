@@ -3,10 +3,10 @@
  * explained before first paint — never a blank window, never a bare crash.
  */
 import { useEffect, useState } from "react";
-import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "./catalogue";
-import ModelPicker from "./ModelPicker";
-import { useThreadStore } from "./thread";
-import { ArtifactDrawer } from "./ArtifactDrawer";
+import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "../features/catalogue/catalogue";
+import ModelPicker from "../components/ModelPicker";
+import { useThreadStore } from "../features/catalogue/thread";
+import { ArtifactDrawer } from "../components/ArtifactDrawer";
 
 const THREAD = "thread-001";
 

@@ -4,7 +4,7 @@ import {
   sandboxAttr,
   artifactGate,
   SANDBOX_TOKENS,
-} from "./artifact";
+} from "./store";
 
 beforeEach(() => {
   useDrawerStore.getState().reset();

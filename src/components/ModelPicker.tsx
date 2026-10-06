@@ -5,9 +5,9 @@
  */
 import { Bot, Database, TriangleAlert } from "lucide-react";
 import { useState } from "react";
-import type { CatalogueModel, CataloguePayload } from "./catalogue";
-import { resolveLimits, switchWarnings, type ModelRef } from "./models";
-import { useThreadStore } from "./thread";
+import type { CatalogueModel, CataloguePayload } from "../features/catalogue/catalogue";
+import { resolveLimits, switchWarnings, type ModelRef } from "../features/catalogue/models";
+import { useThreadStore } from "../features/catalogue/thread";
 
 function formatTokens(n: number): string {
   const k = Math.round(n / 1000).toString();

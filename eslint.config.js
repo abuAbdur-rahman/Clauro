@@ -25,7 +25,7 @@ export default tseslint.config(
     // no bundler and no `import` of anything — so the type-aware rules have
     // nothing useful to say about it and `no-undef` needs the browser globals
     // it actually runs against.
-    files: ["src/artifact/frame-runtime.js"],
+    files: ["src/features/artifact/frame-runtime.js"],
     languageOptions: {
       sourceType: "script",
       globals: {

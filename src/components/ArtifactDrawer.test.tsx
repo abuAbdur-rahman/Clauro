@@ -2,8 +2,8 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import { ArtifactDrawer } from "./ArtifactDrawer";
-import { useDrawerStore } from "./artifact";
-import type { prepareArtifact, PrepareResult } from "./artifact/prepare";
+import { useDrawerStore } from "../features/artifact/store";
+import type { prepareArtifact, PrepareResult } from "../features/artifact/prepare";
 
 /**
  * The drawer is where a compiled artifact becomes visible, so its contract is
@@ -20,7 +20,7 @@ const prepare = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock("./artifact/prepare", () => ({
+vi.mock("../features/artifact/prepare", () => ({
   prepareArtifact: prepare.fn,
   newNonce: () => "n1",
 }));

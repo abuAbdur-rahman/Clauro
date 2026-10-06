@@ -1227,6 +1227,32 @@ stylesheet is exactly the kind of "looks like diligence, actually inflates the b
 a stylesheet slot the frame can be given, and leaves the slot empty rather than faking it. Artifacts
 render with **no** Tailwind until `022` fills it - visible, honest, and tracked.
 
+**D112 — The frontend is feature-based, and shared UI is vendored shadcn, app-shell only.**
+
+Decided 2026-10-06 by `Tasks/024` (layout) and `Tasks/025` (shadcn). Two halves, one decision:
+the flat `src/` that served the Phase-0 shell does not survive Phase-5 surfaces, and hand-rolled
+Sidebar/Dialog/Select re-opens the a11y and focus-trap bugs Radix already closed.
+
+*Layout.* `src/features/<name>/` owns logic plus colocated tests, with an `index.ts` barrel;
+`src/components/` owns shared UI (`components/ui/` is vendored shadcn, never hand-edited except
+to tweak); `src/app/` owns the shell entry (`App.tsx`); `src/lib/` owns `utils.ts` (`cn()`).
+`frame-runtime.js` keeps shipping to the sandbox as raw text and never enters the app bundle.
+A move is proven by `tsc` clean plus the full vitest suite green with zero behaviour change —
+`Tasks/024` moved 31 files and all 95 tests passed untouched.
+
+*shadcn.* Copy, not a package: shadcn is Radix primitives plus `cva`/`clsx`/`tailwind-merge`
+pasted into `components/ui/`, so vendoring is the install and tweaking is the point. Pinned
+in `TECH_STACK.md` §7.1 with the rejected alternative (hand-rolled dialog/select/sidebar —
+a bug farm with a focus trap) and the licence record (all MIT/Apache-2.0). Scope is the app
+shell, exactly like `lucide-react` (**D96**): nothing Radix ever enters the artifact frame
+(`D2`, `D3`, `D83`), and `components.json` plus the `@/*` alias are config, not surface.
+`TECH_STACK.md` §7.2's `cmdk` row is superseded for the palette shell — the Dialog+Command
+pair covers **D42**'s palette states — but `cmdk` stays recorded until `Tasks/020` decides.
+
+Rejected: a barrel per component file (indirection with no seam); keeping the flat layout
+until Phase 5 (every new surface would invent its own structure); `@radix-ui/react-icons`
+(fifteen icons, not a library — decided already in **D96**).
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

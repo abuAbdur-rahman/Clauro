@@ -14,8 +14,8 @@
  * real webview in 021, not here.
  */
 import { useEffect, useState } from "react";
-import { useDrawerStore, sandboxAttr, artifactGate, type EngineGate } from "./artifact";
-import { prepareArtifact, type PrepareResult } from "./artifact/prepare";
+import { useDrawerStore, sandboxAttr, artifactGate, type EngineGate } from "../features/artifact/store";
+import { prepareArtifact, type PrepareResult } from "../features/artifact/prepare";
 
 interface ArtifactDrawerProps {
   threadId: string;

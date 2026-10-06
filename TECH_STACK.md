@@ -78,7 +78,10 @@ clauro/
 │                       CONTRACTS.md §1 Windows rules, §3 fs/bash contracts.
 └─ src-tauri/           Tauri shell: commands, capabilities, CSP assembly.
                         The only crate that knows Tauri exists.
-└─ src/                 React 19 web app.
+└─ src/                 React 19 web app, feature-based (D112):
+                        app/ (shell entry) · features/<name>/ (logic + colocated
+                        tests + index.ts barrel) · components/ (shared UI;
+                        components/ui/ is vendored shadcn, 025) · lib/ (utils).
 ```
 
 **Dependency rule:** `clauro-core` depends on nothing but `serde`. Dependencies point inward. A
