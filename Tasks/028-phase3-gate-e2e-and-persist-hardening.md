@@ -67,3 +67,27 @@ Rust tests for the right reason, then was reverted. Webview-observable criteria 
 - [x] Bundle re-measured; delta recorded — `docs/build-baseline.md` 028 section
 - [x] Phase 3 gate status updated in `PHASES.md` with per-criterion evidence; webview items
   stay open to `021` explicitly (see below)
+
+## CI reds found by this PR and fixed in the same push
+
+CI on PR #4 failed four ways; none was the e2e itself:
+
+- [x] **Linux kill test** (`runner.rs`): `wait_for_pid` validated the pidfile trimmed but
+  returned it raw — `echo` leaves `\n`, so `kill -0 "1234\n"` failed and read as "grandchild
+  dead". Windows stayed green because only the Linux path reads pids from a file. One-line
+  trim on the way out (`runner.rs:233-248`).
+- [x] **Windows cwd test** (`runner.rs:88-105`): `cd` prints 8.3 short names (`RUNNER~1`)
+  where `canonicalize` resolves long ones (`runneradmin`) — runner-filesystem dependent.
+  Both sides canonicalized before comparing.
+- [x] **Malware IOC scan**: 4 findings, all false positives on refusal constructs —
+  `allow-same-origin` in two negative assertions + one NEVER-prose comment, and a spoofed
+  `__TAURI_INTERNALS__.invoke` asserted off-allowlist. Fixed per the script's sanctioned
+  path: explicit allowlist entries whose exception lapses if the refusal marker disappears
+  (`scripts/malware-ioc-scan.sh` `D2_SANDBOX_ALLOWLIST`/`D6_IPC_ALLOWLIST`; lapse verified
+  by deleting a marker and watching it flag).
+- [x] **Lint** (`Composer.test.tsx:68`, `027`'s file): `?? ""` on a non-nullable. Removed
+  (4 chars, zero behaviour change). **Drive-by, out of scope** (O1–O4 only): flagged twice
+  before, fixed now because it reds all four CI jobs. `tsc` still clean.
+- [ ] **safedep external check** (safedep.io, fails in 0s): no workflow file in this repo —
+  org-level app, almost certainly misconfigured independent of this PR. Not fixable from
+  here; needs an org admin. If it is a required check, every PR is red regardless.

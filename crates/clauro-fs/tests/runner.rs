@@ -92,7 +92,18 @@ fn child_runs_with_workspace_cwd_and_null_stdin() {
     #[cfg(not(windows))]
     let out = run_command("pwd", &dir, &[], &[], limits()).expect("run");
     assert_eq!(out.exit_code, 0);
-    let shown = out.stdout.trim().replace('\\', "/");
+    // Both sides canonicalized: `cd` may print an 8.3 short name
+    // (`RUNNER~1`) where `canonicalize` resolves the long one
+    // (`runneradmin`), depending on the drive's short-name setting. Comparing
+    // raw strings makes the test a referendum on the runner's filesystem, not
+    // on root confinement. This exact shape failed Windows CI while local
+    // stayed green.
+    let shown_canon = std::path::PathBuf::from(out.stdout.trim())
+        .canonicalize()
+        .expect("shown cwd resolves")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let shown_canon = shown_canon.trim_start_matches("//?/").to_string();
     let mut want = dir
         .canonicalize()
         .expect("canon")
@@ -100,7 +111,7 @@ fn child_runs_with_workspace_cwd_and_null_stdin() {
         .replace('\\', "/");
     // `canonicalize` may return the verbatim `//?/` prefix; `cd` does not.
     want = want.trim_start_matches("//?/").to_string();
-    assert_eq!(shown, want, "root-confined cwd");
+    assert_eq!(shown_canon, want, "root-confined cwd");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -238,7 +249,16 @@ fn wait_for_pid(pidfile: &std::path::Path) -> String {
             .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit()))
             .is_some()
     })
-    .then(|| std::fs::read_to_string(pidfile).expect("pid recorded"))
+    // Trim again on the way out: `echo` leaves a trailing newline, and an
+    // untrimmed pid makes `kill -0` fail — which reads as "grandchild dead"
+    // when the grandchild is fine. This exact shape failed Linux CI while
+    // Windows stayed green, because only this path reads pids from a file.
+    .then(|| {
+        std::fs::read_to_string(pidfile)
+            .expect("pid recorded")
+            .trim()
+            .to_string()
+    })
     .expect("grandchild pid recorded")
 }
 
