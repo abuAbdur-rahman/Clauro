@@ -1,0 +1,29 @@
+# PARKED — Linux CI matrix. Not executed: GitHub only runs `.yml`/`.yaml` files
+# inside `.github/workflows/`, and this file is deliberately neither.
+#
+# Removed from `ci.yml` 2026-10-06 per D114 (Linux CI parked until after full
+# development; CI is Windows-only until 021 re-enables it). The Linux jobs never
+# completed — 35-minute walls against a 30-minute job limit on cold builds with
+# no cargo cache configured — and re-running red teaches nothing.
+#
+# TO RESTORE (owns: Tasks/021, with the cargo cache + timeout budget that make
+# these jobs meaningful instead of decorative):
+#   1. Paste the `include` entries below back into `ci.yml`'s matrix.
+#   2. Restore the apt step below after the Node setup step.
+#   3. Delete this file.
+#   4. Update the gate texts that D114 touched (SPEC.md §6.3, PHASES.md,
+#      Tasks/021) back to both-platform language.
+
+matrix-include:
+  - job: linux primary
+    os: ubuntu-24.04
+  - job: linux floor
+    os: ubuntu-24.04
+
+steps:
+  - name: Install Linux webview deps
+    if: runner.os == 'Linux'
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+        librsvg2-dev patchelf libssl-dev

@@ -1271,6 +1271,21 @@ vanishing. The turn does not "continue" past a dead store — there is no durabl
 that it did — so loud failure replaces silent loss, and the task file says so rather than
 claiming both.
 
+**D114 — Linux CI is parked until after full development; CI is Windows-only until `021`
+re-enables it.**
+
+Decided 2026-10-06 by direct order (no task — this is schedule, not design). Three facts
+forced it: Linux matrix jobs never complete (35-minute wall against a 30-minute job limit on
+cold builds — no cargo cache is configured and WebKit sys crates compile from scratch);
+re-running the same red costs hours and teaches nothing; and every Linux failure so far was
+either infra (timeout) or a Windows-reproducible logic bug (pidfile newline, 8.3 names) that
+Windows CI plus WSL-native runs already cover. The Linux entries are removed from `ci.yml`,
+preserved verbatim in `.github/workflows/linux-matrix.yml.disabled` (a non-`.yml` name GitHub
+never executes), and `021` re-enables them together with the cargo cache and timeout budget
+that make them meaningful. `D50` is unchanged — a floor failure is still a release blocker —
+but an unrun floor blocks nothing; it merely stays open. Windows primary + Windows floor are
+the CI gate until then.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

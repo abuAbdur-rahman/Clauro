@@ -76,8 +76,8 @@ a display.
 | `Tasks/002-workspace-skeleton-and-ci.md` | ✅ | — | D50 |
 | `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI | `ProviderAdapter.limits` | D19, D23, D49, D50, D53, D76 |
 
-**Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on all four CI
-jobs, including **both floors**.
+**Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
+Windows CI jobs. **Linux jobs parked 2026-10-06 (D114)** — see the Phase 6 gate note.
 
 **Gate status:** ◐ half met. `002` and `003` are complete; `001`'s Windows verdict is committed
 (`docs/spikes/sandbox-verdict.md`) but **the WebKitGTK app was never written**, so the Linux column
@@ -263,6 +263,12 @@ and SPEC M5 says threshold-preferred while code follows D95 on-demand-first.
 
 **Gate:** **both floors** pass, not just the primaries. Installers exist for Windows and Linux.
 Dependency audit confirms nothing was ported from LobeHub or from proprietary wording.
+
+**Parked 2026-10-06 (D114):** Linux primary + Linux floor are out of `ci.yml` until after full
+development — definitions preserved in `.github/workflows/linux-matrix.yml.disabled`, restore
+owned by `021` together with the cargo cache + timeout budget. Until then the enforced gate is
+the two Windows jobs; `D50` is unchanged (an unrun floor blocks nothing, a failed one blocks
+everything).
 
 **A floor failure is a release blocker, not a warning.** The floors are where the sandbox guarantee
 gets falsified. **D50.**
