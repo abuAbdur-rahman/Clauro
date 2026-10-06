@@ -1,17 +1,31 @@
 /**
- * Model picker (Task 003). Lists every catalogue model with its limits.
- * Selecting one writes thread-level state only — the thread stays open.
- * Unknown selections degrade to a typed notice, never a crash.
+ * Model picker on shadcn Select (Task 025, D112). Lists every catalogue model
+ * grouped by provider with its limits. Selecting one writes thread-level state
+ * only — the thread stays open. Unknown selections degrade to a typed notice,
+ * never a crash.
  */
-import { Bot, Database, TriangleAlert } from "lucide-react";
+import { Database, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import type { CatalogueModel, CataloguePayload } from "../features/catalogue/catalogue";
 import { resolveLimits, switchWarnings, type ModelRef } from "../features/catalogue/models";
 import { useThreadStore } from "../features/catalogue/thread";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
 
 function formatTokens(n: number): string {
   const k = Math.round(n / 1000).toString();
   return n >= 1000 ? `${k}k` : n.toString();
+}
+
+function optionText(model: CatalogueModel): string {
+  return `${formatTokens(model.context_window)} ctx · ${formatTokens(model.max_output)} out${model.reasoning ? " · thinking" : ""}`;
 }
 
 export default function ModelPicker({
@@ -20,7 +34,7 @@ export default function ModelPicker({
 }: {
   payload: CataloguePayload;
   threadId: string;
-}) {
+}): React.JSX.Element {
   const [notice, setNotice] = useState<string | null>(null);
   const selectModel = useThreadStore((s) => s.selectModel);
   const current = useThreadStore((s) => s.threads[threadId]?.model ?? null);
@@ -39,26 +53,34 @@ export default function ModelPicker({
     return <p className="text-sm text-neutral-500">Catalogue stale. Refreshing…</p>;
   }
 
-  const entries: { provider: string; model: CatalogueModel }[] = [];
+  const entries: { provider: string; model: CatalogueModel; value: string }[] = [];
   for (const [provider, models] of Object.entries(payload.catalogue.providers)) {
-    for (const model of models) entries.push({ provider, model });
+    for (const model of models) entries.push({ provider, model, value: `${provider}/${model.id}` });
   }
+  const providers = Object.keys(payload.catalogue.providers);
+  const currentValue =
+    current === null ? undefined : `${current.provider}/${current.id}`;
 
-  function choose(provider: string, model: CatalogueModel) {
-    const ref: ModelRef = { provider, id: model.id };
+  function choose(value: string) {
+    const entry = entries.find((e) => e.value === value);
+    if (entry === undefined) {
+      setNotice(`Unknown model ${value} — picker still usable.`);
+      return;
+    }
+    const ref: ModelRef = { provider: entry.provider, id: entry.model.id };
     const resolved = resolveLimits(ref, {
       serverSnapshot: {
-        contextWindow: model.context_window,
-        maxOutput: model.max_output,
-        reasoning: model.reasoning,
-        toolCall: model.tool_call,
+        contextWindow: entry.model.context_window,
+        maxOutput: entry.model.max_output,
+        reasoning: entry.model.reasoning,
+        toolCall: entry.model.tool_call,
       },
     });
     if ("unknown" in resolved) {
       setNotice(`Unknown model ${ref.provider}/${ref.id} — picker still usable.`);
       return;
     }
-    const next = { ...ref, name: model.name, ...resolved.limits };
+    const next = { ...ref, name: entry.model.name, ...resolved.limits };
     if (current) {
       const warns = switchWarnings(current, next);
       setNotice(warns.length > 0 ? warns[0] : null);
@@ -81,39 +103,28 @@ export default function ModelPicker({
           <TriangleAlert size={14} /> {notice}
         </p>
       )}
-      <ul className="divide-y divide-neutral-800 rounded border border-neutral-800">
-        {entries.map(({ provider, model }) => {
-          const active =
-            current !== null && current.provider === provider && current.id === model.id;
-          return (
-            <li key={`${provider}/${model.id}`}>
-              <button
-                type="button"
-                onClick={() => {
-                  choose(provider, model);
-                }}
-                className={`flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-neutral-900 ${
-                  active ? "bg-neutral-900 text-neutral-100" : "text-neutral-300"
-                }`}
-              >
-                <Bot size={16} className="shrink-0 text-neutral-500" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{model.name}</span>
-                  <span className="block text-xs text-neutral-500">
-                    {provider}/{model.id}
-                  </span>
-                </span>
-                <span className="shrink-0 text-xs text-neutral-500">
-                  {formatTokens(model.context_window)} ctx · {formatTokens(model.max_output)} out
-                  {model.reasoning ? " · thinking" : ""}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-      {entries.length === 0 && (
+      {entries.length === 0 ? (
         <p className="text-sm text-neutral-500">Catalogue empty — nothing to pick.</p>
+      ) : (
+        <Select value={currentValue} onValueChange={choose}>
+          <SelectTrigger aria-label="Model" className="w-full max-w-2xl">
+            <SelectValue placeholder="Choose a model" />
+          </SelectTrigger>
+          <SelectContent>
+            {providers.map((provider) => (
+              <SelectGroup key={provider}>
+                <SelectLabel>{provider}</SelectLabel>
+                {entries
+                  .filter((e) => e.provider === provider)
+                  .map(({ model, value }) => (
+                    <SelectItem key={value} value={value}>
+                      {model.name} · {optionText(model)}
+                    </SelectItem>
+                  ))}
+              </SelectGroup>
+            ))}
+          </SelectContent>
+        </Select>
       )}
     </div>
   );

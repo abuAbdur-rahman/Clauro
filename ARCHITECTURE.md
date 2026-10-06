@@ -13,7 +13,7 @@ a D-number, cited from here. **D87.**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  React 19 · TypeScript strict · Tailwind · Zustand                       │
+│  React 19 · TS strict · Tailwind · Zustand · shadcn (D112, shell only)  │
 │                                                                          │
 │  projects rail │ transcript │ artifact drawer │ palette │ settings        │
 └───────┬──────────────────────────────────────────────┬─────────────────┘

@@ -51,6 +51,10 @@ rather than a flat notepad.
 Gemini's Gems are folded in: a Gems-style "personal expert" is a project with instructions and files
 and nothing else. One concept, not two.
 
+The rail renders on the vendored shadcn `Sidebar` (`Tasks/025`, **D112**) — collapsible icon rail,
+keyboard shortcut, mobile sheet — owned by `Tasks/018`. No hand-rolled collapse: the a11y contract
+(focus, `aria`, escape) ships with the primitive.
+
 ### 2.2 Transcript
 
 Append-only, and the UI reflects that honestly. **Nothing disappears and nothing is deleted.** A
@@ -91,6 +95,11 @@ Three states, and they are the whole design:
 2. **compiling** — a spinner that says *compiling*, because Sucrase is not instant and silence reads
    as a hang
 3. **live** — the rendered page
+
+The drawer column itself stays a plain layout slot (its tests pin `aside`/sandbox tokens), not a
+shadcn `Sidebar` — the drawer is a render surface with security assertions, not navigation chrome.
+What shadcn owns around it: the projects rail (`Sidebar`, `018`), `bash` approval (`Dialog` —
+never a palette action, `012`/`020`), and the model picker (`Select`, `025`).
 
 Tabs: none in v1 — one live render, no history, no pinning, no Preview/Code
 tabs and no download. (`SPEC.md` §5 defers all of those to v2: the render

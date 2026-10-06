@@ -227,6 +227,8 @@ cannot authorise a retry; usage after compaction reads `usage.iterations`, not t
 | `Tasks/018-projects-and-memory-ui.md` | §1 | D8, D9, D32, D35, D36, D37, D52 |
 | `Tasks/019-incognito-export-and-retention.md` | §1 | D10, D19, D37, D38, D57, D67 |
 | `Tasks/020-themes-hotkey-and-command-palette.md` | — | D42, D44, D66 |
+| `Tasks/024-frontend-feature-layout.md` | — (structure) | D112 |
+| `Tasks/025-vendored-shadcn-ui.md` | — (structure) | D112 |
 
 **Gate:** a user completes a real task end to end and can delete every byte.
 
