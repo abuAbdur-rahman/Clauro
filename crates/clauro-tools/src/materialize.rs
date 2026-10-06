@@ -72,13 +72,16 @@ fn system_message(block: &Value) -> Value {
 /// Compute the availability surface. `prev` is the previous call's output;
 /// `None` declares the first request. The tools arrays are frozen after the
 /// first call — every later change is a block, never a rewrite.
+/// `compact` is host-driven only and never serialised (D14).
 #[must_use]
 pub fn materialize(prev: Option<&Availability>, state: &ThreadToolState) -> Availability {
     let now_visible = visible(state);
+    let is_model_callable = |name: &str| name != "compact";
     let anthropic_tools = prev.map_or_else(
         || {
             eight_definitions()
                 .into_iter()
+                .filter(|d| is_model_callable(&d.name))
                 .filter(|d| !state.denied.contains(&d.name))
                 .map(|d| MaterializedTool {
                     deferred: !now_visible.contains(&d.name),
@@ -94,6 +97,7 @@ pub fn materialize(prev: Option<&Availability>, state: &ThreadToolState) -> Avai
         || {
             eight_definitions()
                 .into_iter()
+                .filter(|d| is_model_callable(&d.name))
                 .filter(|d| now_visible.contains(&d.name))
                 .map(|d| MaterializedTool {
                     deferred: false,

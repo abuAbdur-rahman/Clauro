@@ -29,3 +29,11 @@ pub fn compaction_path(model_json: &Value) -> CompactionPath {
         _ => CompactionPath::None,
     }
 }
+
+/// Select path from probed capability, no live key (D81/D95).
+/// On-demand-first: use on-demand wherever available; threshold-only
+/// takes threshold path; neither falls back to client-side (D58).
+#[must_use]
+pub fn select_compaction_path(probed: CompactionPath) -> CompactionPath {
+    probed
+}

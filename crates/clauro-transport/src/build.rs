@@ -14,6 +14,7 @@
 //! request.
 
 use serde_json::{json, Value};
+use std::fmt;
 
 /// Beta header gating the block-binding controls (D20).
 pub const THINKING_BINDING_BETA: &str = "thinking-binding-controls-2026-08-01";
@@ -49,6 +50,7 @@ pub struct CompactionBuildInput {
 }
 
 /// Headers plus the serialised body, ready for the HTTP layer (006).
+#[derive(Debug)]
 pub struct BuiltRequest {
     pub headers: Vec<(String, String)>,
     pub body: Value,
@@ -89,14 +91,18 @@ pub fn build_normal_request(input: NormalBuildInput) -> BuiltRequest {
 }
 
 /// An on-demand compaction request: `compaction` rides along, everything else
-/// is absent by construction (D21, D74).
-pub fn build_compaction_request(input: CompactionBuildInput) -> BuiltRequest {
+/// is absent by construction (D21, D74). Overlong instructions are rejected
+/// client-side with a clear error, never sent to 400 (D75).
+pub fn build_compaction_request(
+    input: CompactionBuildInput,
+) -> Result<BuiltRequest, CompactionBuildError> {
     let instructions = input.instructions.unwrap_or_default();
-    let capped: String = instructions
-        .chars()
-        .take(MAX_COMPACTION_INSTRUCTIONS)
-        .collect();
-    BuiltRequest {
+    if instructions.chars().count() > MAX_COMPACTION_INSTRUCTIONS {
+        return Err(CompactionBuildError::InstructionsTooLong {
+            got: instructions.chars().count(),
+        });
+    }
+    Ok(BuiltRequest {
         headers: vec![(
             "anthropic-beta".to_string(),
             THINKING_BINDING_BETA.to_string(),
@@ -105,7 +111,62 @@ pub fn build_compaction_request(input: CompactionBuildInput) -> BuiltRequest {
             "model": input.model,
             "max_tokens": input.max_tokens,
             "messages": input.messages,
-            "compaction": {"type": "auto", "instructions": capped},
+            "compaction": {"type": "auto", "instructions": instructions},
         }),
+    })
+}
+
+/// Swap-protocol guard, validated before sending (D69): block first,
+/// exactly one, summarised messages removed by caller.
+pub fn validate_compaction_swap(
+    block_first: bool,
+    block_count: usize,
+) -> Result<(), CompactionSwapError> {
+    if !block_first {
+        return Err(CompactionSwapError::NotFirst);
+    }
+    if block_count != 1 {
+        return Err(CompactionSwapError::Count { got: block_count });
+    }
+    Ok(())
+}
+
+/// Overlong-instruction rejection (D75).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionBuildError {
+    InstructionsTooLong { got: usize },
+}
+
+impl fmt::Display for CompactionBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InstructionsTooLong { got } => write!(
+                f,
+                "compaction instructions {got} chars exceed server cap 16,384 (D75)"
+            ),
+        }
     }
 }
+
+impl std::error::Error for CompactionBuildError {}
+
+/// Silent-corruption guard (D69): two failure modes raise no error server-side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionSwapError {
+    NotFirst,
+    Count { got: usize },
+}
+
+impl fmt::Display for CompactionSwapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFirst => write!(f, "compaction block must be first in messages (D69)"),
+            Self::Count { got } => write!(
+                f,
+                "exactly one compaction block per request, got {got} (D69)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompactionSwapError {}

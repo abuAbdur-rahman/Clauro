@@ -34,7 +34,12 @@ fn all_but_bash() -> ThreadToolState {
 #[test]
 fn first_request_carries_all_eight_with_defer_flags() {
     let avail = materialize(None, &all_but_bash());
-    assert_eq!(avail.anthropic_tools.len(), 8, "declare every tool upfront");
+    // D14: compact is host-driven only, never in request schema — 7 visible.
+    assert_eq!(avail.anthropic_tools.len(), 7, "seven model-callable tools");
+    assert!(
+        avail.anthropic_tools.iter().all(|t| t.name != "compact"),
+        "compact absent from schema (D14)"
+    );
     let bash = avail
         .anthropic_tools
         .iter()
