@@ -91,7 +91,7 @@ export async function prepareArtifact(input: PrepareInput): Promise<PrepareResul
     if (compiled.kind === "error") {
       return { kind: "failed", reason: `jsx did not compile: ${compiled.message}` };
     }
-    code = compiled.blocks.map((block) => block).join("\n");
+    code = compiled.blocks.join("\n");
   }
 
   try {

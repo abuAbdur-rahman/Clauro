@@ -76,6 +76,8 @@ phases = read("PHASES.md")
 declared = re.search(r"[Ss]even phases, ([a-z-]+) tasks", phases)
 words = {
     "twenty-two": 22, "twenty-three": 23, "twenty-four": 24,
+    "twenty-five": 25, "twenty-six": 26, "twenty-seven": 27,
+    "twenty-eight": 28,
     "thirteen": 13, "fourteen": 14, "fifteen": 15,
 }
 if declared:

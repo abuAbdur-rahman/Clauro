@@ -14,7 +14,7 @@ a failing test first. Both are non-negotiable and the reason this project is tra
 | File | What it is | Read it when |
 |---|---|---|
 | `MISSION.md` | What this is and what it is not | Once, then whenever you are unsure whether a feature belongs |
-| `DECISIONS.md` | **D1–D109.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
+| `DECISIONS.md` | **D1–D113.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
 | `CONTRACTS.md` | The shapes tests assert against | Before writing any type or any test. **If your type cannot cite a D-number, stop.** |
 | `FEATURES.md` | Provenance: CALLED / PORTED / MIRRORED / ORIGINAL + terminology | Before porting anything, or naming anything |
 | `SPEC.md` | **Normative v1 scope**: what must exist, each with the task that proves it | Before estimating, scoping, or accepting a feature |

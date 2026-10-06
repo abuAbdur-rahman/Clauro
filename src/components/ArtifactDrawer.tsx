@@ -15,7 +15,11 @@
  */
 import { useEffect, useState } from "react";
 import { useDrawerStore, sandboxAttr, artifactGate, type EngineGate } from "../features/artifact/store";
-import { prepareArtifact, type PrepareResult } from "../features/artifact/prepare";
+import {
+  prepareArtifact,
+  type PrepareInput,
+  type PrepareResult,
+} from "../features/artifact/prepare";
 
 interface ArtifactDrawerProps {
   threadId: string;
@@ -24,9 +28,21 @@ interface ArtifactDrawerProps {
   source: string;
   mediaType: string;
   title: string;
+  /** Injected in tests; production uses the Rust policy + real Worker.
+   * A seam, not a control: nothing here can weaken the sandbox (D108). */
+  fetchPolicy?: PrepareInput["fetchPolicy"];
+  createWorker?: PrepareInput["createWorker"];
 }
 
-export function ArtifactDrawer({ threadId, engine, source, mediaType, title }: ArtifactDrawerProps) {
+export function ArtifactDrawer({
+  threadId,
+  engine,
+  source,
+  mediaType,
+  title,
+  fetchPolicy,
+  createWorker,
+}: ArtifactDrawerProps) {
   const entry = useDrawerStore((s) => s.drawers[threadId]);
   const [result, setResult] = useState<PrepareResult | null>(null);
 
@@ -39,7 +55,7 @@ export function ArtifactDrawer({ threadId, engine, source, mediaType, title }: A
     let live = true;
     // Preparing is where the policy request, the Worker and the sanitiser all
     // happen, so the spinner covers exactly that window and nothing more.
-    prepareArtifact({ source, mediaType })
+    prepareArtifact({ source, mediaType, fetchPolicy, createWorker })
       .then((out) => {
         if (live) setResult(out);
       })
@@ -57,7 +73,7 @@ export function ArtifactDrawer({ threadId, engine, source, mediaType, title }: A
     return () => {
       live = false;
     };
-  }, [state, artifactId, source, mediaType]);
+  }, [state, artifactId, source, mediaType, fetchPolicy, createWorker]);
 
   const gate = artifactGate(engine);
 

@@ -1,6 +1,6 @@
 # Clauro — PHASES.md
 
-**Seven phases, twenty-three tasks.** Each phase lists its tasks, its gate, and what it unblocks.
+**Seven phases, twenty-eight tasks.** Each phase lists its tasks, its gate, and what it unblocks.
 Sequencing rationale is in `PLAN.md` §4.
 
 Every task is test-first and contract-anchored (`AGENTS.md` §6). A task's file names the failing
@@ -33,9 +33,11 @@ is missing is the wiring between them, and it is worth being blunt about the sha
   tools are absent from the request *and* refused if emitted.
 - **`src-tauri` registers seven commands and none reaches the loop.** `clauro-loop` is not a
   dependency of the shell crate. Nothing drives a turn from the UI yet.
-- **Two silent `let _ =` drops** at `crates/clauro-loop/src/run.rs:290,513,529` sit on the exact
-  paths `D65`/`D68` guarantee. A failed write vanishes without a trace. **This is the highest-value
-  fix outstanding** — it is the one gap that can lose data.
+- **Three silent `let _ =` drops** were on the exact paths `D65`/`D68` guarantee
+  (`run.rs:493,716,732`; `PHASES.md` previously cited the stale `290,513,529` — corrected
+  in the same change that fixed them). **Fixed by `Tasks/028` (O1):** `insert_tool_block`,
+  `insert_notice` and the `cancel_turn` call now return `LoopError::Store` instead of
+  vanishing. A failed write fails the turn loudly; nothing on these paths is silent.
 - **Six criteria are blocked on a frontend that does not exist** (three in `006`, two in `008`, one
   in `009`, plus `023`'s queue chips). They are not failures; they are unstarted.
 
@@ -172,6 +174,7 @@ loop), Phase 4 (compaction needs tools to compact around).
 | `Tasks/012-bash-tool.md` | ✅ backend 11+5 | §3 | D28, D29, D30, D46, D66, D67 | D19, D28, D29, D30, D46, D55, D66, D67 |
 | `Tasks/013-artifact-drawer.md` | ◐ tool + drawer states green; webview proofs need 021 | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77 |
 | `Tasks/014-artifact-compile-and-channel.md` | ◐ compile/channel/CSP green; webview + Tailwind CSS need 021 / 022 | §3 | D4, D5, D6, D12, D110, D111 | D2, D4, D5, D6, D12, D78, D102 |
+| `Tasks/028-phase3-gate-e2e-and-persist-hardening.md` | ✅ e2e both halves green; silent drops now loud; webview items stay 021 | §1, §2, §3 | D65, D68, D113 | D2, D4, D6, D27 |
 
 **Gate:** artifacts render live and the iframe has no reachable path to app internals; a denied
 network request from inside an artifact fails; `bash` runs only after approval.
@@ -189,9 +192,13 @@ What cannot be met yet, and why, in the order it blocks:
 1. **"No reachable path to app internals"** and **"a denied network request fails"** are claims
    about a running engine. `Tasks/001` proved the same properties in a throwaway probe app on
    WebView2; the *product* frame is unobserved, because `tauri-driver` lands in `021`. Both stay open.
-2. **"Artifacts render live"** in the product: the drawer's states and pipeline are tested, but
-   nothing calls `setCompiling`/`setLive`, because there is still no tool-result handler — `src/` is
-   the Phase-0 shell, the same gap recorded against the Phase 2 gate above.
+2. **"Artifacts render live"** in the product: proven end to end across the seam by `Tasks/028`
+   — the Rust half drives `artifact` through the real loop into versioned rows + paired results
+   (`e2e_phase3.rs`), the frontend half drives a tool result through the real store actions and
+   the real `prepareArtifact` into a live render (`phase3.e2e.test.tsx`). What remains is the
+   last inch: no production code maps a live tool result onto the drawer, because no host drives
+   turns yet (same gap as Phase 2). The e2e producer is test-local by decision (**D113**), not by
+   accident.
 3. Artifacts render **without Tailwind** until `022` vendors the stylesheet (`D111`). The frame's
    stylesheet slot exists and is deliberately empty; the prompt already tells the model to use
    predefined utility classes, so this is visible rather than silent.

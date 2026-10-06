@@ -1078,6 +1078,25 @@ impl Store {
         Ok(())
     }
 
+    /// Recorded `source_path` for one versioned row, if it exists. The e2e
+    /// asserts this against the file on disk: the row and the bytes must
+    /// agree, or a layout change breaks one side silently (found by mutation).
+    pub fn artifact_source_path(
+        &self,
+        thread_id: &str,
+        artifact_id: &str,
+        version: i64,
+    ) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT source_path FROM artifact WHERE thread_id = ?1 AND id = ?2 AND version = ?3",
+                rusqlite::params![thread_id, artifact_id, version],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
+    }
+
     /// `artifact.compiled_path` — set once after the Worker transform.
     pub fn set_artifact_compiled_path(&self, id: &str, path: &str) -> Result<(), StoreError> {
         let rows = self.conn.execute(

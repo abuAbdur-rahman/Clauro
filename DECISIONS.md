@@ -1253,6 +1253,24 @@ Rejected: a barrel per component file (indirection with no seam); keeping the fl
 until Phase 5 (every new surface would invent its own structure); `@radix-ui/react-icons`
 (fifteen icons, not a library — decided already in **D96**).
 
+**D113 — The Phase 3 gate e2e proves composition with test-local adapters; no production producer
+until a host drives turns.**
+
+Decided 2026-10-06 by `Tasks/028`. The gate clause "artifacts render live" has no producer:
+nothing calls `setCompiling`/`setLive` because no tool-result handler exists yet (`src/` was the
+Phase-0 shell; `PHASES.md` records the same gap against Phase 2). Adding a production producer
+now would repeat the exact trap `AGENTS.md` §7a names — implemented, tested, no caller — so the
+e2e wires the composition inside the tests instead: the Rust half drives `artifact` through the
+real loop into versioned rows, the frontend half drives a tool result through the real store
+actions plus the real `prepareArtifact` into a live render. Each half is production code under
+test; only the last-inch driver is test-local, and it is labelled as such.
+
+The same task applies the repo's no-silent-swallow standard to the three `let _ =` drops on the
+`D65`/`D68` paths (`run.rs`): a store persist failure returns `LoopError::Store` instead of
+vanishing. The turn does not "continue" past a dead store — there is no durable way to record
+that it did — so loud failure replaces silent loss, and the task file says so rather than
+claiming both.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

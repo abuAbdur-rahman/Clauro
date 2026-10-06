@@ -49,3 +49,21 @@ regresses (`compile.test.ts` import graph, `sanitize.test.ts` dynamic import).
 
 Headroom against the ~25 MB budget is therefore unchanged: **~17 MB**, and the artifact pipeline
 spent 15 kB of it rather than the megabyte `D4` feared.
+
+## Re-measurement — 2026-10-06, `Tasks/028` (Phase 3 gate e2e, O3)
+
+The movement since the `014` row is **not** this task's: `024`–`027` landed the feature layout,
+vendored shadcn/Radix, and the chat UI batch. `028` added no dependencies and one small
+component seam (`fetchPolicy`/`createWorker` props); the artifact chunks are byte-identical,
+which is the property that matters — the D4 separation holds across four unrelated landings.
+
+| Asset | Bytes | Delta vs `014` row | Loads when |
+|---|---|---|---|
+| `clauro.exe` (release) | **8.00 MB** (not re-built; no Rust deps changed) | — | always |
+| `index-*.js` (main chunk) | **458.65 kB** (143.24 kB gzip) | **+117.89 kB** (`025`–`027`: Radix/shadcn + chat UI) | always |
+| `compile.worker-*.js` | **202.65 kB** | **0** | only for JSX artifacts |
+| `purify.es-*.js` | **28.08 kB** (11.08 kB gzip) | **0** | only for SVG artifacts |
+| `index-*.css` | 57.18 kB (10.21 kB gzip) | **+46.73 kB** (`025`–`027` component styles) | always |
+
+Headroom: binary unchanged, frontend main chunk now ~0.52 MB total. Still two orders of
+magnitude inside the ~25 MB budget; no action.

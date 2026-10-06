@@ -393,7 +393,7 @@ impl TurnLoop {
                 Err(failure) => {
                     let msg_id = self.insert_assistant(store, thread_id, seq)?;
                     report.assistant_messages += 1;
-                    self.insert_notice(store, &msg_id, 0, &failure.message);
+                    self.insert_notice(store, &msg_id, 0, &failure.message)?;
                     report.end = TurnEnd::TransportError;
                     break;
                 }
@@ -490,7 +490,11 @@ impl TurnLoop {
                         name: p.name.clone(),
                     })
                     .collect();
-                let _ = store.cancel_turn(thread_id, &open);
+                // A failed cancel is a loud turn failure, not a silent gap:
+                // the D65/D68 paths must not lose data without a trace.
+                store
+                    .cancel_turn(thread_id, &open)
+                    .map_err(LoopError::Store)?;
                 for pending in &pendings {
                     if !dispatched_here.contains(&pending.id) {
                         self.insert_tool_block(
@@ -500,7 +504,7 @@ impl TurnLoop {
                             &ToolOutcome::Aborted {
                                 message: "cancelled by user before completion".to_string(),
                             },
-                        );
+                        )?;
                     }
                 }
                 report.end = TurnEnd::Stopped;
@@ -622,14 +626,14 @@ impl TurnLoop {
                         msg_id,
                         block_seq,
                         &format!("server dropped {dropped} thinking blocks"),
-                    );
+                    )?;
                     block_seq += 1;
                 }
                 NormalisedEvent::Stop { .. }
                 | NormalisedEvent::Ping
                 | NormalisedEvent::Ignored { .. } => {}
                 NormalisedEvent::Error { message } => {
-                    self.insert_notice(store, msg_id, block_seq, message);
+                    self.insert_notice(store, msg_id, block_seq, message)?;
                     block_seq += 1;
                 }
             }
@@ -705,7 +709,7 @@ impl TurnLoop {
         msg_id: &str,
         pending: &PendingTool,
         outcome: &ToolOutcome,
-    ) {
+    ) -> Result<(), LoopError> {
         let (status, preview) = match outcome {
             ToolOutcome::Ok { preview, .. } => ("ok", preview.clone()),
             ToolOutcome::Error { message } => ("error", message.clone()),
@@ -713,34 +717,44 @@ impl TurnLoop {
             ToolOutcome::Rejected { message } => ("rejected", message.clone()),
         };
         let seq = self.next_block_seq(store, msg_id);
-        let _ = store.insert_block(NewBlock {
-            id: Store::new_id("b"),
-            message_id: msg_id.to_string(),
-            seq,
-            kind: "tool_result".to_string(),
-            payload: json!({"tool_use_id": pending.id, "status": status, "preview": preview})
-                .to_string(),
-            boundary: None,
-            is_summary: false,
-            generation: 0,
-            signature: None,
-            dropped: false,
-        });
+        store
+            .insert_block(NewBlock {
+                id: Store::new_id("b"),
+                message_id: msg_id.to_string(),
+                seq,
+                kind: "tool_result".to_string(),
+                payload: json!({"tool_use_id": pending.id, "status": status, "preview": preview})
+                    .to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .map_err(LoopError::Store)
     }
 
-    fn insert_notice(&self, store: &Store, msg_id: &str, seq: i64, text: &str) {
-        let _ = store.insert_block(NewBlock {
-            id: Store::new_id("b"),
-            message_id: msg_id.to_string(),
-            seq,
-            kind: "notice".to_string(),
-            payload: json!({"level": "error", "text": text}).to_string(),
-            boundary: None,
-            is_summary: false,
-            generation: 0,
-            signature: None,
-            dropped: false,
-        });
+    fn insert_notice(
+        &self,
+        store: &Store,
+        msg_id: &str,
+        seq: i64,
+        text: &str,
+    ) -> Result<(), LoopError> {
+        store
+            .insert_block(NewBlock {
+                id: Store::new_id("b"),
+                message_id: msg_id.to_string(),
+                seq,
+                kind: "notice".to_string(),
+                payload: json!({"level": "error", "text": text}).to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .map_err(LoopError::Store)
     }
 
     fn persist_result(
@@ -782,7 +796,7 @@ impl TurnLoop {
                 created_at: now_ms(),
             })
             .map_err(LoopError::Store)?;
-        self.insert_tool_block(store, msg_id, pending, outcome);
+        self.insert_tool_block(store, msg_id, pending, outcome)?;
         Ok(())
     }
 
