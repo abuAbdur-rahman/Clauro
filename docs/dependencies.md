@@ -287,6 +287,20 @@ theme wiring over it. A hand-rolled dialog is a bug farm with a focus trap.
 **Scope is the app shell, exactly like `lucide-react` (D96).** Nothing Radix
 ever enters the artifact frame (`D2`, `D3`, `D83`).
 
+### 7.1 Chat batch (`Tasks/026`)
+
+| Package | Resolved | Licence | Use |
+|---|---|---|---|
+| `@radix-ui/react-avatar` | **1.2.6** | MIT | Message-row avatars (`MessageAvatar` slot) |
+| `@radix-ui/react-dropdown-menu` | **2.1.24** | MIT | Message actions (copy/retry/feedback in `MessageFooter`) |
+| `@radix-ui/react-progress` | **1.1.16** | MIT | Compaction/usage progress |
+| `@radix-ui/react-scroll-area` | **1.2.18** | MIT | Themed transcript scrollbars |
+
+**Deferred with owner:** `message-scroller` follow-output lives in the
+`@shadcn/react` headless package — a non-Radix dependency needing its own
+vetting, owned by the transcript loop (`006`). Presentational `Message` is
+vendored; scroll behaviour is not.
+
 ---
 
 ## 6. Known open advisories — deferred with reasons

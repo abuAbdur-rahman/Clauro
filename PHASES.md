@@ -229,6 +229,7 @@ cannot authorise a retry; usage after compaction reads `usage.iterations`, not t
 | `Tasks/020-themes-hotkey-and-command-palette.md` | — | D42, D44, D66 |
 | `Tasks/024-frontend-feature-layout.md` | — (structure) | D112 |
 | `Tasks/025-vendored-shadcn-ui.md` | — (structure) | D112 |
+| `Tasks/026-chat-ui-batch.md` | — (structure) | D112 |
 
 **Gate:** a user completes a real task end to end and can delete every byte.
 
