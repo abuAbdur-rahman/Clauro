@@ -91,3 +91,13 @@ CI on PR #4 failed four ways; none was the e2e itself:
 - [ ] **safedep external check** (safedep.io, fails in 0s): no workflow file in this repo —
   org-level app, almost certainly misconfigured independent of this PR. Not fixable from
   here; needs an org admin. If it is a required check, every PR is red regardless.
+
+## Post-push Linux finding (WSL2 native run, 2026-10-06)
+
+The first real Linux execution of `kill_group` (GitHub CI never reached it — the pidfile bug
+fired first) failed differently: `kill -KILL -<pgid>` **killed the group and still exited 1**
+on WSL2's kernel (proven with `setsid` + `ps`: both dead, exit 1). Group-kill exit codes are
+therefore not a success signal; `kill_group` on Unix is now effect-based — send KILL best
+effort, poll `kill -0 -<pgid>` bounded 5s, `Err` only if members survive
+(`crates/clauro-fs/src/runner.rs:226-258`). No production callers exist (tests only), so the
+semantic change is test-surface only.

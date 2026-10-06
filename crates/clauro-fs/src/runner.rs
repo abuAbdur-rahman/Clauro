@@ -241,19 +241,41 @@ pub fn kill_group(pid: u32) -> Result<(), RunError> {
     }
     #[cfg(not(windows))]
     {
-        let status = std::process::Command::new("kill")
+        // Best effort first, verdict by effect: group-kill exit codes lie
+        // across environments — WSL2's kernel delivers the signal and still
+        // reports exit 1. What matters is that the group is gone, so poll
+        // for that (bounded) instead of trusting the status.
+        let _ = std::process::Command::new("kill")
             .args(["-KILL".to_string(), format!("-{pid}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .map_err(|e| RunError::Killed(e.to_string()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(RunError::Killed(format!("kill exited {status}")))
+        for _ in 0..50 {
+            if !group_has_members(pid) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        Err(RunError::Killed(format!(
+            "process group {pid} still alive after KILL"
+        )))
     }
+}
+
+/// True while any member of `pgid` (zombies included) can still be signalled.
+/// `kill -0` on the negative pid asks the group, not one process.
+#[cfg(not(windows))]
+fn group_has_members(pgid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0".to_string(), format!("-{pgid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true)
 }
 
 /// Run to completion in `workdir`, truncating with spill past `limits`.

@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main, dev]
 
-# Cancel superseded runs on the same ref. A stale green is not information.
+# Cancel superseded runs on the same branch. A stale green is not information.
+# Keyed on head_ref so a push to `dev` and the PR-sync run for a PR from `dev`
+# share one group: without this, opening a PR doubles every workflow (push run
+# + PR run that never cancel each other, because `github.ref` differs).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
