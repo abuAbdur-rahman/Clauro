@@ -5,8 +5,13 @@
 import { useEffect, useState } from "react";
 import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "../features/catalogue/catalogue";
 import ModelPicker from "../components/ModelPicker";
+import Composer from "../components/Composer";
 import { useThreadStore } from "../features/catalogue/thread";
 import { ArtifactDrawer } from "../components/ArtifactDrawer";
+import { ProjectsRail } from "../features/projects/ProjectsRail";
+import { CommandPalette } from "../features/shell/CommandPalette";
+import { applyTheme } from "../features/shell/theme";
+import { useSummonHotkey } from "../features/shell/hotkey";
 
 const THREAD = "thread-001";
 
@@ -17,8 +22,16 @@ export default function App() {
   const [payload, setPayload] = useState<CataloguePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const openThread = useThreadStore((s) => s.openThread);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useSummonHotkey(() => {
+    setPaletteOpen(true);
+  });
   const model = useThreadStore((s) => s.threads[THREAD]?.model ?? null);
   const effort = useThreadStore((s) => s.threads[THREAD]?.effort ?? "medium");
+
+  useEffect(() => {
+    applyTheme({ mode: "system", accent: "neutral", density: "comfortable" }, false);
+  }, []);
 
   useEffect(() => {
     // Read through a call: property narrowing would otherwise conclude the
@@ -63,7 +76,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-neutral-950 p-4 font-mono text-sm text-neutral-300">
+      <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
       <div className="flex gap-4">
+        <ProjectsRail projects={[{ id: "default", name: "Default" }]} memoryOff={false} />
         <div className="min-w-0 flex-1">
           <h1 className="text-base">Clauro — model catalogue (003)</h1>
           <p className="mt-1 text-xs text-neutral-500">
@@ -75,6 +90,20 @@ export default function App() {
               <ModelPicker payload={payload} threadId={THREAD} />
             ) : (
               <p className="text-neutral-500">Loading catalogue…</p>
+            )}
+          </div>
+          <div className="mt-4 max-w-2xl">
+            {payload ? (
+              <Composer
+                threadId={THREAD}
+                payload={payload}
+                memoryOff={false}
+                onSend={() => {}}
+                onAttach={() => {}}
+                onMemoryToggle={() => {}}
+              />
+            ) : (
+              <p className="text-neutral-500">Loading composer…</p>
             )}
           </div>
         </div>

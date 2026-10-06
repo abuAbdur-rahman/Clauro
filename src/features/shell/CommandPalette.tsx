@@ -1,10 +1,10 @@
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { paletteActions, type PaletteState } from "./palette";
 
-export function CommandPalette({ state }: { state: PaletteState }) {
+export function CommandPalette({ state, open }: { state: PaletteState; open: boolean }) {
   const m = paletteActions(state);
   return (
-    <Dialog open>
+    <Dialog open={open}>
       <DialogContent aria-label="command palette">
         <DialogTitle>Palette</DialogTitle>
         {m.blocked ? (
