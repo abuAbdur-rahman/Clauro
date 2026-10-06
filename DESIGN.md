@@ -65,7 +65,8 @@ affordance; it does not pretend the earlier blocks never existed.
 
 | Block | Rendering |
 |---|---|
-| text | markdown, streamed |
+| text | markdown, streamed, in a `ghost` bubble — full-width, unframed (Claude-like assistant row, shots 03/05) |
+| user turn | `align="end"` bubble (shots 04/07) — the only framed row |
 | thinking | **collapsible inline region, one shape for both providers.** Collapsed by default; shows a one-line preview. Never a side pane — that competes with the drawer for the same space during exactly the turns where both matter. |
 | tool_use / tool_result | one row. Name, status, bounded preview, expandable. `ok`, `error`, `aborted`, `rejected` are visually distinct, and **all four are results** — nothing reads as a crash. |
 | question_card | inline card, see §2.3 |

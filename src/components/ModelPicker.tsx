@@ -31,9 +31,12 @@ function optionText(model: CatalogueModel): string {
 export default function ModelPicker({
   payload,
   threadId,
+  compact = false,
 }: {
   payload: CataloguePayload;
   threadId: string;
+  /** Compact trigger for the composer footer; default is the full-width picker. */
+  compact?: boolean;
 }): React.JSX.Element {
   const [notice, setNotice] = useState<string | null>(null);
   const selectModel = useThreadStore((s) => s.selectModel);
@@ -107,7 +110,11 @@ export default function ModelPicker({
         <p className="text-sm text-neutral-500">Catalogue empty — nothing to pick.</p>
       ) : (
         <Select value={currentValue} onValueChange={choose}>
-          <SelectTrigger aria-label="Model" className="w-full max-w-2xl">
+          <SelectTrigger
+            aria-label="Model"
+            size="sm"
+            className={compact ? "w-auto max-w-48" : "w-full max-w-2xl"}
+          >
             <SelectValue placeholder="Choose a model" />
           </SelectTrigger>
           <SelectContent>
