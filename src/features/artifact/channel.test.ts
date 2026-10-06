@@ -33,6 +33,20 @@ const impostor = { name: "impostor-window" } as unknown;
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/**
+ * Port delivery is a task-queue hop per message, and one `tick()` is only
+ * enough when the runner is idle. Under CI load the hop lands late and a
+ * fixed tick asserts too early — exactly the flake that failed Windows CI.
+ * Poll for the expected state instead (bounded, 1s).
+ */
+async function untilSettled(predicate: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`port messages never settled: ${what}`);
+}
+
 describe("window-level gate (D6)", () => {
   it("accepts origin \"null\" from the frame's own window", () => {
     expect(validHandshake({ origin: "null", source: window }, window)).toBe(true);
@@ -107,7 +121,10 @@ describe("inbound gate on the transferred port", () => {
     channel.port2.postMessage({ type: "artifact.hello" });
     channel.port2.postMessage({ type: "artifact.log", level: "warn", text: "hi" });
     channel.port2.postMessage({ type: "artifact.error", text: "boom" });
-    await tick();
+    await untilSettled(
+      () => onReady.mock.calls.length === 1 && logs.length === 2,
+      "hello + two allowlisted logs",
+    );
     expect(onReady).toHaveBeenCalledOnce();
     expect(logs).toEqual([
       { level: "warn", text: "hi" },
@@ -118,6 +135,10 @@ describe("inbound gate on the transferred port", () => {
     channel.port2.postMessage({ type: "artifact.read", path: "C:/Users" });
     channel.port2.postMessage("artifact.log");
     channel.port2.postMessage(null);
+    // Negative assertions cannot poll: absence has no arrival event. The
+    // allowlisted traffic above already proved the channel flows, so a short
+    // pause is enough to catch anything the spoofs would (wrongly) trigger.
+    await tick();
     await tick();
     // No log, no throw, no reply: an off-allowlist name is indistinguishable
     // from no message at all.
@@ -143,7 +164,9 @@ describe("host side wiring", () => {
     });
 
     window.dispatchEvent(helloFrom("null", window));
-    await tick();
+    // `postMessage` to the frame's window is async delivery: poll for the
+    // one host→frame message instead of guessing a tick count.
+    await untilSettled(() => boots.length === 1, "artifact.boot delivery");
     // The one host→frame message, delivered to the frame's window.
     expect(boots).toEqual([{ type: "artifact.boot" }]);
     window.removeEventListener("message", spy);

@@ -85,9 +85,15 @@ CI on PR #4 failed four ways; none was the e2e itself:
   path: explicit allowlist entries whose exception lapses if the refusal marker disappears
   (`scripts/malware-ioc-scan.sh` `D2_SANDBOX_ALLOWLIST`/`D6_IPC_ALLOWLIST`; lapse verified
   by deleting a marker and watching it flag).
-- [x] **Lint** (`Composer.test.tsx:68`, `027`'s file): `?? ""` on a non-nullable. Removed
-  (4 chars, zero behaviour change). **Drive-by, out of scope** (O1–O4 only): flagged twice
-  before, fixed now because it reds all four CI jobs. `tsc` still clean.
+- [x] **Channel-test CI flake** (`channel.test.ts`, mine): one `tick()` is only enough
+  when the runner is idle — under CI load the port hop lands late and `onReady` asserted
+  too early (Windows CI red, local green). Positive port assertions now poll bounded
+  (`untilSettled`, 1s); negative assertions keep a double tick with the reason stated.
+  5/5 local repeats green.
+- [ ] **Lint** (`Composer.test.tsx:68`, `027`'s file): `?? ""` on a non-nullable. Still
+  red on disk — a removal was applied, verified green, then rewritten by the concurrent
+  editor 12s before the push and deliberately NOT re-applied (edit war). Fails `pnpm lint`
+  on every job that runs it. Needs 027's owner (or an explicit go-ahead).
 - [ ] **safedep external check** (safedep.io, fails in 0s): no workflow file in this repo —
   org-level app, almost certainly misconfigured independent of this PR. Not fixable from
   here; needs an org admin. If it is a required check, every PR is red regardless.
