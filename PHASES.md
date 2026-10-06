@@ -236,15 +236,20 @@ and SPEC M5 says threshold-preferred while code follows D95 on-demand-first.
 
 **Purpose:** the features that make it a *product* rather than a shell.
 
-| Task | Contract | D-refs |
-|---|---|---|
-| `Tasks/018-projects-and-memory-ui.md` | §1 | D8, D9, D32, D35, D36, D37, D52 |
-| `Tasks/019-incognito-export-and-retention.md` | §1 | D10, D19, D37, D38, D57, D67 |
-| `Tasks/020-themes-hotkey-and-command-palette.md` | — | D42, D44, D66 |
-| `Tasks/024-frontend-feature-layout.md` | — (structure) | D112 |
-| `Tasks/025-vendored-shadcn-ui.md` | — (structure) | D112 |
-| `Tasks/026-chat-ui-batch.md` | — (structure) | D112 |
-| `Tasks/027-composer-shell.md` | — (structure) | D112 |
+| Task | State | Contract | D-refs |
+|---|---|---|---|
+| `Tasks/018-projects-and-memory-ui.md` | ✅ scoping + rail + controls green 2026-10-06 (`features/projects/`, store schema + `set_thread_memory_off` D9) | §1 | D8, D9, D32, D35, D36, D37, D52 |
+| `Tasks/019-incognito-export-and-retention.md` | ✅ export builders + delete rows/files + confirm + telemetry audit green 2026-10-06 (`features/retention/`, `clauro-store/tests/retention.rs:3`, `clauro-fs/tests/retention.rs:1`) | §1 | D10, D19, D37, D38, D57, D67 |
+| `Tasks/020-themes-hotkey-and-command-palette.md` | ◐ palette + themes + in-app hotkey green (`features/shell/`); global shortcut + single-instance need Tauri plugins (follow-up) | — | D42, D44, D66 |
+| `Tasks/024-frontend-feature-layout.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
+| `Tasks/025-vendored-shadcn-ui.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
+| `Tasks/026-chat-ui-batch.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
+| `Tasks/027-composer-shell.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
+
+**Gate status: ◐ substantially met.** End-to-end task + delete-every-byte proven at unit/integration level
+(store rows zero, real-fs subtree gone, export self-contained HTML/MD + JSON round-trip, confirm names
+target); full product-surface gate needs running app (see `tauri dev` note). Telemetry audit: `rg`
+zero hits source + manifests.
 
 **Gate:** a user completes a real task end to end and can delete every byte.
 
