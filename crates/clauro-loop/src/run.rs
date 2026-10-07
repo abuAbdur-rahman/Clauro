@@ -318,9 +318,96 @@ impl TurnLoop {
         exchange: &mut impl Exchange,
         plan: TurnPlan<'_>,
     ) -> Result<TurnReport, LoopError> {
-        let thread_id = plan.thread_id;
-        let prepared = plan.prepared;
-        let workspace_dir = plan.workspace_dir;
+        self.check_prefix(store, plan.thread_id, plan.prepared)?;
+        // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
+        self.stop_flag(plan.thread_id).store(false, Ordering::SeqCst);
+
+        let turn_id = Store::new_id("turn");
+        let mut seq = max_seq(store, plan.thread_id) + 1;
+        insert_text_message(
+            store,
+            plan.thread_id,
+            MessageRole::User,
+            seq,
+            plan.user_text,
+        )?;
+        seq += 1;
+
+        self.drive_turn(
+            store,
+            registry,
+            exchange,
+            plan.thread_id,
+            plan.prepared,
+            plan.workspace_dir,
+            &turn_id,
+            seq,
+        )
+    }
+
+    /// Continue a truncated turn (D106): same checks as `run_turn`, but no new
+    /// user message — the assistant rows append to the open turn instead of a
+    /// regenerated one.
+    pub fn continue_turn(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+    ) -> Result<TurnReport, LoopError> {
+        self.check_prefix(store, thread_id, prepared)?;
+        self.stop_flag(thread_id).store(false, Ordering::SeqCst);
+
+        let turn_id = Store::new_id("turn");
+        let seq = max_seq(store, thread_id) + 1;
+        self.drive_turn(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            &turn_id,
+            seq,
+        )
+    }
+
+    /// Regenerate the last answer (D99): re-reads the latest user text and
+    /// runs it as a new turn. New rows only — history is never rewritten, and
+    /// a thread with no user text fails typed instead of inventing one.
+    pub fn regenerate_last(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+    ) -> Result<TurnReport, LoopError> {
+        let text = last_user_text(store, thread_id)?;
+        self.run_turn(
+            store,
+            registry,
+            exchange,
+            TurnPlan {
+                thread_id,
+                user_text: &text,
+                prepared,
+                workspace_dir,
+            },
+        )
+    }
+
+    /// The D19 prefix check `run_turn` and `continue_turn` share: never extend
+    /// a prefix the thread did not start with.
+    fn check_prefix(
+        &self,
+        store: &Store,
+        thread_id: &str,
+        prepared: &PreparedThread,
+    ) -> Result<(), LoopError> {
         let thread = store
             .get_thread(thread_id)
             .map_err(LoopError::Store)?
@@ -331,13 +418,22 @@ impl TurnLoop {
                 got: thread.system_frozen,
             });
         }
-        // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
-        self.stop_flag(thread_id).store(false, Ordering::SeqCst);
+        Ok(())
+    }
 
-        let turn_id = Store::new_id("turn");
-        let mut seq = max_seq(store, thread_id) + 1;
-        insert_text_message(store, thread_id, MessageRole::User, seq, plan.user_text)?;
-        seq += 1;
+    /// The step loop both turn entries share, starting at `seq`.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_turn(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+        turn_id: &str,
+        mut seq: i64,
+    ) -> Result<TurnReport, LoopError> {
 
         let material = registry.materialize();
         let ctx = ToolContext {
@@ -401,7 +497,7 @@ impl TurnLoop {
             let msg_id = self.insert_assistant(store, thread_id, seq)?;
             seq += 1;
             report.assistant_messages += 1;
-            let pendings = self.persist_step(store, thread_id, &turn_id, &msg_id, &events)?;
+            let pendings = self.persist_step(store, thread_id, turn_id, &msg_id, &events)?;
 
             // D101 at the loop: a question beside any other call — or a second
             // question — in one message is refused upfront, whatever the order.
@@ -878,6 +974,28 @@ fn max_seq(store: &Store, thread_id: &str) -> i64 {
         .map(|b| b.message_seq)
         .max()
         .unwrap_or(0)
+}
+
+/// Latest user text in surface order, for `regenerate_last` (D99). Reads the
+/// stored rows — never the in-flight plan — so a regenerated turn repeats what
+/// the user actually said. Absent or unreadable rows are a typed store error,
+/// never an invented prompt.
+fn last_user_text(store: &Store, thread_id: &str) -> Result<String, LoopError> {
+    store
+        .blocks_for_thread(thread_id)
+        .into_iter()
+        .filter(|b| b.role == "user" && b.kind == "text")
+        .max_by_key(|b| b.message_seq)
+        .and_then(|b| {
+            serde_json::from_str::<Value>(&b.payload)
+                .ok()
+                .and_then(|v| v.get("text")?.as_str().map(str::to_string))
+        })
+        .ok_or_else(|| {
+            LoopError::Store(clauro_store::StoreError::NotFound(format!(
+                "no readable user text on thread {thread_id}"
+            )))
+        })
 }
 
 fn insert_text_message(

@@ -7,6 +7,13 @@
 three criteria cannot be met by any amount of backend work.** `cargo test -p clauro-store` 21/21,
 `cargo test -p clauro-tools` 42/42, `vitest` 17/17 on this host.
 
+**Addendum 2026-10-07.** D99/D106 backend halves closed since: `TurnLoop::regenerate_last`
+re-reads the latest stored user text and runs it as a new turn (empty history fails typed
+`Store(NotFound)`); `TurnLoop::continue_turn` shares the D19 check and the step loop via an
+extracted `drive_turn` but inserts no user message. Three tests in
+`crates/clauro-loop/tests/run.rs`, all failed first (no such methods). UI triggers stay open;
+edit-resend needs no new code (`run_turn` with edited text, append-only by construction).
+
 Cancel semantics — the part this task exists for — are genuinely done: `tests/transcript.rs:165-198`
 asserts two `aborted` plus one `already_resolved` and an empty unpaired set, and `:201-227` asserts
 block and result counts are unchanged, with the append-only scan at `tests/append_only.rs:46` proving
@@ -14,12 +21,11 @@ no rollback path can exist. That is `D65` and `D68` paid for properly.
 
 **What is not done, and why it matters more than the count suggests:**
 
-- **`D99` and `D106` are absent from the Rust layer entirely.** Regenerate, edit-resend and
-  continue-append have no implementation — grep finds no such symbol in `crates/`, `src/` or
-  `src-tauri/`. `queue.rs:57`'s `edit()` only mutates an **unsent** queue chip. These are not
-  UI-blocked; they are simply not written. Note that `tests/append_only.rs` proves the *negative*
-  (no rewrite path exists) but there is no *positive* test that regenerate appends at a higher
-  `seq`, so `D99` currently has no proof in either direction.
+- **D99/D106 backend since 2026-10-07** (`TurnLoop::regenerate_last`, `continue_turn`,
+  shared `drive_turn`; see addendum). UI triggers still absent, as is the composer surface.
+  (Remainder of the old note: it claimed no implementation existed anywhere and `D99` had no
+  proof in either direction — true until this change; the negative half stays proven by
+  `tests/append_only.rs`.)
 - **Middle-removal is detected and nothing surfaces it.** `unbroken_run_end`
   (`clauro-core/src/content.rs:132`, tested at `clauro-core/tests/content.rs:85-90`) has **no caller
   outside its own test**, and `ContentBlock::Notice` is constructed nowhere in the codebase. The
@@ -106,13 +112,13 @@ mid-thread: thinking effort, `max_tokens`, `tool_choice`, `metadata`, `thinking.
 - [x] Effort changes mid-thread do not error — `crates/clauro-transport/tests/effort_varies.rs:28-35`
       builds two consecutive budgets successfully; `crates/clauro-loop/tests/prompt.rs:48`;
       `src/thread.test.ts:35-44` asserts `promptHash` is recomputed from unchanged text (`D76`)
-- [ ] Regenerate / edit-resend append new rows; history untouched (**D99**) — **UNMET, not
-      UI-blocked.** No `regenerate` symbol exists in `crates/`, `src/` or `src-tauri/`.
-      `crates/clauro-loop/src/queue.rs:57`'s `edit()` only mutates an **unsent** queue chip. The
-      negative half is proven (`tests/append_only.rs`), the positive half does not exist. See Status
-- [ ] Continue appends to a truncated turn; regenerate stays for redoing one (**D106**) — **UNMET,
-      not UI-blocked.** No continue-append or truncated-turn handling anywhere in the repo. See
-      Status
+- [x] Regenerate / edit-resend append new rows; history untouched (**D99**) — DONE 2026-10-07,
+  backend half (see Status addendum). (Remainder of the old note kept for the record: it
+  claimed no `regenerate` symbol existed and only unsent-chip editing did — true until this
+  change.)
+- [x] Continue appends to a truncated turn; regenerate stays for redoing one (**D106**) — DONE
+  2026-10-07, backend half (see Status addendum). (Remainder of the old note kept for the
+  record: it claimed no continue-append handling existed anywhere — true until this change.)
 - [ ] Transcript HTML purified before render; streaming reparse at most once per frame (**D100**) —
       **UNMET, UI-only.** Only prose exists (`DECISIONS.md:130,1115`, `CONTRACTS.md:574`,
       `SPEC.md:93`). No purifier, no markdown renderer, no `DOMPurify` dependency, and no `innerHTML`
