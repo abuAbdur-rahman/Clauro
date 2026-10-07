@@ -438,7 +438,9 @@ fn ignored_events_become_visible_notices() {
         .collect();
     assert_eq!(notices.len(), 1, "one visible notice, not a silent drop");
     assert!(
-        notices[0].payload.contains("response.reasoning_summary_text.delta"),
+        notices[0]
+            .payload
+            .contains("response.reasoning_summary_text.delta"),
         "notice names the unrendered event: {}",
         notices[0].payload
     );

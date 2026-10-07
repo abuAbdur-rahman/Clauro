@@ -320,7 +320,8 @@ impl TurnLoop {
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, plan.thread_id, plan.prepared)?;
         // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
-        self.stop_flag(plan.thread_id).store(false, Ordering::SeqCst);
+        self.stop_flag(plan.thread_id)
+            .store(false, Ordering::SeqCst);
 
         let turn_id = Store::new_id("turn");
         let mut seq = max_seq(store, plan.thread_id) + 1;
@@ -434,7 +435,6 @@ impl TurnLoop {
         turn_id: &str,
         mut seq: i64,
     ) -> Result<TurnReport, LoopError> {
-
         let material = registry.materialize();
         let ctx = ToolContext {
             thread_id: thread_id.to_string(),

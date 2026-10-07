@@ -599,10 +599,7 @@ fn regenerate_appends_new_answer_history_untouched() {
     // D99: new rows, never rewritten. The user text reappears as a new row
     // carrying the same words; the first answer is byte-identical.
     assert_eq!(role_texts(&store, "user"), vec!["first q", "first q"]);
-    assert_eq!(
-        role_texts(&store, "assistant"),
-        vec!["first a", "second a"]
-    );
+    assert_eq!(role_texts(&store, "assistant"), vec!["first a", "second a"]);
 }
 
 #[test]
