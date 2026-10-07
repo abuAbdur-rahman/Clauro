@@ -111,14 +111,18 @@ jobs:
       # in `.github/workflows/linux-matrix.yml.disabled` and returns with them.)
 
       # The Windows floor pins a FIXED WebView2 runtime rather than relying on
-
-      # The Windows floor pins a FIXED WebView2 runtime rather than relying on
-      # whatever the image happens to ship. Placeholder until Tasks/021 lands
-      # the runtime selection (Phase 6).
-      - name: Pin the Windows floor WebView2 runtime
+      # whatever the image happens to ship. Full fixed-version install lands
+      # with Tasks/021 (Phase 6); until then this step records the resolved
+      # runtime version in the job log, so the next reader can tell what was
+      # actually tested (TECH_STACK.md §5). A floor that records nothing is a
+      # label, not a floor (D50).
+      - name: Record the Windows floor WebView2 runtime version
         if: matrix.job == 'windows floor'
         shell: pwsh
-        run: Write-Host "pinned WebView2 runtime - see Tasks/021"
+        run: |
+          $pv = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\ClientState\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv
+          if (-not $pv) { Write-Host "::warning::no WebView2 runtime version found in registry - see Tasks/021"; exit 0 }
+          Write-Host "WebView2 runtime version: $pv"
 
       - name: cargo fmt check
         if: steps.rust.outputs.present == 'true'
@@ -130,7 +134,9 @@ jobs:
 
       - name: cargo test
         if: steps.rust.outputs.present == 'true'
-        run: cargo test --workspace
+        # --locked is not optional in CI (release.yml:61). Without it, Cargo
+        # lock drift silently updates instead of failing the build.
+        run: cargo test --workspace --locked
 
       - name: Frontend lint, typecheck and test
         if: steps.web.outputs.present == 'true'
