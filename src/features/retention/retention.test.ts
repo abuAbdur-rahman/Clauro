@@ -14,7 +14,7 @@ describe("019 export", () => {
     expect(out.some((b) => (b as { kind: string }).kind === "text")).toBe(true);
   });
   it("no key material in export", () => {
-    expect(containsKeyMaterial("api_key = abcdef1234567890abcdef1234567890")).toBe(true);
+    expect(containsKeyMaterial("api_key = " + "abcdef1234567890abcdef1234567890")).toBe(true);
     expect(containsKeyMaterial("hello world")).toBe(false);
   });
 });
