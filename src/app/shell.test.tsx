@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
 import App from "./App";
 
 vi.mock("../features/catalogue/catalogue", () => ({
@@ -28,6 +28,9 @@ vi.mock("../features/catalogue/catalogue", () => ({
 }));
 
 describe("App shell wires Phase 5", () => {
+  beforeEach(() => {
+    cleanup();
+  });
   it("shows projects rail and composer; palette opens on Ctrl+K", async () => {
     window.matchMedia = (query: string) =>
       ({
@@ -42,5 +45,21 @@ describe("App shell wires Phase 5", () => {
     expect(screen.queryByLabelText("command palette")).toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
     expect(await screen.findByLabelText("command palette")).toBeDefined();
+  });
+  it("navigates home -> projects -> detail", async () => {
+    window.matchMedia = (query: string) =>
+      ({
+        matches: query.length < 0,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        media: query,
+      }) as unknown as MediaQueryList;
+    const user = (await import("@testing-library/user-event")).default.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: /browse projects/i }));
+    expect(await screen.findByRole("button", { name: /new project/i })).toBeDefined();
+    const research = screen.getAllByRole("button", { name: "Research" });
+    await user.click(research[research.length - 1]);
+    expect(await screen.findByText(/project capacity used/i)).toBeDefined();
   });
 });

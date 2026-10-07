@@ -246,9 +246,12 @@ and SPEC M5 says threshold-preferred while code follows D95 on-demand-first.
 | `Tasks/026-chat-ui-batch.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 | `Tasks/027-composer-shell.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 
-**Gate status: ◐ substantially met.** End-to-end task + delete-every-byte proven at unit/integration level
+**Gate status: ◐ substantially met 2026-10-07.** End-to-end task + delete-every-byte proven at unit/integration level
 (store rows zero, real-fs subtree gone, export self-contained HTML/MD + JSON round-trip, confirm names
-target); full product-surface gate needs running app (see `tauri dev` note). Telemetry audit: `rg`
+target); the surfaces are now wired into the shell (`src/app/App.tsx`: home greeting + centered composer,
+projects grid, project detail with Instructions/Memory/Context rail, nested rail threads, palette with
+search + tabs + recents, `src/app/shell.test.tsx` navigation proof) with all labels our own wording
+(**D39**). What remains is visual confirmation in the running app. Telemetry audit: `rg`
 zero hits source + manifests.
 
 **Gate:** a user completes a real task end to end and can delete every byte.

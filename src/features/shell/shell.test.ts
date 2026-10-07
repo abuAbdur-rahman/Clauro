@@ -1,6 +1,6 @@
 //! Task 020 failing tests first — palette states + theme.
 import { describe, expect, it } from "vitest";
-import { paletteActions, type PaletteState } from "./palette";
+import { paletteActions, filterPalette, type PaletteState } from "./palette";
 import { applyTheme, type Theme } from "./theme";
 
 describe("020 palette", () => {
@@ -15,6 +15,16 @@ describe("020 palette", () => {
     const actions = paletteActions({ turnRunning: false });
     expect(actions.available).not.toContain("bash:approve");
     expect(actions.available).not.toContain("attach");
+  });
+  it("filterPalette filters by tab + query", () => {
+    const items = [
+      { id: "1", tab: "chats" as const, label: "Review tokenizer" },
+      { id: "2", tab: "projects" as const, label: "Alpha" },
+      { id: "3", tab: "actions" as const, label: "New chat" },
+    ];
+    expect(filterPalette(items, "all", "")).toHaveLength(3);
+    expect(filterPalette(items, "projects", "").map((i) => i.id)).toEqual(["2"]);
+    expect(filterPalette(items, "all", "token").map((i) => i.id)).toEqual(["1"]);
   });
 });
 

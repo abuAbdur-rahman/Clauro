@@ -9,13 +9,27 @@ import Composer from "../components/Composer";
 import { useThreadStore } from "../features/catalogue/thread";
 import { ArtifactDrawer } from "../components/ArtifactDrawer";
 import { ProjectsRail } from "../features/projects/ProjectsRail";
+import { ProjectsGrid } from "../features/projects/ProjectsGrid";
+import { ProjectDetail } from "../features/projects/ProjectDetail";
+import { HomeGreeting } from "../features/home/HomeGreeting";
 import { CommandPalette } from "../features/shell/CommandPalette";
 import { applyTheme } from "../features/shell/theme";
 import { useSummonHotkey } from "../features/shell/hotkey";
 
 const THREAD = "thread-001";
 
+/** Intent collection only; dispatch belongs to the turn loop (023). */
+function noop(): void {
+  // Wired to real handlers by their owning tasks.
+}
+
+const DEMO_PROJECTS = [
+  { id: "default", name: "Default" },
+  { id: "research", name: "Research" },
+];
+
 type Boot = { stage: "checking" } | { stage: "missing"; hint: string } | { stage: "ready" };
+type View = { name: "home" } | { name: "projects" } | { name: "project"; id: string } | { name: "chat" };
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>({ stage: "checking" });
@@ -23,6 +37,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const openThread = useThreadStore((s) => s.openThread);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [view, setView] = useState<View>({ name: "home" });
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
@@ -74,38 +89,110 @@ export default function App() {
     );
   }
 
+  const project = view.name === "project" ? DEMO_PROJECTS.find((p) => p.id === view.id) : undefined;
+
   return (
     <div className="min-h-screen bg-neutral-950 p-4 font-mono text-sm text-neutral-300">
       <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
       <div className="flex gap-4">
-        <ProjectsRail projects={[{ id: "default", name: "Default" }]} memoryOff={false} />
+        <ProjectsRail
+          projects={DEMO_PROJECTS}
+          memoryOff={false}
+          threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
+          onSelectProject={(id) => {
+            setView({ name: "project", id });
+          }}
+          onSelectThread={() => {
+            setView({ name: "chat" });
+          }}
+        />
         <div className="min-w-0 flex-1">
-          <h1 className="text-base">Clauro — model catalogue (003)</h1>
-          <p className="mt-1 text-xs text-neutral-500">
-            thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
-          </p>
-          {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
-          <div className="mt-3 max-w-2xl">
-            {payload ? (
-              <ModelPicker payload={payload} threadId={THREAD} />
-            ) : (
-              <p className="text-neutral-500">Loading catalogue…</p>
-            )}
-          </div>
-          <div className="mt-4 max-w-2xl">
-            {payload ? (
-              <Composer
-                threadId={THREAD}
-                payload={payload}
-                memoryOff={false}
-                onSend={() => {}}
-                onAttach={() => {}}
-                onMemoryToggle={() => {}}
-              />
-            ) : (
-              <p className="text-neutral-500">Loading composer…</p>
-            )}
-          </div>
+          {view.name === "home" && (
+            <div className="mx-auto mt-24 max-w-2xl">
+              <HomeGreeting hour={new Date().getHours()} />
+              <div className="mt-6">
+                {payload ? (
+                  <Composer
+                    threadId={THREAD}
+                    payload={payload}
+                    memoryOff={false}
+                    onSend={noop}
+                    onAttach={noop}
+                    onMemoryToggle={noop}
+                  />
+                ) : (
+                  <p className="text-neutral-500">Loading composer…</p>
+                )}
+                <p className="mt-2 text-center text-xs text-neutral-500">
+                  Clauro runs on your machine. Double-check important answers.
+                </p>
+              </div>
+              <div className="mt-6 flex justify-center gap-2">
+                <button
+                  type="button"
+                  className="text-xs text-neutral-400 hover:underline"
+                  onClick={() => {
+                    setView({ name: "projects" });
+                  }}
+                >
+                  Browse projects
+                </button>
+              </div>
+            </div>
+          )}
+          {view.name === "projects" && (
+            <ProjectsGrid
+              projects={DEMO_PROJECTS}
+              onNew={noop}
+              onOpen={(id) => {
+                setView({ name: "project", id });
+              }}
+            />
+          )}
+          {view.name === "project" && project && (
+            <ProjectDetail
+              project={project}
+              instructions=""
+              memoryCount={0}
+              contextUsed="0%"
+              onBack={() => {
+                setView({ name: "projects" });
+              }}
+            />
+          )}
+          {view.name === "chat" && (
+            <div>
+              <h1 className="text-base">Clauro — model catalogue (003)</h1>
+              <p className="mt-1 text-xs text-neutral-500">
+                thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
+              </p>
+              {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
+              <div className="mt-3 max-w-2xl">
+                {payload ? (
+                  <ModelPicker payload={payload} threadId={THREAD} />
+                ) : (
+                  <p className="text-neutral-500">Loading catalogue…</p>
+                )}
+              </div>
+              <div className="mt-4 max-w-2xl">
+                {payload ? (
+                  <Composer
+                    threadId={THREAD}
+                    payload={payload}
+                    memoryOff={false}
+                    onSend={noop}
+                    onAttach={noop}
+                    onMemoryToggle={noop}
+                  />
+                ) : (
+                  <p className="text-neutral-500">Loading composer…</p>
+                )}
+                <p className="mt-2 text-center text-xs text-neutral-500">
+                  Clauro runs on your machine. Double-check important answers.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
         {/* Engine gate is prop-driven: the shell passes the real verdict once
             the Tauri runtime check exists (021). Windows-verified is the dev

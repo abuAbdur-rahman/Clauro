@@ -629,9 +629,22 @@ impl TurnLoop {
                     )?;
                     block_seq += 1;
                 }
-                NormalisedEvent::Stop { .. }
-                | NormalisedEvent::Ping
-                | NormalisedEvent::Ignored { .. } => {}
+                NormalisedEvent::Stop { .. } | NormalisedEvent::Ping => {}
+                NormalisedEvent::Ignored { raw_type } => {
+                    // The adapter could not map this event, but the provider
+                    // sent it — dropping it renders a plausible-looking wrong
+                    // transcript, so it becomes a visible notice instead (005:
+                    // degrade visibly, never silently).
+                    self.insert_notice(
+                        store,
+                        msg_id,
+                        block_seq,
+                        &format!(
+                            "provider sent {raw_type}, which this app does not render; continuing"
+                        ),
+                    )?;
+                    block_seq += 1;
+                }
                 NormalisedEvent::Error { message } => {
                     self.insert_notice(store, msg_id, block_seq, message)?;
                     block_seq += 1;

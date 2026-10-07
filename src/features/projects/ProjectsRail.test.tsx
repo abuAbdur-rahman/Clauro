@@ -19,4 +19,14 @@ describe("ProjectsRail", () => {
     rerender(<ProjectsRail projects={[]} memoryOff={false} />);
     expect(screen.queryByLabelText(/memory off/i)).toBeNull();
   });
+  it("nests child threads under their project", () => {
+    render(
+      <ProjectsRail
+        projects={[{ id: "p1", name: "Alpha" }]}
+        memoryOff={false}
+        threadsByProject={{ p1: [{ id: "t1", title: "Milestones" }] }}
+      />,
+    );
+    expect(screen.getByText("Milestones")).toBeDefined();
+  });
 });
