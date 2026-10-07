@@ -4,8 +4,57 @@
  * that is testable without a Tauri runtime. The invoke wrappers are thin by
  * construction, like `features/catalogue/catalogue.ts`.
  */
-import { describe, expect, it } from "vitest";
-import { parseTranscript, parseTurnDone, parseTurnEvent } from "./turn";
+import { describe, expect, it, vi } from "vitest";
+import {
+  parseTranscript,
+  parseTurnDone,
+  parseTurnEvent,
+  transcriptRead,
+  turnStart,
+  turnStop,
+} from "./turn";
+import { invoke } from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+describe("invoke wire keys", () => {
+  // REGRESSION 2026-10-07: the running app refused every call with
+  // "missing required key threadId" because the payload used snake_case.
+  // Tauri exposes Rust `thread_id`/`max_tokens` as camelCase JS keys and
+  // matches them exactly — there is no build-time error, only the runtime
+  // refusal plus an orange error dump where the transcript should be.
+  it("turnStart sends camelCase keys exactly", async () => {
+    vi.mocked(invoke).mockResolvedValue({ thread_id: "t1" });
+    await turnStart({
+      threadId: "t1",
+      text: "hi",
+      provider: "anthropic",
+      model: "m",
+      effort: "medium",
+      maxTokens: 4096,
+    });
+    expect(invoke).toHaveBeenCalledWith("turn_start", {
+      threadId: "t1",
+      text: "hi",
+      provider: "anthropic",
+      model: "m",
+      effort: "medium",
+      maxTokens: 4096,
+    });
+  });
+
+  it("turnStop sends threadId", async () => {
+    vi.mocked(invoke).mockResolvedValue(true);
+    await expect(turnStop("t1")).resolves.toBe(true);
+    expect(invoke).toHaveBeenCalledWith("turn_stop", { threadId: "t1" });
+  });
+
+  it("transcriptRead sends threadId", async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+    await expect(transcriptRead("t1")).resolves.toEqual([]);
+    expect(invoke).toHaveBeenCalledWith("transcript_read", { threadId: "t1" });
+  });
+});
 
 describe("parseTurnEvent", () => {
   it("parses a text delta with its thread", () => {

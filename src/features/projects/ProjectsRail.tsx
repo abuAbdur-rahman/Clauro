@@ -1,3 +1,4 @@
+import { Brain } from "lucide-react";
 import { Sidebar, SidebarProvider } from "@/components/ui/sidebar";
 import type { Project } from "./projects";
 
@@ -45,7 +46,11 @@ export function ProjectsRail({
           </div>
         ))}
       </nav>
-      {memoryOff ? <span aria-label="memory off">✕🧠</span> : null}
+      {memoryOff ? (
+        <span aria-label="memory off" className="text-neutral-500">
+          <Brain size={16} strokeWidth={1.75} />
+        </span>
+      ) : null}
       </Sidebar>
     </SidebarProvider>
   );

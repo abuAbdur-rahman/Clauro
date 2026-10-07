@@ -3,6 +3,14 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Base scale: 17px instead of the 16px default. The shell read small on
+   dense desktop displays (proven by the running app 2026-10-07); one notch
+   up on the root scales every rem-based utility together. px values and
+   media queries are unaffected. */
+html {
+  font-size: 17px;
+}
+
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -100,6 +108,16 @@
 @layer base {
   * {
     @apply border-border;
+  }
+  /* Root never scrolls (UI-GUIDE §3, DESIGN §1.1): viewport-locked, with
+     scrolling only in inner regions (transcript, sidebar list, drawer). */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    overflow: hidden;
   }
   body {
     @apply bg-background text-foreground;

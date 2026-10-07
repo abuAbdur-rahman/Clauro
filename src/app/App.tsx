@@ -48,8 +48,24 @@ export default function App() {
   });
 
 
+  // Device theme, followed live: white surfaces only exist in light mode.
+  // The hardcoded `false` that used to sit here pinned the whole shell to the
+  // light tokens (white cards on a dark OS) — proven by the running app
+  // 2026-10-07. `matchMedia` is the source; `applyTheme` stays pure so its
+  // unit tests keep passing injected values.
   useEffect(() => {
-    applyTheme({ mode: "system", accent: "neutral", density: "comfortable" }, false);
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      applyTheme(
+        { mode: "system", accent: "neutral", density: "comfortable" },
+        query.matches,
+      );
+    };
+    apply();
+    query.addEventListener("change", apply);
+    return () => {
+      query.removeEventListener("change", apply);
+    };
   }, []);
 
   useEffect(() => {
@@ -94,23 +110,29 @@ export default function App() {
   const project = view.name === "project" ? DEMO_PROJECTS.find((p) => p.id === view.id) : undefined;
 
   return (
-    <div className="min-h-screen bg-neutral-950 p-4 font-mono text-sm text-neutral-300">
+    <div className="h-dvh w-screen overflow-hidden bg-neutral-950 p-4 font-sans text-sm text-neutral-300">
       <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
-      <div className="flex gap-4">
-        <ProjectsRail
-          projects={DEMO_PROJECTS}
-          memoryOff={false}
-          threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
-          onSelectProject={(id) => {
-            setView({ name: "project", id });
-          }}
-          onSelectThread={() => {
-            setView({ name: "chat" });
-          }}
-        />
-        <div className="min-w-0 flex-1">
+      <div className="flex h-full min-h-0 gap-4">
+        {/* Fixed rail width: the shadcn SidebarProvider wrapper is w-full by
+            design, and as a raw flex item it ate the whole row and crushed the
+            center column to zero (proven in-browser 2026-10-07). Fixed width +
+            shrink-0 keeps it a 260px column (UI-GUIDE §3). */}
+        <div className="w-[260px] shrink-0 self-stretch overflow-hidden">
+          <ProjectsRail
+            projects={DEMO_PROJECTS}
+            memoryOff={false}
+            threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
+            onSelectProject={(id) => {
+              setView({ name: "project", id });
+            }}
+            onSelectThread={() => {
+              setView({ name: "chat" });
+            }}
+          />
+        </div>
+        <div className="min-h-0 min-w-0 flex-1">
           {view.name === "home" && (
-            <div className="mx-auto mt-24 max-w-2xl">
+            <div className="mx-auto flex h-full w-full max-w-[720px] flex-col items-center justify-center">
               <HomeGreeting hour={new Date().getHours()} />
               <div className="mt-6">
                 <Composer

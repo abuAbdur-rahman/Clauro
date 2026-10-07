@@ -89,29 +89,33 @@ export interface TurnStartParams {
 
 /** Start a turn. Returns at once; the turn reports through the channels. */
 export async function turnStart(params: TurnStartParams): Promise<{ thread_id: string }> {
-  // Wire keys are snake_case to match the Rust params exactly: Tauri
-  // extracts command arguments by name, and a camelCase key would arrive as
-  // a missing argument at runtime rather than a type error at build time.
+  // Wire keys are camelCase to match what Tauri passes to the Rust command:
+  // Tauri exposes Rust `thread_id`/`max_tokens` params as `threadId`/
+  // `maxTokens` on the JS side, and invoke matches those names exactly.
+  // REGRESSION (proven by the running app 2026-10-07): snake_case keys fail
+  // at runtime with "missing required key threadId" while the transcript
+  // shows an orange error dump instead of rows. The test below pins every
+  // key of every turn command.
   const raw: unknown = await invoke("turn_start", {
-    thread_id: params.threadId,
+    threadId: params.threadId,
     text: params.text,
     provider: params.provider,
     model: params.model,
     effort: params.effort,
-    max_tokens: params.maxTokens,
+    maxTokens: params.maxTokens,
   });
   return z.object({ thread_id: z.string() }).parse(raw);
 }
 
 /** Stop a running turn. Resolves true when a turn was actually running. */
 export async function turnStop(threadId: string): Promise<boolean> {
-  const raw: unknown = await invoke("turn_stop", { thread_id: threadId });
+  const raw: unknown = await invoke("turn_stop", { threadId });
   return z.boolean().parse(raw);
 }
 
 /** Re-read one thread's transcript. The repair path for a missed event. */
 export async function transcriptRead(threadId: string): Promise<RenderRow[]> {
-  const raw: unknown = await invoke("transcript_read", { thread_id: threadId });
+  const raw: unknown = await invoke("transcript_read", { threadId });
   return parseTranscript(raw);
 }
 

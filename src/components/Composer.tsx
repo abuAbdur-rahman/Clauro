@@ -55,7 +55,7 @@ export default function Composer({
   }
 
   return (
-    <div className="rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
+    <div className="min-w-0 rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
       <Textarea
         aria-label="Message"
         placeholder="Write a message…"
@@ -69,9 +69,9 @@ export default function Composer({
             send();
           }
         }}
-        className="min-h-12 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+        className="min-h-12 w-full min-w-0 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
       />
-      <div className="mt-2 flex items-center gap-1.5">
+      <div className="mt-2 flex min-w-0 items-center gap-1.5">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
