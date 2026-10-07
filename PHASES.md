@@ -122,7 +122,12 @@ What keeps the gate from ✅: no turn has run against the live API on this host 
 here, and no test may need one by rule), and the second adapter's live path is precisely refused
 (`UnsupportedProvider`) until the Anthropic→chat-completions request translator lands — the loop
 builds Anthropic-shaped bodies, so sending one at a compat endpoint would be a silent 400. The
-gate's remaining work is a live-key run plus the translator, not more investigation.
+gate's remaining work is a live-key run plus the translator, not more investigation. **2026-10-07
+update:** the socket-level half is now proven for the second adapter by a direct live smoke
+(Google Gemini key, `models/gemma-4-26b-a4b-it`): 62 models listed, one text turn completed,
+streaming `data:` chunks plus `[DONE]` observed, and the in-band `<thought>` reasoning marker
+(`extra_content.google.thought`) recorded in `Tasks/005` for the translator. What remains is
+the in-app turn with a stored key, plus the translator itself.
 
 **Unblocks:** Phase 2 (the loop needs a surface to run against), Phase 4 (the meter needs a real
 transcript to measure).

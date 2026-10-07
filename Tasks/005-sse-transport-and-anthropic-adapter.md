@@ -108,3 +108,30 @@ key is needed to choose.** `D75`.
   `wiring.rs:ignored_events_become_visible_notices`, which failed first (0 notices —
   the silent drop). Stale pointers corrected: the drop was at `run.rs:632-634`, and
   `insert_notice` lives at `run.rs:737`, not the numbers below.
+
+**Addendum 2026-10-07 (live smoke, Google Gemini key, Gemma 4).** The "assumption,
+not a test" risk above is now measured for one real provider — by a throwaway
+script outside the repo (TEMP, deleted after the run; key from a gitignored
+`.env`, never printed, never committed, never in a test). Verified live:
+
+- Endpoint `https://generativelanguage.googleapis.com/v1beta/openai`, Bearer
+  auth. `GET /models` returns 62 ids including `models/gemma-4-26b-a4b-it`
+  and `models/gemma-4-31b-it`. Model ids carry the `models/` prefix and the
+  chat endpoint accepts it verbatim.
+- `POST /chat/completions` returns the standard envelope (`choices[0]` with
+  `finish_reason`/`index`/`message{content,role}`; `usage` with
+  `prompt_tokens`/`completion_tokens`/`total_tokens`).
+- Streaming is bare `data:` lines plus terminal `data: [DONE]` — no `event:`
+  lines. Final chunk carries `finish_reason: "stop"`.
+- **Reasoning arrives in-band, and this is the load-bearing fact for the
+  translator:** thinking deltas are `<thought>…</thought>` blocks inside
+  `delta.content`, marked per-delta by
+  `extra_content.google.thought == true`; the closing chunk's content is
+  `</thought>4 5 6...` — thought-close and answer text share one delta. A
+  translator that splits thinking from text on anything but that marker
+  renders reasoning as answer: exactly the plausible-looking wrong transcript
+  D80 exists to prevent. Non-thinking deltas carry no `extra_content`.
+
+What this does NOT prove: tool-call framing on this endpoint (no `tools` were
+sent — one text turn only), and nothing inside the app (no key is stored on
+this host, and the in-app turn path is still unverified end to end).
