@@ -1,6 +1,6 @@
 # Clauro — PHASES.md
 
-**Seven phases, twenty-eight tasks.** Each phase lists its tasks, its gate, and what it unblocks.
+**Eight phases, twenty-eight tasks.** Each phase lists its tasks, its gate, and what it unblocks.
 Sequencing rationale is in `PLAN.md` §4.
 
 Every task is test-first and contract-anchored (`AGENTS.md` §6). A task's file names the failing
@@ -77,7 +77,7 @@ a display.
 | `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI | `ProviderAdapter.limits` | D19, D23, D49, D50, D53, D76 |
 
 **Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
-Windows CI jobs. **Linux jobs parked 2026-10-06 (D114)** — see the Phase 6 gate note.
+Windows CI jobs. **Linux jobs parked 2026-10-06 (D114), owned by Phase 7 (D115)** — see the Phase 7 gate.
 
 **Gate status:** ◐ half met. `002` and `003` are complete; `001`'s Windows verdict is committed
 (`docs/spikes/sandbox-verdict.md`) but **the WebKitGTK app was never written**, so the Linux column
@@ -269,14 +269,35 @@ zero hits source + manifests.
 **Gate:** **both floors** pass, not just the primaries. Installers exist for Windows and Linux.
 Dependency audit confirms nothing was ported from LobeHub or from proprietary wording.
 
-**Parked 2026-10-06 (D114):** Linux primary + Linux floor are out of `ci.yml` until after full
-development — definitions preserved in `.github/workflows/linux-matrix.yml.disabled`, restore
-owned by `021` together with the cargo cache + timeout budget. Until then the enforced gate is
-the two Windows jobs; `D50` is unchanged (an unrun floor blocks nothing, a failed one blocks
-everything).
+**Parked 2026-10-06 (D114), owned by Phase 7 (D115):** Linux primary + Linux floor are out of
+`ci.yml` until after full development — definitions preserved in
+`.github/workflows/linux-matrix.yml.disabled`, restore owned by Phase 7 together with the cargo
+cache + timeout budget. Until then the enforced gate is the two Windows jobs; `D50` is unchanged
+(an unrun floor blocks nothing, a failed one blocks everything).
 
 **A floor failure is a release blocker, not a warning.** The floors are where the sandbox guarantee
 gets falsified. **D50.**
+
+---
+
+## Phase 7 — Linux and floors (post-deployment)
+
+**Purpose:** everything Linux-shaped that Phases 0–6 provably don't need on Windows, in one
+place with one gate, so no earlier phase stays open for it. Created 2026-10-07 (**D115**);
+no new tasks — the work already has numbers, only the phase assignment moves.
+
+| Item | Currently in | Moves here |
+|---|---|---|
+| `001` Linux column (WebKitGTK verdict, `event.origin`/`event.source` capture) | Phase 0 gate | Phase 7 gate |
+| Linux primary + Linux floor CI (parked per `D114`, definitions in `.github/workflows/linux-matrix.yml.disabled`) | Phase 6 gate | Phase 7 gate |
+| Linux runtime gate proof (`021`, **D45**) | Phase 6 | Phase 7 |
+| Cargo cache + job-timeout budget that make Linux jobs meaningful | `021` | Phase 7 |
+
+**Gate:** the `001` Linux column is filled on real WebKitGTK, both Linux jobs pass, and the
+Linux gate fires-or-stays-silent correctly. Until then `SPEC.md` §6.3 reads "both floors" as
+the two Windows jobs.
+
+**Unblocks:** nothing — this phase is terminal by design.
 
 ---
 

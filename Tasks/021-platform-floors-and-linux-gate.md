@@ -7,8 +7,8 @@
 
 **Windows is the primary platform and its floor is the release blocker. The Linux floor and the WebKitGTK artifact gate are secondary** (**D89**): a Linux failure must not block a Windows release, but a Windows failure must block every release. Windows CI builds through the Windows-side MSVC toolchain with output on `/mnt/d` (**D88**).
 
-**Deferred 2026-10-06 (D114):** Linux primary + Linux floor were removed from `ci.yml`
-(CI is Windows-only until this task re-enables them). Definitions preserved verbatim in
+**Deferred 2026-10-06 (D114), owned by Phase 7 (D115):** Linux primary + Linux floor were removed from `ci.yml`
+(CI is Windows-only until Phase 7 re-enables them). Definitions preserved verbatim in
 `.github/workflows/linux-matrix.yml.disabled` with restore steps. Re-enabling also owns the
 cargo cache + timeout budget — cold Linux builds hit the 30-minute job limit, which is what
 forced the parking. Until then, Linux rows below stay unstarted, not failed.
