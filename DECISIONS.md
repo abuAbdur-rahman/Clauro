@@ -1286,6 +1286,19 @@ that make them meaningful. `D50` is unchanged — a floor failure is still a rel
 but an unrun floor blocks nothing; it merely stays open. Windows primary + Windows floor are
 the CI gate until then.
 
+**D115 — All Linux work moves to Phase 7 (post-deployment); Phases 0–6 close Windows-only.**
+
+Decided 2026-10-07 by direct order. `D114` parked Linux CI "until 021 re-enables it", but 021
+sits inside Phase 6 (Release) — parking release-gate work inside the release phase leaves
+every earlier gate honestly open forever, which is how Phases 0–3 stayed ◐ through work that
+was actually done. The fix is structural, not semantic: nothing about *what* Linux needs
+changes (WebKitGTK verdict in `001`, Linux jobs + floors, Linux gate proof in `021`), only
+*when* it gates anything. Phase 7 owns all of it; `D114`'s restore target moves from "`021`"
+to "Phase 7". `D45` (runtime gate), `D50` (floor failure blocks release), and `D89` (Linux
+secondary, never blocks a Windows release) are untouched — Phase 7 is post-deployment
+sequencing, not a scope cut. v1's definition of done (`SPEC.md` §6) reads "both floors" as
+the two Windows jobs until Phase 7 lands.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

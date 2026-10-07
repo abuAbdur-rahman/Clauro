@@ -215,3 +215,42 @@ pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathErro
     }
     Ok(resolved)
 }
+
+/// Delete a project's subtree: `projects/<id>-*` under root (019).
+/// Only exact id or `id-` prefix match; sibling `other` untouched.
+/// Missing `projects/` dir is a no-op. Files removed via host fs here —
+/// rows removed via `clauro-store::delete_project`.
+pub fn remove_project_subtree(root: &Path, project_id: &str) -> Result<(), PathError> {
+    if project_id.is_empty()
+        || project_id.contains('/')
+        || project_id.contains('\\')
+        || project_id.contains("..")
+    {
+        return Err(PathError::Traversal);
+    }
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| PathError::Io(e.to_string()))?;
+    let projects = root_canon.join("projects");
+    let rd = match std::fs::read_dir(&projects) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(PathError::Io(e.to_string())),
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == project_id || name.starts_with(&format!("{project_id}-")) {
+            let p = entry.path();
+            let canon = p.canonicalize().unwrap_or(p.clone());
+            if !is_within(&root_canon, &canon) {
+                return Err(PathError::OutsideTree);
+            }
+            if p.is_dir() {
+                std::fs::remove_dir_all(&p).map_err(|e| PathError::Io(e.to_string()))?;
+            } else {
+                std::fs::remove_file(&p).map_err(|e| PathError::Io(e.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}

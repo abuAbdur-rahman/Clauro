@@ -128,6 +128,31 @@ resolved path rather than implying a shared copy. **D52.**
 **Memory off shows a crossed-out icon next to the chat title. Memory on shows nothing at all.**
 Absence as signal — no extra chrome for the common case.
 
+Under the composer, one line in our own words: the app runs locally and important answers deserve a
+second look. Never Anthropic's disclaimer wording (**D39**).
+
+### 2.7 App views (home · projects · project · chat)
+
+The shell routes four views, all in our own words and layout (**D39** — behaviour mirrored from the
+reference screenshots, never text):
+
+- **home** — time-of-day greeting (never a name, never a logo), centered composer, a link into
+  projects. No plan badges, no accounts, no upsell: there is nothing to upgrade to.
+- **projects** — card grid with search, one card per project, `New project` CTA.
+- **project** — breadcrumb back to projects, title, right rail with Instructions / Memory (topic
+  count) / Context (capacity used) panels.
+- **chat** — the catalogue + composer + drawer surface from §1.
+
+The rail nests child threads under their project. No `Chat | Cowork` mode switch exists to switch
+to, and voice renders disabled with its reason — both deliberate (`Tasks/027`).
+
+### 2.8 Command palette
+
+Opens on Ctrl/Cmd+K (in-app; the Tauri global-shortcut plugin is a recorded follow-up). Blocked
+with a reason while a turn runs; `/compact` unavailable mid-turn; `bash` approval and `attach`
+never live here. Search box, section tabs (All · Chats · Projects · Actions), recent items, and a
+hint footer — all labels ours. Recents + type filter ship now; full-text chat search is v3.
+
 ### 2.6 Settings
 
 Flat and short. Providers and keys · models · appearance · **memory** (the Topics list — select to

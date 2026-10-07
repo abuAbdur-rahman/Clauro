@@ -23,6 +23,11 @@ currently describes them as delivered behaviour, and that is a false claim.** Pe
    into it. Both source files already promise 006 will do this (`src/openai_compat.rs:10`,
    `src/anthropic.rs:90-91`), so this is a known gap, not an oversight.
 
+**Addendum 2026-10-07.** Item 2 is closed (see ticked criterion below). Item 1 stands:
+`retry_delay` still has no caller outside its own test — its caller is the first real HTTP
+send loop, which is the turn driver (023), so the retry criterion moves there rather than
+being built twice.
+
 ## Failing tests first
 
 Four fixtures, synthetic, **no live key**:
@@ -97,10 +102,9 @@ key is needed to choose.** `D75`.
       HTTP-date form (`:45-97`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
       `tests/retry.rs:11-63` covers all of it. **But `retry_delay` has no caller outside its own
       test**, and no HTTP send loop exists (`src/lib.rs:10` defers it). See Status
-- [ ] OpenAI-compatible adapter renders an unrecognised event as a visible notice — **PARTIAL. The
-      adapter half is done, the render is not.** `src/openai_compat.rs:69-76` emits `Ignored` with
-      the object type preserved and `tests/openai_compat.rs:41-61` asserts the surrounding text
-      still arrives — but the only consumer drops it at `crates/clauro-loop/src/run.rs:425-427`.
-      `ContentBlock::Notice` (`clauro-core/src/content.rs:89`) and `insert_notice`
-      (`clauro-loop/src/run.rs:528`) exist and are used for `Error` and `InputTransformed`. See
-      Status
+- [x] OpenAI-compatible adapter renders an unrecognised event as a visible notice — DONE
+  2026-10-07 (see Status addendum below). `persist_step` routes `Ignored { raw_type }`
+  to `insert_notice` (`run.rs:634-647`); proven by
+  `wiring.rs:ignored_events_become_visible_notices`, which failed first (0 notices —
+  the silent drop). Stale pointers corrected: the drop was at `run.rs:632-634`, and
+  `insert_notice` lives at `run.rs:737`, not the numbers below.

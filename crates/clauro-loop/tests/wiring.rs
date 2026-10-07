@@ -396,6 +396,56 @@ fn big_previews_store_paths_and_stay_bounded() {
     assert_eq!(stored.len(), 20_000, "nothing lost");
 }
 
+// ── openai unknown events surface visibly ──────────────────────────────────
+
+#[test]
+fn ignored_events_become_visible_notices() {
+    let t = trees();
+    let (prepared, frozen) = prepared_with(&[], vec![]);
+    seed_thread(&t.main, &frozen);
+    let mut reg = clauro_tools::Registry::with_eight();
+    let mut first = text_step("ok");
+    first.insert(
+        0,
+        NormalisedEvent::Ignored {
+            raw_type: "response.reasoning_summary_text.delta".to_string(),
+        },
+    );
+    let mut exchange = Script {
+        steps: VecDeque::from([first]),
+        bodies: vec![],
+    };
+    let mut turn_loop = TurnLoop::new();
+    let report = turn_loop
+        .run_turn(
+            &t.main,
+            &mut reg,
+            &mut exchange,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "hi",
+                prepared: &prepared,
+                workspace_dir: &t.session,
+            },
+        )
+        .expect("turn runs");
+    assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
+    let notices: Vec<_> = t
+        .main
+        .blocks_for_thread("t1")
+        .into_iter()
+        .filter(|b| b.kind == "notice")
+        .collect();
+    assert_eq!(notices.len(), 1, "one visible notice, not a silent drop");
+    assert!(
+        notices[0]
+            .payload
+            .contains("response.reasoning_summary_text.delta"),
+        "notice names the unrendered event: {}",
+        notices[0].payload
+    );
+}
+
 // ── compact never in schema ──────────────────────────────────────────────────
 
 #[test]

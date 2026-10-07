@@ -544,3 +544,125 @@ fn send_now_extracts_without_draining() {
     let rest = turn_loop.drain_next("t1").expect("sibling still queued");
     assert_eq!(rest.id, id_later);
 }
+
+// ── regenerate / continue-append (D99, D106) ────────────────────────────────
+
+/// Text of every `text` block by role, in surface order.
+fn role_texts(store: &Store, role: &str) -> Vec<String> {
+    store
+        .blocks_for_thread("t1")
+        .into_iter()
+        .filter(|b| b.role == role && b.kind == "text")
+        .map(|b| {
+            serde_json::from_str::<serde_json::Value>(&b.payload)
+                .expect("text payload")
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn regenerate_appends_new_answer_history_untouched() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("first a")]),
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "first q",
+                prepared: &tools,
+                workspace_dir: &dir.path,
+            },
+        )
+        .expect("turn runs");
+    turn_loop
+        .regenerate_last(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("second a")]),
+            "t1",
+            &tools,
+            &dir.path,
+        )
+        .expect("regenerate runs");
+    // D99: new rows, never rewritten. The user text reappears as a new row
+    // carrying the same words; the first answer is byte-identical.
+    assert_eq!(role_texts(&store, "user"), vec!["first q", "first q"]);
+    assert_eq!(role_texts(&store, "assistant"), vec!["first a", "second a"]);
+}
+
+#[test]
+fn continue_turn_adds_no_user_message() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("part one")]),
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &tools,
+                workspace_dir: &dir.path,
+            },
+        )
+        .expect("turn runs");
+    // D106: finishing a turn appends assistant rows, not another user row.
+    turn_loop
+        .continue_turn(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("part two")]),
+            "t1",
+            &tools,
+            &dir.path,
+        )
+        .expect("continue runs");
+    assert_eq!(role_texts(&store, "user"), vec!["go"]);
+    assert_eq!(
+        role_texts(&store, "assistant"),
+        vec!["part one", "part two"]
+    );
+}
+
+#[test]
+fn regenerate_without_prior_user_text_fails_typed() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    let err = turn_loop
+        .regenerate_last(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("x")]),
+            "t1",
+            &tools,
+            &dir.path,
+        )
+        .expect_err("no user text to regenerate");
+    assert!(
+        matches!(err, LoopError::Store(_)),
+        "typed store error, never a panic: {err:?}"
+    );
+}

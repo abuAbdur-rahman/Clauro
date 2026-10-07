@@ -19,7 +19,8 @@ byte they ever typed — without the app asking a server for anything.
 | **3** | Gated features | `012` bash · `013` artifact drawer · `014` compile + CSP + channel |
 | **4** | Context | `015` token meter · `016` client-side compaction · `017` Anthropic compaction paths |
 | **5** | Product surface | `018` Projects · `019` incognito + export · `020` themes + hotkey + palette |
-| **6** | Release | `021` floor CI + Linux gate · `022` packaging + dependency audit |
+| **6** | Release | `021` Windows floor CI + gate mechanics · `022` packaging + dependency audit |
+| **7** | Linux + floors (post-deployment) | `001` Linux column · Linux jobs + floors · Linux gate proof (all moved, D115) |
 
 **v1 ships:**
 

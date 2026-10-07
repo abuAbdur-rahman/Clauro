@@ -952,6 +952,140 @@ impl Store {
         Ok(self.conn.execute("DELETE FROM memory", [])?)
     }
 
+    /// Blocks in a thread. Deletion asserts on this (019).
+    pub fn thread_block_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM block b JOIN message m ON b.message_id = m.id WHERE m.thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn thread_usage_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM usage WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn thread_tool_result_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM tool_result WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Delete a thread: messages, blocks, usage, tool results go; memories
+    /// survive by design (D10). Files on disk removed by caller (019).
+    pub fn delete_thread(&self, thread_id: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM block WHERE message_id IN (SELECT id FROM message WHERE thread_id = ?1)",
+            [thread_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM usage WHERE thread_id = ?1", [thread_id])?;
+        self.conn
+            .execute("DELETE FROM tool_result WHERE thread_id = ?1", [thread_id])?;
+        self.conn
+            .execute("DELETE FROM message WHERE thread_id = ?1", [thread_id])?;
+        self.conn.execute(
+            "DELETE FROM memory_setting WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM thread WHERE id = ?1", [thread_id])?;
+        Ok(())
+    }
+
+    /// Fork prefix rows into a new thread under new ids; source untouched (D99).
+    pub fn fork_thread(&self, src: &str, dst: &str) -> Result<(), StoreError> {
+        type BlockRow = (
+            String,
+            i64,
+            String,
+            String,
+            Option<i64>,
+            i64,
+            i64,
+            Option<String>,
+            i64,
+        );
+        let t: ThreadRow = self
+            .get_thread(src)?
+            .ok_or_else(|| StoreError::NotFound(src.to_string()))?;
+        self.insert_thread(NewThread {
+            id: dst.to_string(),
+            project_id: t.project_id,
+            title: t.title,
+            incognito: false,
+            memory_off: t.memory_off,
+            system_frozen: t.system_frozen,
+            tools_frozen: t.tools_frozen,
+        })?;
+        let msgs: Vec<(String, i64, String, i64)> = self
+            .conn
+            .prepare(
+                "SELECT id, seq, role, created_at FROM message WHERE thread_id = ?1 ORDER BY seq",
+            )?
+            .query_map([src], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(Result::ok)
+            .collect();
+        for (mid, seq, role, created) in &msgs {
+            let new_mid = format!("{dst}-{mid}");
+            self.conn.execute(
+                "INSERT INTO message (id, thread_id, seq, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![new_mid, dst, seq, role, created],
+            )?;
+            let blocks: Vec<BlockRow> = self
+                .conn
+                .prepare("SELECT id, seq, kind, payload, boundary, is_summary, generation, signature, dropped FROM block WHERE message_id = ?1 ORDER BY seq")?
+                .query_map([mid], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?))
+                })?
+                .filter_map(Result::ok)
+                .collect();
+            for (bid, bseq, kind, payload, boundary, is_sum, gen, sig, dropped) in &blocks {
+                self.conn.execute(
+                    "INSERT INTO block (id, message_id, seq, kind, payload, boundary, is_summary, generation, signature, dropped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        format!("{dst}-{bid}"), new_mid, bseq, kind, payload,
+                        boundary, is_sum, gen, sig, dropped
+                    ],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a project: threads (rows), memories, attachments, artifacts,
+    /// then the project row. Subtree files removed by caller (019).
+    pub fn delete_project(&self, project_id: &str) -> Result<(), StoreError> {
+        let threads: Vec<String> = self
+            .conn
+            .prepare("SELECT id FROM thread WHERE project_id = ?1")?
+            .query_map([project_id], |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+        for t in &threads {
+            self.delete_thread(t)?;
+        }
+        self.conn
+            .execute("DELETE FROM memory WHERE project_id = ?1", [project_id])?;
+        self.conn
+            .execute("DELETE FROM attachment WHERE project_id = ?1", [project_id])?;
+        self.conn.execute(
+            "DELETE FROM artifact WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        self.conn
+            .execute("DELETE FROM project WHERE id = ?1", [project_id])?;
+        Ok(())
+    }
+
     /// Read one thread's memory setting, if the row exists.
     pub fn get_memory_setting(&self, thread_id: &str) -> Option<(bool, bool)> {
         self.conn

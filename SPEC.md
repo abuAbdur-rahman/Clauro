@@ -172,9 +172,10 @@ v1 ships when:
    block, an unknown event.
 3. Both **platform floors** are green. A failure on a floor invalidates the sandbox guarantee on
    that platform — it is a release blocker, not a warning (**D50**).
-   **Deferred 2026-10-06 (D114):** Linux CI is parked until after full development —
-   the Linux jobs are preserved in `.github/workflows/linux-matrix.yml.disabled` and
-   `021` re-enables them. Until then "both floors" reads as the two Windows jobs.
+   **Deferred 2026-10-06 (D114), owned by Phase 7 (D115):** Linux CI is parked until after full
+   development — the Linux jobs are preserved in
+   `.github/workflows/linux-matrix.yml.disabled`. Until Phase 7 lands, "both floors" reads as
+   the two Windows jobs.
 4. Binary ≤ ~25 MB, measured from the empty shell recorded in `Tasks/002`.
 5. `Tasks/001` has produced a verdict, and the release matches it.
 6. Every ported change carries its attribution, and every prompt in the repo is our own wording
