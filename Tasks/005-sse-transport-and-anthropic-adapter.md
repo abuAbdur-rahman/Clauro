@@ -97,11 +97,14 @@ key is needed to choose.** `D75`.
       builder carries `context_management` (`:83-86`), the compaction builder carries `compaction`
       (`:108`); `tests/builders.rs:53-72` asserts the other key is absent. Neither struct has a
       field that could set the other parameter, so the unrepresentability argument holds (`D21`)
-- [ ] 429/5xx retried with backoff; `Retry-After` honoured — **PARTIAL. Policy only; no retry.**
+- [x] 429/5xx retried with backoff; `Retry-After` honoured — DONE 2026-10-07.
       Status set `408|429|5xx` at `src/retry.rs:28`, `Retry-After` parsed at `:31-35` including
       HTTP-date form (`:45-97`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
-      `tests/retry.rs:11-63` covers all of it. **But `retry_delay` has no caller outside its own
-      test**, and no HTTP send loop exists (`src/lib.rs:10` defers it). See Status
+      `tests/retry.rs:11-63` covers all of it. `retry_delay` now has two real callers:
+      `stream_step` (`src/send.rs`, proven by `tests/send.rs`: 429 retried, 400 fails at once,
+      attempts capped, cap reports the status actually seen) and `LiveExchange::step`
+      (`src-tauri/src/turn.rs`, same policy, live path unverified by rule). The old "no
+      caller" note below is superseded.
 - [x] OpenAI-compatible adapter renders an unrecognised event as a visible notice — DONE
   2026-10-07 (see Status addendum below). `persist_step` routes `Ignored { raw_type }`
   to `insert_notice` (`run.rs:634-647`); proven by

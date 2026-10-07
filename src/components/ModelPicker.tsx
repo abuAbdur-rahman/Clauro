@@ -68,7 +68,13 @@ export default function ModelPicker({
         }
         if (!isCancelled()) setEntries(all);
       } catch (e) {
-        if (!isCancelled()) setNotice(e instanceof Error ? e.message : String(e));
+        // One plain sentence, never a Zod dump: the harness caught a raw
+        // validation JSON rendering here 2026-10-07 (a float timestamp the
+        // real backend never sends, but the rule holds for every failure).
+        if (!isCancelled()) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setNotice(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
+        }
       }
     })();
     return () => {

@@ -3,12 +3,16 @@
  * Zod-validated at the boundary, unknown shapes throw, the view shows a
  * notice. The invoke wrappers are thin by construction; these pin parsing.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   parseEnrichedModels,
   parseModelsView,
   parseProviderList,
+  providerAddCustom,
 } from "./providers";
+import { invoke } from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 describe("parseProviderList", () => {
   it("parses configured providers with freshness and key status", () => {
@@ -86,5 +90,33 @@ describe("parseEnrichedModels", () => {
 
   it("rejects garbage instead of rendering it", () => {
     expect(() => parseEnrichedModels([{ id: "x" }])).toThrow();
+  });
+});
+
+describe("invoke wire keys", () => {
+  // Same Tauri rule as the turn bridge: Rust `display_name`/`base_url`
+  // arrive as camelCase JS keys. snake_case fails at runtime with a missing-
+  // key refusal, not a type error.
+  it("providerAddCustom sends camelCase keys exactly", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      id: "office",
+      display_name: "Office",
+      kind: "openai-compatible",
+      base_url: "https://llm.office.example/v1",
+      model_count: 0,
+      models_fetched_at: null,
+      stale: true,
+      has_key: false,
+    });
+    await providerAddCustom({
+      id: "office",
+      displayName: "Office",
+      baseUrl: "https://llm.office.example/v1",
+    });
+    expect(invoke).toHaveBeenCalledWith("provider_add_custom", {
+      id: "office",
+      displayName: "Office",
+      baseUrl: "https://llm.office.example/v1",
+    });
   });
 });

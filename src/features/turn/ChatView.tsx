@@ -131,17 +131,19 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
   }
 
   return (
-    <div data-testid="chat-view">
-      <p className="mt-1 text-xs text-neutral-500">
+    <div data-testid="chat-view" className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col">
+      <p className="mt-1 shrink-0 text-xs text-neutral-500">
         thread {threadId} · model{" "}
         {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
       </p>
       {notice && (
-        <p role="status" className="mt-2 text-xs text-amber-400">
+        <p role="status" className="mt-2 shrink-0 text-xs text-amber-400">
           {notice}
         </p>
       )}
-      <div className="mt-3">
+      {/* The ONLY vertical scroller (UI-GUIDE §3): the transcript grows here,
+          never the root. */}
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
         <TranscriptView
           rows={rows}
           streaming={streaming.length > 0 ? streaming : undefined}
@@ -150,7 +152,7 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
           <p className="mt-2 text-xs text-neutral-500">Thinking…</p>
         )}
       </div>
-      <div className="mt-4 max-w-2xl">
+      <div className="mt-4 shrink-0">
         <Composer
           threadId={threadId}
           memoryOff={false}

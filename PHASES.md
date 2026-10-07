@@ -104,7 +104,7 @@ Windows. Two named cells still need a re-run under `Tasks/014`.
 | Task | State | Contract | D-refs |
 |---|---|---|---|
 | `Tasks/004-sqlite-schema-and-append-only.md` | ✅ 9/9 | §1 | D7, D8, D19, D32, D34, D47, D52, D55, D57, D63, D70, D79 |
-| `Tasks/005-sse-transport-and-anthropic-adapter.md` | ◐ 6/8 — retry and the OpenAI `notice` unwired | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81 |
+| `Tasks/005-sse-transport-and-anthropic-adapter.md` | ✅ 8/8 — retry policy has callers (`stream_step`, `LiveExchange`); OpenAI `Ignored`→notice wired; live Gemma 4 smoke shapes recorded | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81 |
 | `Tasks/006-transcript-thinking-and-cancel.md` | ◐ renderer + streaming sink + purify done 2026-10-07; I1/I3 fixtures and middle-removal surfacing still open | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76, D100 |
 
 **Gate:** a streaming turn renders on both adapters; stop mid-turn keeps completed work and closes
@@ -141,7 +141,7 @@ transcript to measure).
 | Task | State | Contract | D-refs |
 |---|---|---|---|
 | `Tasks/007-tool-registry-and-permissions.md` | ◐ wired at dispatch; `resolve_answer` still uncalled | §3 | D19, D26, D27, D39, D51, D55 |
-| `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop enforces permissions/approval/gate/bounding; no host drives it | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
+| `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop enforces permissions/approval/gate/bounding; host drives turns, idle drain still open | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
 | `Tasks/008-memory-tool.md` | ✅ backend 8/10; two UI criteria unstarted | §1, §3 | D7, D8, D9, D10, D11, D35, D43, D51 |
 | `Tasks/009-question-tool.md` | ◐ gate wired to the loop; answers unpersisted (no card UI) | §2, §3 | D40, D41, D42, D43 |
 | `Tasks/010-fs-tool.md` | ◐ backend 11/11; ingest/serve/session-dirs uncalled (018/shell later) | §3 | D31, D32, D33, D34, D39, D44, D47, D52, D79, D109 |
@@ -152,11 +152,17 @@ transcript to measure).
 schema; no handler throws. `artifact` and `bash` arrive in Phase 3, so **two of the eight tools are
 not yet callable at this gate** — that is expected, not a failure.
 
-**Gate status:** ⬜ **not met.** The loop does run to `end_turn`, nothing throws, and all five
-named tools now exist and are callable through the registry (`memory`, `question`, `fs`,
-`web-search`, `web-fetch`). What remains is the wiring the Progress section names — permissions,
-approval routing, question-gate calls, and output bounding at the loop — plus any transcript
-renderer. And `question` is listed as callable when its turn boundary does not exist.
+**Gate status:** ◐ **substantially met 2026-10-07.** The loop runs to `end_turn`, nothing
+throws, and all five named tools exist and are callable through the registry (`memory`,
+`question`, `fs`, `web-search`, `web-fetch`). Permissions are consulted at dispatch
+(`resolve`), ask-mode approval routes through `ApprovalQueue` with hold-and-resume,
+`QuestionGate` observes every call with per-message reset, mixed questions are refused by
+lookahead, and output is bounded on the way out (`D27`). A host drives turns end to end
+(`src-tauri/src/turn.rs`). What keeps the gate from ✅, and only this: `resolve_answer`
+is still uncalled (answer persistence needs the `009` card UI), and nothing observes idleness
+to drain the queue (`drain_next` has no caller outside tests) — so a message sent mid-turn
+waits. `question` is listed as callable while its turn boundary (answer persistence) does
+not exist.
 
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.
@@ -172,7 +178,7 @@ handler, so a handler written before it has no defined caller.
 > (`resolve` at `run.rs`), routes ask-mode approval through `ApprovalQueue` with hold-and-resume,
 > tells `QuestionGate` about each call with per-message reset, refuses mixed questions by
 > lookahead, and bounds output on the way out — `D27` is enforced at dispatch. Since 2026-10-07 a
-> host drives turns (`src-tauri/src/turn.rs`, eleven commands registered). Still uncalled:
+> host drives turns (`src-tauri/src/turn.rs`, eighteen commands registered). Still uncalled:
 > `resolve_answer`, and the idle-queue drain.
 
 **Unblocks:** Phase 3 (`fs` proves the workspace tree before `bash` exists; `artifact` needs the

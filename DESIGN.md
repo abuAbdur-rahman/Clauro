@@ -1,7 +1,8 @@
 # Clauro — DESIGN.md
 
 How the product looks and behaves, and why each surface is the way it is. Wire shapes and types live
-in `CONTRACTS.md`; this is the intent behind them.
+in `CONTRACTS.md`; concrete tokens, layout rules and checks live in `UI-GUIDE.md` (**binding** for any
+UI work); this is the intent behind them.
 
 ---
 
@@ -40,6 +41,26 @@ argument, and never compromise the CSP to get a floating window to behave.
 It collapses to zero width when there is no artifact. It does **not** overlay the transcript at
 narrow widths — the user collapses it deliberately.
 
+### 1.1 Layout invariants (non-negotiable)
+
+These exist because a shipped UI broke every one of them (composer collapsed to a one-character
+column, root scrolled horizontally).
+
+- **The root never scrolls.** `html`, `body`, `#root` are viewport-sized with `overflow: hidden`.
+  Scrolling exists only in inner regions: transcript, sidebar list, settings pane, drawer, and the
+  composer textarea past its max height. Not one root scrollbar, at any window size down to
+  800×600.
+- The shell is a three-column grid `auto | minmax(0,1fr) | auto`. Every flex/grid child that holds
+  text or inputs carries `min-w-0` / `min-h-0`.
+- The composer is a **column** (input above, toolbar below), never a single row. Content columns use
+  `w-full max-w-*`, never `100vw` or fixed widths.
+- Notices (no provider, errors) are full-width inline banners, never squeezed into a toolbar.
+- The same UI must render identically in the browser harness (`pnpm dev:web`, port 1420, Tauri
+  stubbed) and in `pnpm tauri dev`. Layout is verified by screenshot and by the scroll/size
+  assertions in `UI-GUIDE.md` §9, not by reading code.
+- Type: sans for UI, serif for the greeting and page titles, mono only for code, paths and tool rows.
+- Icons: `lucide-react` only. No emoji or text glyphs in product chrome.
+
 ## 2. Surfaces
 
 ### 2.1 Projects rail
@@ -53,7 +74,9 @@ and nothing else. One concept, not two.
 
 The rail renders on the vendored shadcn `Sidebar` (`Tasks/025`, **D112**) — collapsible icon rail,
 keyboard shortcut, mobile sheet — owned by `Tasks/018`. No hand-rolled collapse: the a11y contract
-(focus, `aria`, escape) ships with the primitive.
+(focus, `aria`, escape) ships with the primitive. Anatomy: header (mark, collapse), New chat, Search,
+Projects, then project groups with nested threads, then Recent; footer holds Settings. Rows are
+themed `SidebarMenuButton`s — never raw text (`UI-GUIDE.md` §6).
 
 ### 2.2 Transcript
 
@@ -100,7 +123,8 @@ Three states, and they are the whole design:
 The drawer column itself stays a plain layout slot (its tests pin `aside`/sandbox tokens), not a
 shadcn `Sidebar` — the drawer is a render surface with security assertions, not navigation chrome.
 What shadcn owns around it: the projects rail (`Sidebar`, `018`), `bash` approval (`Dialog` —
-never a palette action, `012`/`020`), and the model picker (`Select`, `025`).
+never a palette action, `012`/`020`), the settings overlay (`Dialog`, §2.6), and the model picker
+(`Select`, `025`).
 
 Tabs: none in v1 — one live render, no history, no pinning, no Preview/Code
 tabs and no download. (`SPEC.md` §5 defers all of those to v2: the render
@@ -117,6 +141,33 @@ single most common cause of a blank artifact, and it costs one line of prompt to
 
 ### 2.5 Composer
 
+A rounded card with three rows: attachment chips (when present), an auto-growing textarea (1→12 rows,
+then it scrolls internally), and a toolbar. Anatomy and code shape in `UI-GUIDE.md` §5.
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│ [chip: report.pdf · 120 KB ✕]                                 │
+│ Write a message…                                              │
+│ [+] [Memory] [Thinking: Medium ▾] ····· [Model ▾] [Mic] [Send]│
+└───────────────────────────────────────────────────────────────┘
+        Clauro runs on your machine. Double-check important answers.
+```
+
+**Input parity with the Claude app** (minus what is deliberately not ours — accounts, upsell,
+voice). The composer supports:
+
+- Enter sends, Shift+Enter newline, IME-safe; per-thread drafts persisted
+- Attach via `+`, drag-and-drop, and paste (images, files, long text offered as a "Pasted text" chip)
+- Image attachments only when the selected model supports vision; otherwise disabled with its reason
+- `/` slash commands (`/compact`, `/clear`, `/model`, `/memory`, `/project`, `/thinking`) and `@`
+  project-file mentions, both as popovers
+- Provider-grouped model picker whose last entry, "Add provider…", opens Settings → Providers
+- Thinking-effort select (Off/Low/Medium/High), hidden when the model has none
+- Web-search / tool toggles, shown only when the provider advertises them
+- Context meter (used / capacity) that turns to a warning near the limit and offers `/compact`
+- Send turns into Stop during a turn; typing stays enabled; `↑` on an empty box edits the last user turn
+- Voice renders disabled with its reason (§6)
+
 `+` menu carries the per-chat memory toggle, **attach a file**, and, once a project opts in, `bash`.
 
 **Attaching copies the file into the session workspace and says so.** The model never receives the
@@ -126,10 +177,15 @@ Attachments dedupe per project, so the same file in two projects is stored twice
 resolved path rather than implying a shared copy. **D52.**
 
 **Memory off shows a crossed-out icon next to the chat title. Memory on shows nothing at all.**
-Absence as signal — no extra chrome for the common case.
+Absence as signal — no extra chrome for the common case. (The toolbar chip is a control, not a status
+indicator.)
+
+**No providers configured:** an inline banner above the composer ("Add a provider to start chatting",
+button into Settings → Providers); Send is disabled; the model picker reads "No model". The message
+is never placed inside the toolbar.
 
 Under the composer, one line in our own words: the app runs locally and important answers deserve a
-second look. Never Anthropic's disclaimer wording (**D39**).
+second look. Never Anthropic's disclaimer wording (**D39**). It stays on a single line and truncates.
 
 ### 2.7 App views (home · projects · project · chat)
 
@@ -137,7 +193,8 @@ The shell routes four views, all in our own words and layout (**D39** — behavi
 reference screenshots, never text):
 
 - **home** — time-of-day greeting (never a name, never a logo), centered composer, a link into
-  projects. No plan badges, no accounts, no upsell: there is nothing to upgrade to.
+  projects. No plan badges, no accounts, no upsell: there is nothing to upgrade to. Greeting and
+  composer are centered as one column, `max-w-[720px]`, vertically centered, nothing scrolls.
 - **projects** — card grid with search, one card per project, `New project` CTA.
 - **project** — breadcrumb back to projects, title, right rail with Instructions / Memory (topic
   count) / Context (capacity used) panels.
@@ -152,11 +209,45 @@ Opens on Ctrl/Cmd+K (in-app; the Tauri global-shortcut plugin is a recorded foll
 with a reason while a turn runs; `/compact` unavailable mid-turn; `bash` approval and `attach`
 never live here. Search box, section tabs (All · Chats · Projects · Actions), recent items, and a
 hint footer — all labels ours. Recents + type filter ship now; full-text chat search is v3.
+Settings is reachable as an action; it opens the dialog in §2.6.
 
 ### 2.6 Settings
 
-Flat and short. Providers and keys · models · appearance · **memory** (the Topics list — select to
-read, edit, delete) · projects · data (export, delete everything).
+An **overlay, not a page**: a shadcn `Dialog` opened with Ctrl/Cmd+, , the rail's footer gear, the
+palette, or the model picker's "Add provider…". Left section nav, right pane; each scrolls inside
+the dialog, the dialog itself never scrolls. Esc closes it. Below ~720px the nav collapses to a
+`Select`.
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Settings                                                ✕  │
+├─────────────┬──────────────────────────────────────────────┤
+│ General     │  (section pane — own scroll)                 │
+│ Providers   │                                              │
+│ Models      │                                              │
+│ Appearance  │                                              │
+│ Memory      │                                              │
+│ Projects    │                                              │
+│ Tools & bash│                                              │
+│ Data        │                                              │
+└─────────────┴──────────────────────────────────────────────┘
+```
+
+Still flat and short — eight sections, no nested tabs, no setting without a reason:
+
+| Section | Contents |
+|---|---|
+| General | language, send key, density |
+| Providers | add / test / remove; base URL; key kept in the OS keychain and never echoed back |
+| Models | default model; per-model thinking and vision flags |
+| Appearance | theme, density, font size |
+| Memory | the Topics list — select to read, edit, delete |
+| Projects | list, rename, instructions, delete |
+| Tools & bash | opt-in, working directory, the "nothing is remembered" approval note |
+| Data | export; delete everything (confirmed in a nested `AlertDialog`) |
+
+Stacking: the `bash` approval dialog always sits above Settings, and Settings never opens while an
+approval is pending.
 
 ## 3. Platform asymmetry, made visible
 
@@ -176,7 +267,7 @@ host-side capability, root-confined and opt-in regardless of engine.
 
 **Keyboard-first.** Global hotkey summons the window. `⌘K` is the command palette and is the primary
 navigation surface, not a shortcut. Escape collapses the drawer, then closes the palette, then stops
-generation — in that order.
+generation — in that order. (An open dialog takes Escape first.)
 
 **Stop never loses work.** A cancelled turn keeps everything completed and closes every dispatched tool
 call with an aborted result. Rollback would throw away work already done, and would leave an
@@ -197,10 +288,13 @@ the exact command and the working directory it runs in, with Approve and Reject 
 rejection lands in the transcript as a rejected result, and a non-zero exit lands as `ok` with its
 output attached.
 
+**Every control has every state.** Default, hover, focus-visible, active, disabled-with-reason,
+loading; every list has an empty and an error state in one plain sentence (`UI-GUIDE.md` §8).
+
 ## 5. Motion and density
 
 Transitions are 120–180 ms and only on things that genuinely move: drawer collapse, card expand,
-tool row settle. **Nothing animates on stream arrival** — text appearing is not an animation.
+tool row settle, dialog open. **Nothing animates on stream arrival** — text appearing is not an animation.
 
 Comfortable density by default with a compact option. Tool rows are single-line until hovered or
 expanded, because a transcript where every tool call is three lines tall is unreadable past ten turns.
@@ -212,4 +306,11 @@ settings-because-we-can. No empty-state illustrations — an empty drawer is an 
 saying so is faster than drawing it.
 
 And no voice. It is a real feature, it is not ours, and the Web Speech API would make it look like
-ours.
+ours. The mic stays visible but disabled, with its reason in the tooltip.
+
+## 7. UI acceptance
+
+A UI change is not done until: it renders the same in `pnpm dev:web` and `pnpm tauri dev` on port
+1420; screenshots at 1920×1080, 1280×720, 1024×640 and 800×600 show no root scrollbar and no
+clipped or off-centre content; the scroll/size assertions pass; and the critique rubric in
+`UI-GUIDE.md` §10 scores ≥ 9 on every axis, logged in `UI-CRITIQUE.md`.

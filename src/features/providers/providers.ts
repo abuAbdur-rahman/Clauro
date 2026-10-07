@@ -78,10 +78,12 @@ export async function providerAddCustom(args: {
   displayName: string;
   baseUrl: string;
 }): Promise<ProviderView> {
+  // camelCase, like the turn commands: Tauri exposes the Rust params
+  // `display_name`/`base_url` as `displayName`/`baseUrl` on the JS side.
   const raw: unknown = await invoke("provider_add_custom", {
     id: args.id,
-    display_name: args.displayName,
-    base_url: args.baseUrl,
+    displayName: args.displayName,
+    baseUrl: args.baseUrl,
   });
   return ProviderViewSchema.parse(raw);
 }
