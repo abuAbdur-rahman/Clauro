@@ -14,6 +14,7 @@ pub mod build;
 pub mod capabilities;
 pub mod openai_compat;
 pub mod retry;
+pub mod send;
 pub mod sse;
 
 pub use anthropic::{

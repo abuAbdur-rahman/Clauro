@@ -66,12 +66,23 @@ impl Script {
 }
 
 impl Exchange for Script {
-    fn step(&mut self, request: &BuiltRequest) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
+    fn step(
+        &mut self,
+        request: &BuiltRequest,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
         self.bodies.push(request.body.clone());
-        self.steps
+        let events = self
+            .steps
             .pop_front()
             .expect("script exhausted")
-            .map_err(|message| ExchangeFailure { message })
+            .map_err(|message| ExchangeFailure { message })?;
+        // Sink what we return: the trait contract is that every returned
+        // event reaches the sink, in order.
+        for event in &events {
+            sink(event.clone());
+        }
+        Ok(events)
     }
 }
 
@@ -217,6 +228,7 @@ fn two_tool_uses_run_to_end_turn_in_order() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::EndTurn);
@@ -256,6 +268,7 @@ fn second_result_lands_after_first_serially() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn");
     let results = store.tool_results_for_thread("t1");
@@ -308,6 +321,7 @@ fn stop_mid_loop_closes_everything_and_keeps_work() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn");
     assert_eq!(report.end, TurnEnd::Stopped);
@@ -359,6 +373,7 @@ fn throwing_handler_becomes_error_row_and_loop_continues() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn");
     assert_eq!(
@@ -398,6 +413,7 @@ fn transport_failure_is_a_transcript_row_not_a_hang() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn returns, never hangs");
     assert_eq!(report.end, TurnEnd::TransportError);
@@ -427,6 +443,7 @@ fn prefix_change_is_detected_not_absorbed() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect_err("changed prefix must fail, not silently run");
     assert!(matches!(err, LoopError::PrefixChanged { .. }), "{err:?}");
@@ -461,6 +478,7 @@ fn resent_requests_carry_prior_tool_results() {
                 prepared: &prepared(available_tools()),
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn");
     assert_eq!(ex.bodies.len(), 2);
@@ -496,6 +514,7 @@ fn mid_turn_message_queues_then_dispatches_when_idle() {
                 prepared: &prep,
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn one");
     let item = turn_loop.drain_next("t1").expect("drains when idle");
@@ -511,6 +530,7 @@ fn mid_turn_message_queues_then_dispatches_when_idle() {
                 prepared: &prep,
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn two");
     let users = store
@@ -584,6 +604,7 @@ fn regenerate_appends_new_answer_history_untouched() {
                 prepared: &tools,
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     turn_loop
@@ -594,6 +615,7 @@ fn regenerate_appends_new_answer_history_untouched() {
             "t1",
             &tools,
             &dir.path,
+            &mut |_| {},
         )
         .expect("regenerate runs");
     // D99: new rows, never rewritten. The user text reappears as a new row
@@ -622,6 +644,7 @@ fn continue_turn_adds_no_user_message() {
                 prepared: &tools,
                 workspace_dir: &dir.path,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     // D106: finishing a turn appends assistant rows, not another user row.
@@ -633,6 +656,7 @@ fn continue_turn_adds_no_user_message() {
             "t1",
             &tools,
             &dir.path,
+            &mut |_| {},
         )
         .expect("continue runs");
     assert_eq!(role_texts(&store, "user"), vec!["go"]);
@@ -659,6 +683,7 @@ fn regenerate_without_prior_user_text_fails_typed() {
             "t1",
             &tools,
             &dir.path,
+            &mut |_| {},
         )
         .expect_err("no user text to regenerate");
     assert!(

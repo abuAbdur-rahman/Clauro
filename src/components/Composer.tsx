@@ -9,7 +9,6 @@
  */
 import { ArrowUpIcon, MicIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
-import type { CataloguePayload } from "../features/catalogue/catalogue";
 import { useThreadStore, type Effort } from "../features/catalogue/thread";
 import ModelPicker from "./ModelPicker";
 import { Button } from "./ui/button";
@@ -31,14 +30,12 @@ const EFFORTS: { value: Effort; label: string }[] = [
 
 export default function Composer({
   threadId,
-  payload,
   memoryOff,
   onSend,
   onAttach,
   onMemoryToggle,
 }: {
   threadId: string;
-  payload: CataloguePayload;
   /** Controlled memory state; 008/018 own the source of truth. */
   memoryOff?: boolean;
   onSend: (text: string) => void;
@@ -126,7 +123,7 @@ export default function Composer({
             ))}
           </SelectContent>
         </Select>
-        <ModelPicker payload={payload} threadId={threadId} compact />
+        <ModelPicker threadId={threadId} compact />
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="inline-flex">

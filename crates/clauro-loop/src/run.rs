@@ -45,9 +45,27 @@ pub struct ExchangeFailure {
 }
 
 /// One model response per call. Test doubles script steps; the shell wires
-/// HTTP here in Phase 5.
+/// HTTP here.
+///
+/// `step` takes a **sink** and calls it once per event as the event is
+/// produced, then returns the whole step as well. Both halves are deliberate:
+///
+/// - The sink is what makes a turn *stream*. Returning the vector alone means
+///   nothing is observable until the provider has finished, which no renderer
+///   can draw from.
+/// - The returned vector is still what gets persisted, so persistence sees one
+///   complete step exactly as before. A caller that ignores the sink observes
+///   the old behaviour, unchanged.
+///
+/// An implementation must call the sink for every event it returns, in order.
+/// Returning an event without sinking it hides text from the view; sinking one
+/// it does not return would persist nothing. `tests/streaming.rs` pins both.
 pub trait Exchange {
-    fn step(&mut self, request: &BuiltRequest) -> Result<Vec<NormalisedEvent>, ExchangeFailure>;
+    fn step(
+        &mut self,
+        request: &BuiltRequest,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<Vec<NormalisedEvent>, ExchangeFailure>;
 }
 
 /// Everything the loop needs that is fixed per thread.
@@ -311,12 +329,16 @@ impl TurnLoop {
     }
 
     /// Run one turn to `end_turn`, stop, or transport failure.
+    ///
+    /// `sink` receives every provider event as it arrives; pass `&mut |_| {}`
+    /// to discard it and get a non-streaming turn.
     pub fn run_turn(
         &mut self,
         store: &Store,
         registry: &mut Registry,
         exchange: &mut impl Exchange,
         plan: TurnPlan<'_>,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, plan.thread_id, plan.prepared)?;
         // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
@@ -343,12 +365,14 @@ impl TurnLoop {
             plan.workspace_dir,
             &turn_id,
             seq,
+            sink,
         )
     }
 
     /// Continue a truncated turn (D106): same checks as `run_turn`, but no new
     /// user message — the assistant rows append to the open turn instead of a
     /// regenerated one.
+    #[allow(clippy::too_many_arguments)]
     pub fn continue_turn(
         &mut self,
         store: &Store,
@@ -357,6 +381,7 @@ impl TurnLoop {
         thread_id: &str,
         prepared: &PreparedThread,
         workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, thread_id, prepared)?;
         self.stop_flag(thread_id).store(false, Ordering::SeqCst);
@@ -372,12 +397,14 @@ impl TurnLoop {
             workspace_dir,
             &turn_id,
             seq,
+            sink,
         )
     }
 
     /// Regenerate the last answer (D99): re-reads the latest user text and
     /// runs it as a new turn. New rows only — history is never rewritten, and
     /// a thread with no user text fails typed instead of inventing one.
+    #[allow(clippy::too_many_arguments)]
     pub fn regenerate_last(
         &mut self,
         store: &Store,
@@ -386,6 +413,7 @@ impl TurnLoop {
         thread_id: &str,
         prepared: &PreparedThread,
         workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         let text = last_user_text(store, thread_id)?;
         self.run_turn(
@@ -398,6 +426,7 @@ impl TurnLoop {
                 prepared,
                 workspace_dir,
             },
+            sink,
         )
     }
 
@@ -434,6 +463,7 @@ impl TurnLoop {
         workspace_dir: &Path,
         turn_id: &str,
         mut seq: i64,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         let material = registry.materialize();
         let ctx = ToolContext {
@@ -484,7 +514,7 @@ impl TurnLoop {
             // One assistant message, one gate window (D42, D101).
             self.gate_for(thread_id).reset();
             let request = self.build_request(store, thread_id, prepared);
-            let events = match exchange.step(&request) {
+            let events = match exchange.step(&request, sink) {
                 Ok(events) => events,
                 Err(failure) => {
                     let msg_id = self.insert_assistant(store, thread_id, seq)?;

@@ -214,6 +214,27 @@ CREATE INDEX idx_compaction_thread ON compaction_event(thread_id, generation DES
 --                + every block whose seq > that event's covers_to.
 -- I3 in §2 (generation non-decreasing) is what makes this well-founded.
 
+CREATE TABLE provider (
+  id          TEXT PRIMARY KEY,   -- 'anthropic', 'openai', 'openrouter', or a custom id
+  kind        TEXT NOT NULL CHECK (kind IN ('anthropic','openai_compatible')),
+  display_name TEXT NOT NULL,     -- our own words, never the vendor's tagline
+  base_url    TEXT,               -- openai_compatible only; Anthropic's URL is fixed
+  added_at    INTEGER NOT NULL,
+  models_fetched_at INTEGER,      -- mutable: stamped on every refresh
+  models_ttl_secs INTEGER NOT NULL DEFAULT 259200   -- 3 days
+);
+
+CREATE TABLE provider_model (
+  provider_id TEXT NOT NULL REFERENCES provider(id),
+  model_id    TEXT NOT NULL,      -- the id sent on the wire
+  display_name TEXT NOT NULL,
+  PRIMARY KEY (provider_id, model_id)
+);
+-- Refresh replaces the whole list (DELETE + INSERT), never merges: a model
+-- the provider removed must disappear from the picker. Removing the provider
+-- removes its models. Keys live in the keyring under the provider id —
+-- nothing secret-shaped ever reaches these tables.
+
 -- ── MUTABLE COLUMNS (everything else is append-only) ────────────────────────
 -- There are **no mutable tables** — only mutable *columns*. A table is
 -- append-only if every one of its columns is; `project` and `memory` are
@@ -230,6 +251,7 @@ CREATE INDEX idx_compaction_thread ON compaction_event(thread_id, generation DES
 --   memory_setting.*                     -- pause / include_sensitive (D8)
 --   account_setting.*                    -- account-scope pause / reset (D8)
 --   artifact.compiled_path                -- set once after the Worker transform
+--   provider.models_fetched_at            -- stamped on every model-list refresh
 --
 -- Each has exactly one documented write path. Anything else is a bug.
 -- `message` and `block` are **fully** append-only: not one mutable column.

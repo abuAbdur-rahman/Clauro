@@ -108,7 +108,7 @@ fn block(store: &Store, id: &str, message: &str, seq: i64, generation: i64) {
 // ── schema shape ─────────────────────────────────────────────────────────────
 
 #[test]
-fn schema_creates_all_twelve_tables() {
+fn schema_creates_all_fourteen_tables() {
     let dir = TestDir::fresh();
     let store = Store::open(&dir.db()).expect("open must succeed");
     let mut names = store.table_names();
@@ -125,11 +125,13 @@ fn schema_creates_all_twelve_tables() {
             "memory_setting",
             "message",
             "project",
+            "provider",
+            "provider_model",
             "thread",
             "tool_result",
             "usage",
         ],
-        "CONTRACTS.md §1 defines exactly twelve tables"
+        "CONTRACTS.md §1 defines exactly fourteen tables"
     );
 }
 

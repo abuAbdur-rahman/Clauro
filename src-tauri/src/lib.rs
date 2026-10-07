@@ -6,11 +6,14 @@ mod catalogue;
 mod csp;
 mod keyring_store;
 mod platform;
+mod providers;
+mod turn;
 
 use tauri::Manager;
 
 use catalogue::{
     is_fresh, read_cache, resolve, write_cache, Catalogue, CatalogueError, CATALOGUE_TTL_SECS,
+    MODELS_DEV_URL,
 };
 use keyring_store::KeyringError;
 use platform::WebviewStatus;
@@ -38,9 +41,6 @@ fn keyring_available() -> Result<(), KeyringError> {
 }
 
 // ── catalogue commands ─────────────────────────────────────────────────────
-
-/// `models.dev` source of truth (D23). Fetched at runtime, never bundled.
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -169,6 +169,21 @@ fn _catalogue_types() -> Option<(Catalogue, CatalogueError)> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // The turn driver owns its store under the app-data dir. Opening
+            // it here (not lazily in the first command) means a corrupt
+            // database fails at launch with the real error, not mid-turn.
+            let dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| turn::TurnError::Store {
+                    reason: format!("no app-data dir: {e}"),
+                })?;
+            let state =
+                turn::TurnState::open(&dir).map_err(|e| format!("cannot open turn store: {e}"))?;
+            app.manage(state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             keyring_store,
             keyring_retrieve,
@@ -177,7 +192,18 @@ pub fn run() {
             catalogue_status,
             catalogue_refresh,
             artifact_csp,
-            webview_status
+            webview_status,
+            turn::turn_start,
+            turn::turn_stop,
+            turn::transcript_read,
+            providers::provider_list,
+            providers::provider_add_builtin,
+            providers::provider_add_custom,
+            providers::provider_remove,
+            providers::provider_set_key,
+            providers::provider_models,
+            providers::provider_models_enriched,
+            providers::provider_refresh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

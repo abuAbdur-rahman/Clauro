@@ -41,8 +41,16 @@ criterion below.
 
 **Nothing drives the queue.** "Queued follow-ups dispatch once idle" is a **host obligation**: the
 loop exposes `drain_next` (`queue.rs:76-78`) and the tests drain by hand and call `run_turn` again.
-No driver observes idleness and starts the next turn. `src-tauri` registers seven commands and
-**none reaches the loop** — `clauro-loop` is not even a dependency of the shell crate.
+No driver observes idleness and starts the next turn.
+
+**Addendum 2026-10-07 (host driver lands, idle-drain excluded).** `src-tauri/src/turn.rs` is the
+driver this section asked for: `TurnState` (store + `TurnLoop` + stop-flag side map + running set),
+`turn_start` / `turn_stop` / `transcript_read` commands registered in `generate_handler!`
+(`src-tauri/src/lib.rs`), `LiveExchange` (blocking SSE over Anthropic with `retry_delay`), and the
+`clauro://turn-event` / `clauro://turn-done` channels. `clauro-loop` is now a dependency of the
+shell crate. What is still unowned: **observing idleness and draining the queue** — `drain_next`
+still has no caller outside tests, so a message sent mid-turn waits in the queue without a driver
+starting the next turn. That half of the host obligation stays open.
 
 > Added by audit 4 finding 6. The loop that drives the registry, and the prompt every tool depends
 > on, had no owner. **Read this before `008`–`014`** — those tasks each implement a handler, and the

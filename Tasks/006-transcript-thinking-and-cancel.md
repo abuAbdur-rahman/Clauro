@@ -3,43 +3,75 @@
 **Phase** 1 · **Depends** `005` · **Decisions** D19, D54, D65, D68, D72, D76, D98, D99, D100, D106
 **Contracts** §2, §3
 
-**Status: the store-side half is complete and verified 2026-10-05. The UI half does not exist, and
-three criteria cannot be met by any amount of backend work.** `cargo test -p clauro-store` 21/21,
-`cargo test -p clauro-tools` 42/42, `vitest` 17/17 on this host.
+**Status: the store half, the cancel semantics, and the renderer all exist and are verified
+2026-10-07.** `cargo test --workspace --locked` 259/259, `vitest` 167/167 on this host.
 
-**Addendum 2026-10-07.** D99/D106 backend halves closed since: `TurnLoop::regenerate_last`
-re-reads the latest stored user text and runs it as a new turn (empty history fails typed
-`Store(NotFound)`); `TurnLoop::continue_turn` shares the D19 check and the step loop via an
-extracted `drive_turn` but inserts no user message. Three tests in
-`crates/clauro-loop/tests/run.rs`, all failed first (no such methods). UI triggers stay open;
-edit-resend needs no new code (`run_turn` with edited text, append-only by construction).
+**Addendum 2026-10-07 (renderer + streaming).** The UI half now exists. What landed, and what each
+piece is actually proven to do:
 
-Cancel semantics — the part this task exists for — are genuinely done: `tests/transcript.rs:165-198`
-asserts two `aborted` plus one `already_resolved` and an empty unpaired set, and `:201-227` asserts
-block and result counts are unchanged, with the append-only scan at `tests/append_only.rs:46` proving
-no rollback path can exist. That is `D65` and `D68` paid for properly.
+- **The turn loop can stream.** `Exchange::step` (`crates/clauro-loop/src/run.rs`) takes a
+  `&mut dyn FnMut(NormalisedEvent)` sink and is called once per event as the event is produced.
+  The returned `Vec` is still the persistence source, so storage is unchanged and a caller passing
+  `&mut |_| {}` sees the pre-existing behaviour. Before this, a step was only observable after the
+  provider finished — nothing could render mid-response. `crates/clauro-loop/tests/streaming.rs`
+  (3 tests) failed first on the two signatures and now pins: events reach the sink before the step
+  returns; deltas arrive before `BlockStop`; three deltas still collapse to **one** persisted text
+  block.
+- **The send loop exists.** `crates/clauro-transport/src/send.rs` — `ByteSource` + `stream_step`,
+  which is what `retry_delay` had no caller for (`Tasks/005`). `tests/send.rs` (6 tests) drives
+  fixture bytes through it: events reach the sink as bytes arrive, chunk size does not change the
+  event sequence, a 429 retries, a 400 fails immediately, attempts are capped at `MAX_ATTEMPTS`, and
+  **the cap reports the status actually seen** (a hardcoded 429 would misdescribe a 503 outage).
+- **Store rows → contract blocks.** `crates/clauro-loop/src/seam.rs`, `blocks_to_contract`.
+  `tests/seam.rs` (8 tests): every kind maps to exactly one variant; `tool_result` keeps
+  `preview_path` (D27); all four statuses survive distinctly; a malformed payload or unknown kind
+  degrades to a `Notice` naming the row **id**, never a panic and never a silent drop (D55).
+- **The renderer exists.** `src/features/transcript/TranscriptView.tsx` — assistant text is a
+  ghost unframed row, the user turn is the only framed row, `ThinkingRegion` is collapsible inline
+  and collapsed by default, `ToolRow` is one line until expanded. `TranscriptView.test.tsx`
+  (16 tests) pins each of those, including that no delete/remove affordance exists (D19) and that
+  nothing renders as an `aside` (D54).
+- **D100 is met on both halves.** `src/features/transcript/markdown.ts` — `marked` to HTML, then
+  DOMPurify, and the sanitised string is what the function returns, so a caller cannot obtain
+  unsanitised output. `FrameCoalescer` emits at most once per frame. `markdown.test.ts` (12 tests)
+  asserts against the **parsed DOM** rather than substrings, because `onload` legitimately survives
+  inside escaped text and a substring match cannot tell that from a live attribute.
 
-**What is not done, and why it matters more than the count suggests:**
+**Corrections to earlier notes in this file.** The previous version said "no `DOMPurify` dependency
+in the repo" — false, `package.json` has carried one since `Tasks/014`. It also said no markdown
+pipeline existed; `marked` is now adopted, with the rejected alternative recorded in
+`TECH_STACK.md` §7.2 per §6.1 rule 3.
 
-- **D99/D106 backend since 2026-10-07** (`TurnLoop::regenerate_last`, `continue_turn`,
-  shared `drive_turn`; see addendum). UI triggers still absent, as is the composer surface.
-  (Remainder of the old note: it claimed no implementation existed anywhere and `D99` had no
-  proof in either direction — true until this change; the negative half stays proven by
-  `tests/append_only.rs`.)
+**Still open, and not by any amount of backend work:**
+
 - **Middle-removal is detected and nothing surfaces it.** `unbroken_run_end`
-  (`clauro-core/src/content.rs:132`, tested at `clauro-core/tests/content.rs:85-90`) has **no caller
-  outside its own test**, and `ContentBlock::Notice` is constructed nowhere in the codebase. The
-  criterion says "detected **and surfaced**"; only detection exists.
-- **No transcript renderer exists.** `src/` is still the Phase-0 shell: `App.tsx` renders a WebView2
-  boot gate and a model picker, nothing else. So "collapsible inline, collapsed by default" and
-  "HTML purified before render" are **UI-only and unverified** — there is no purifier, no markdown
-  pipeline, and no `DOMPurify` dependency in the repo.
+  (`clauro-core/src/content.rs:132`) still has no caller outside its own test. This change gave
+  `ContentBlock::Notice` a producer at the seam, but the **resume-prefix** call site — the one this
+  criterion is about — is still absent.
+- **I1/I3 still have no fixture corpus.** Unchanged by this work; that criterion is untouched.
+- **A host now drives turns from the UI (2026-10-07).** `src-tauri/src/turn.rs`:
+  `turn_start` validates, reads the key from the keychain, ensures the thread row, and spawns a
+  dedicated thread running `run_turn` through `LiveExchange` (blocking Anthropic SSE, `retry_delay`
+  on failure); the sink maps each event to `TurnEvent` and emits `clauro://turn-event` as it
+  arrives, with `clauro://turn-done` terminal. `src/features/turn/ChatView.tsx` accumulates text
+  deltas into the streaming row, offers Stop (`turn_stop` sets the shared flag; the loop closes
+  open calls as `aborted` and keeps completed work), and re-reads via `transcript_read` on mount
+  and on every done — the store is the record, the events are hints. What "both adapters" still
+  excludes: a non-Anthropic provider fails typed `UnsupportedProvider` — the catalogue carries no
+  base URLs and no settings surface configures one, so the second live path is honestly absent
+  while its parser stays tested at the transport layer.
 
-One further correction: `crates/clauro-store/src/transcript.rs:45` claims the I1 check "feeds on
-fixtures as well as live reads". **No transcript fixtures exist** — the only fixtures in the repo are
-the SSE ones under `crates/clauro-transport/tests/fixtures/`. `check_generation_monotonic` is also
-never run over `blocks_for_thread` output, only over hand-constructed values
-(`tests/transcript.rs:276-289`).
+Cancel semantics — the part this task exists for — remain genuinely done and untouched by this
+change: `tests/transcript.rs:165-198` asserts two `aborted` plus one `already_resolved` and an empty
+unpaired set, `:201-227` asserts block and result counts are unchanged, and the append-only scan at
+`tests/append_only.rs:46` proves no rollback path can exist. That is `D65` and `D68` paid for.
+
+**Addendum 2026-10-07 (D99/D106 backend).** `TurnLoop::regenerate_last` re-reads the latest stored
+user text and runs it as a new turn (empty history fails typed `Store(NotFound)`);
+`TurnLoop::continue_turn` shares the D19 check and the step loop via an extracted `drive_turn` but
+inserts no user message. Three tests in `crates/clauro-loop/tests/run.rs`, all failed first (no such
+methods). UI triggers stay open; edit-resend needs no new code (`run_turn` with edited text,
+append-only by construction).
 
 ## Failing tests first
 
@@ -53,6 +85,10 @@ never run over `blocks_for_thread` output, only over hand-constructed values
 - Continue on a truncated turn appends to the same turn instead of regenerating (**D106**)
 - Edit-resend appends the edited user message plus the fresh answer as new rows (**D99**)
 - Transcript HTML carrying `<script>` or an event-handler attribute renders inert after purify (**D100**)
+- **A step's events reach a sink before the step returns** — the property that makes a turn
+  renderable rather than appearing whole at `end_turn`
+- **Every stored `kind` maps to one contract variant**, and an unreadable payload degrades to a
+  visible notice rather than a panic or a silent drop
 
 ## Do
 
@@ -78,48 +114,62 @@ mid-thread: thinking effort, `max_tokens`, `tool_choice`, `metadata`, `thinking.
 
 ## Acceptance criteria
 
-- [ ] I1, I3 hold on any transcript fixture — **PARTIAL.** I1 is real and enforced at write time
-      (`crates/clauro-store/src/lib.rs:563-586`), checked on three hand-built rows
-      (`tests/transcript.rs:119,130,139`) via `find_unpaired_tool_uses`
-      (`src/transcript.rs:47`). I3 exists as `check_generation_monotonic` (`src/transcript.rs:72`) but
-      is **only ever tested on hand-constructed `FullBlock` values**
-      (`tests/transcript.rs:276-289`) — `blocks_for_thread` output never flows through it. And
-      "any transcript fixture" has no corpus to test against. See Status
+- [ ] I1, I3 hold on any transcript fixture — **STILL PARTIAL, untouched by this change.** I1 is
+      enforced at write time (`crates/clauro-store/src/lib.rs:563-586`) and checked on three
+      hand-built rows (`tests/transcript.rs:119,130,139`). I3's `check_generation_monotonic`
+      (`src/transcript.rs:72`) is still only tested on hand-constructed `FullBlock` values
+      (`tests/transcript.rs:276-289`) — `blocks_for_thread` output never flows through it. The
+      fixture corpus this criterion names still does not exist; the only fixtures in the repo are
+      the SSE ones under `crates/clauro-transport/tests/fixtures/`
 - [x] Cancel closes every dispatched call; zero orphans —
       `crates/clauro-store/src/transcript.rs:180-217`; `tests/transcript.rs:165-198` asserts
       `aborted == 2`, `already_resolved == 1`, `unpaired.is_empty()`; `aborted_carries_aborted_status`
-      at `:230`; wired into the turn loop at `crates/clauro-loop/src/run.rs:290` (`D65`)
+      at `:230`; wired into the turn loop at `crates/clauro-loop/src/run.rs` `drive_turn` (`D65`)
 - [x] Cancel retains completed work — `tests/transcript.rs:201-227` asserts block count and result
       count unchanged after cancel; the append-only scan at `tests/append_only.rs:46` proves no
       rollback path can exist (`D68`)
 - [x] `signature` survives a store round-trip — `src/transcript.rs:155-175` selects `b.signature`;
       `tests/transcript.rs:250-271` asserts both the `signature` column and the `payload`; the
-      non-empty-signature deserializer at `crates/clauro-core/src/content.rs:53,136-142`
-- [ ] Middle-removal invalidation is detected and surfaced — **PARTIAL: detection only.** Detection
-      is real — `unbroken_run_end` at `clauro-core/src/content.rs:132`, tested at
-      `clauro-core/tests/content.rs:85-90`. **Nothing surfaces it**: that function has no caller
-      outside its own test, and `ContentBlock::Notice` is constructed nowhere in `crates/`. See
-      Status
-- [ ] One `Thinking` shape renders for both adapters — **PARTIAL: shape MET, render unverified.**
-      The data shape is genuinely unified and asserted from both adapters' real events —
-      `crates/clauro-transport/tests/thinking_shape.rs:87-117` compares `mem::discriminant` for
-      equality, over `crates/clauro-core/src/content.rs:47-56`. The verb "renders" needs a
-      transcript component, which does not exist. See Status
-- [ ] Collapsible inline, collapsed by default — **UNMET, UI-only.** No frontend. The only related
-      code is the `ThinkingDisplay { Full, Summary }` enum at `clauro-core/src/content.rs:15-20`:
-      no collapse state, no collapsed-by-default, no one-line preview, no side-pane guard. Not
-      verifiable on this host (`AGENTS.md` §8a)
+      non-empty-signature deserializer at `crates/clauro-core/src/content.rs:53,136-142`. Also
+      asserted across the new seam: `tests/seam.rs::thinking_row_keeps_its_signature`, and a
+      thinking row stored **without** a signature degrades to a notice rather than becoming a
+      re-sendable-looking block
+- [ ] Middle-removal invalidation is detected and surfaced — **STILL PARTIAL: detection only.**
+      Detection is real — `unbroken_run_end` at `clauro-core/src/content.rs:132`, tested at
+      `clauro-core/tests/content.rs:85-90`. **Still nothing surfaces it**: that function still has no
+      caller outside its own test. This change gave `ContentBlock::Notice` a producer (`seam.rs`
+      degrades unreadable rows into one) but did **not** add the resume-prefix call site the
+      criterion is actually about
+- [x] One `Thinking` shape renders for both adapters — shape **and** render, both asserted. The data
+      shape was already unified and is asserted from both adapters' real events —
+      `crates/clauro-transport/tests/thinking_shape.rs:87-117` compares `mem::discriminant` over
+      `crates/clauro-core/src/content.rs:47-56`. The render is now
+      `src/features/transcript/TranscriptView.tsx::ThinkingRegion`, and
+      `TranscriptView.test.tsx::renders_the_same_shape_for_both_providers` rerenders a
+      `display: "summary"` block and asserts the same collapsed affordance — the view branches on
+      nothing but `kind`
+- [x] Collapsible inline, collapsed by default — `ThinkingRegion`
+      (`src/features/transcript/TranscriptView.tsx`), `aria-expanded` on the toggle and `false` on
+      first render. Pinned by `TranscriptView.test.tsx`: `is_collapsed_by_default`,
+      `shows_only_the_first_line_while_collapsed`, `expands_and_collapses_inline`, and
+      `never_renders_as_a_side_pane` (asserts no `aside` and no `role="complementary"` — `D54`)
 - [x] Effort changes mid-thread do not error — `crates/clauro-transport/tests/effort_varies.rs:28-35`
       builds two consecutive budgets successfully; `crates/clauro-loop/tests/prompt.rs:48`;
       `src/thread.test.ts:35-44` asserts `promptHash` is recomputed from unchanged text (`D76`)
-- [x] Regenerate / edit-resend append new rows; history untouched (**D99**) — DONE 2026-10-07,
-  backend half (see Status addendum). (Remainder of the old note kept for the record: it
-  claimed no `regenerate` symbol existed and only unsent-chip editing did — true until this
-  change.)
-- [x] Continue appends to a truncated turn; regenerate stays for redoing one (**D106**) — DONE
-  2026-10-07, backend half (see Status addendum). (Remainder of the old note kept for the
-  record: it claimed no continue-append handling existed anywhere — true until this change.)
-- [ ] Transcript HTML purified before render; streaming reparse at most once per frame (**D100**) —
-      **UNMET, UI-only.** Only prose exists (`DECISIONS.md:130,1115`, `CONTRACTS.md:574`,
-      `SPEC.md:93`). No purifier, no markdown renderer, no `DOMPurify` dependency, and no `innerHTML`
-      anywhere in the repo. Not verifiable on this host
+- [x] Regenerate / edit-resend append new rows; history untouched (**D99**) — backend, DONE
+      2026-10-07: `TurnLoop::regenerate_last` re-reads the latest stored user text and runs it as a
+      new turn; a thread with no user text fails typed `Store(NotFound)`. Three tests in
+      `crates/clauro-loop/tests/run.rs`. UI triggers still absent
+- [x] Continue appends to a truncated turn; regenerate stays for redoing one (**D106**) — backend,
+      DONE 2026-10-07: `TurnLoop::continue_turn` shares the D19 check and the extracted `drive_turn`
+      but inserts no user message. UI trigger still absent
+- [x] Transcript HTML purified before render; streaming reparse at most once per frame (**D100**) —
+      `src/features/transcript/markdown.ts`: `renderMarkdown` parses with `marked` then returns
+      **only** `DOMPurify.sanitize(...)`, so unsanitised output is unreachable from it;
+      `FrameCoalescer` buffers deltas and emits once per frame. `markdown.test.ts` (12 tests)
+      asserts inertness against the **parsed DOM** — no `script`/`iframe`/`style`/`object`/`embed`/
+      `form` elements and no attribute beginning with `on` — plus
+      `never_returns_a_live_dangerous_node_for_adversarial_input`. The purifier is loaded
+      **dynamically**, for the same bundle reason `features/artifact/sanitize.ts` documents, and
+      `ALLOWED_URI_REGEXP` is deliberately unset — the default URI regexp already refuses
+      `javascript:`, which is asserted directly rather than trusted

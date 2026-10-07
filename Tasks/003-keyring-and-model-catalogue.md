@@ -1,7 +1,7 @@
 # Task 003 — Keyring and model catalogue
 
-**Phase** 0 · **Depends** `002` · **Decisions** D23, D49, D50, D53, D76
-**Contracts** §5 `ProviderAdapter.limits`, §5 model catalogue shapes
+**Phase** 0 · **Depends** `002` · **Decisions** D23, D49, D50, D53, D76, D116, D117
+**Contracts** §1 (`provider`, `provider_model`), §5 `ProviderAdapter.limits`, §5 model catalogue shapes
 
 **Status: verified 2026-10-04 on Windows/WebView2, and on Linux CI.** `cargo test` (13 shell tests +
 workspace), `vitest` (17), `tsc`, `eslint strictTypeChecked` all green; picker verified live against
@@ -73,3 +73,27 @@ never a blank window, never a bare crash. `D53`.
       (`effort vs system prompt` suite; the request builder itself arrives with 005/006)
 - [x] Effort change takes effect on the next turn and does not retro-edit stored blocks —
       `thread.test.ts` asserts `promptHash` and stored state survive `setEffort`
+
+**Addendum 2026-10-07 (providers, D116/D117).** The catalogue outgrew this task's original shape:
+showing 200+ providers when zero keys exist is an overload no fetch policy fixes. What changed:
+
+- **Store:** `provider` + `provider_model` tables (now fourteen tables; `schema.rs` updated),
+  v1→v2 migration (`tests/providers.rs`: CRUD, replace-semantics, cascade removal, migration —
+  8 tests). `provider.models_fetched_at` joins the CONTRACTS §1 mutable list and the
+  `append_only.rs` allowlist.
+- **Commands** (`src-tauri/src/providers.rs`, 18 tests): `provider_list`, `provider_add_builtin`
+  (anthropic/openai/openrouter), `provider_add_custom` (validated id + URL), `provider_remove`
+  (key first, then rows), `provider_set_key` (stores key, proves it against live `/models`,
+  rolls the key back on failure), `provider_models` (stored + stale flag), `provider_refresh`,
+  `provider_models_enriched` (one-invoke join with lazy models.dev enrichment, 7-day TTL).
+- **Turn integration:** `turn_start` reads the provider row — unknown id is `NoProvider`,
+  Anthropic is live, OpenAI-compatible rows are `UnsupportedProvider` until the request
+  translator lands (the loop builds Anthropic-shaped bodies; sending one at a chat-completions
+  endpoint would be a silent 400 — refused here instead).
+- **UI:** `ProvidersView` (add/key/refresh/remove, 6 tests), `ModelPicker` re-sourced to
+  configured providers only with unknown-limits models unselectable (6 tests), boot no longer
+  fetches anything, providers view wired into `App`.
+- **Still honestly open:** the live-key proof (no key on this host — `provider_set_key` and
+  `provider_refresh` are untested against a real endpoint by rule), the OpenAI request
+  translator, and per-model limits for custom endpoints (owned by the translator slice, which
+  needs them for the request anyway).
