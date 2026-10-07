@@ -56,7 +56,8 @@ over (D103).
 | **Themes** | Light / dark / system. | MIRRORED | Commodity. |
 | **Hotkey + command palette** | Summon the window, drive it by keyboard. | ORIGINAL | Tauri-native. Not a research finding — a judgement that a desktop client is judged by this. |
 | **BYOK keychain** | Your key, your machine. | CALLED | OS keychain via the `keyring` crate. Never in SQLite, never logged. |
-| **Model catalogue** | 226 providers, fetched and cached. | CALLED | **`models.dev`** — MIT, live, and the same source OpenCode uses. **Never bundled**: 5.3 MB exceeds our entire binary budget. |
+| **Model catalogue** | 226 providers, fetched and cached. | CALLED | **`models.dev`** — MIT, live, and the same source OpenCode uses. **Never bundled**: 5.3 MB exceeds our entire binary budget. Since D117 it is limits-enrichment only, fetched lazily — the picker is gated on configured providers (D116). |
+| **Provider setup** | One endpoint, one key, one model list per provider. | PORTED (picker gating) · MIRRORED (per-endpoint discovery) · ORIGINAL (keyring, TTL, enrichment) | Picker gating PORTED from OpenCode's connected-provider picker (`/connect` + `auth.json` → ours is keyring); per-endpoint model discovery behaviour MIRRORED from Open WebUI (observation-only, D103 — no code, no wording); keyring-per-provider storage, 3-day TTL with stale flags, and lazy enrichment are ORIGINAL. |
 | **Streaming** | SSE, hand-rolled. | ORIGINAL | There is no official Anthropic Rust SDK (max version 0.0.8, last updated 2024) and both SSE crates are unmaintained. |
 | **Transport retry** | Backoff on 429/5xx, respecting `Retry-After`. | MIRRORED | Standard practice. No agent-level retry concept — the loop only sees succeed or fail. |
 

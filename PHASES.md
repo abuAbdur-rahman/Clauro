@@ -74,7 +74,7 @@ a display.
 |---|---|---|---|
 | `Tasks/001-dual-engine-sandbox-spike.md` | ◐ Windows verified · **Linux not run** | — (produces a verdict, not code) | D2, D6, D45, D77 |
 | `Tasks/002-workspace-skeleton-and-ci.md` | ✅ | — | D50 |
-| `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI | `ProviderAdapter.limits` | D19, D23, D49, D50, D53, D76 |
+| `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI; providers addendum 2026-10-07 (D116/D117) | `ProviderAdapter.limits` + §1 (`provider`, `provider_model`) | D19, D23, D49, D50, D53, D76, D116, D117 |
 
 **Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
 Windows CI jobs. **Linux jobs parked 2026-10-06 (D114), owned by Phase 7 (D115)** — see the Phase 7 gate.
@@ -105,16 +105,24 @@ Windows. Two named cells still need a re-run under `Tasks/014`.
 |---|---|---|---|
 | `Tasks/004-sqlite-schema-and-append-only.md` | ✅ 9/9 | §1 | D7, D8, D19, D32, D34, D47, D52, D55, D57, D63, D70, D79 |
 | `Tasks/005-sse-transport-and-anthropic-adapter.md` | ◐ 6/8 — retry and the OpenAI `notice` unwired | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81 |
-| `Tasks/006-transcript-thinking-and-cancel.md` | ◐ store done; `D99`/`D106` absent, UI unstarted | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76 |
+| `Tasks/006-transcript-thinking-and-cancel.md` | ◐ renderer + streaming sink + purify done 2026-10-07; I1/I3 fixtures and middle-removal surfacing still open | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76, D100 |
 
 **Gate:** a streaming turn renders on both adapters; stop mid-turn keeps completed work and closes
 every dispatched call; reasoning is one collapsible region for both providers.
 
-**Gate status:** ◐ **not met, and the reason is not a missing test.** Cancel semantics are fully
-paid for — `D65` and `D68` are asserted directly (`Tasks/006`, `tests/transcript.rs:165-227`) — and
-`D57`'s `summary_*` separation is structural. But the gate says a streaming turn **renders**, and
-there is no transcript renderer: `src/` is still the Phase-0 shell. So the gate cannot pass until a
-frontend exists, however much backend work lands.
+**Gate status:** ◐ **substantially met 2026-10-07, one live proof outstanding.** Cancel semantics
+are fully paid for — `D65` and `D68` are asserted directly (`Tasks/006`,
+`tests/transcript.rs:165-227`) — and `D57`'s `summary_*` separation is structural. The renderer
+exists (`src/features/transcript/TranscriptView.tsx`), `Exchange::step` streams, and a host now
+drives turns end to end: `turn_start` → dedicated thread → `LiveExchange` → `clauro://turn-event`
+→ `ChatView` streaming row → `clauro://turn-done` → `transcript_read`. Since 2026-10-07 the
+picker is gated on configured providers (D116): per-provider keys in the keyring, per-provider
+`/models` with a 3-day TTL, models.dev as lazy limits-enrichment only — boot downloads nothing.
+What keeps the gate from ✅: no turn has run against the live API on this host (no key is stored
+here, and no test may need one by rule), and the second adapter's live path is precisely refused
+(`UnsupportedProvider`) until the Anthropic→chat-completions request translator lands — the loop
+builds Anthropic-shaped bodies, so sending one at a compat endpoint would be a silent 400. The
+gate's remaining work is a live-key run plus the translator, not more investigation.
 
 **Unblocks:** Phase 2 (the loop needs a surface to run against), Phase 4 (the meter needs a real
 transcript to measure).
@@ -148,17 +156,19 @@ renderer. And `question` is listed as callable when its turn boundary does not e
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.
 
-> **The wiring gap is the whole story of this phase.** Every piece exists and every test is green, and
-> yet `crates/clauro-loop/src/run.rs:263` dispatches tool calls **without consulting `resolve()` or
-> `ApprovalQueue`** — grep for both across `crates/clauro-loop/src/` returns zero matches. Same for
-> `QuestionGate`'s `note_call`/`reset`. The components are real, tested, and unreachable.
+> **The wiring gap is the whole story of this phase.** Every piece exists and every test is
+> green, and yet nothing drives a turn: `src-tauri/Cargo.toml` does not depend on `clauro-loop`,
+> and `generate_handler!` (`src-tauri/src/lib.rs:172-181`) registers eight commands that reach the
+> store and the keyring but never the loop.
 >
-> Read the per-task state column as "built", not "working". The loop now
-> consults permissions, routes ask-mode approval through `ApprovalQueue` with
-> hold-and-resume, tells `QuestionGate` about each call with per-message
-> reset, refuses mixed questions by lookahead, and bounds output on the way
-> out — `D27` is enforced at dispatch. Still unwired: `resolve_answer`, and
-> any host driving a turn.
+> An earlier version of this note claimed `crates/clauro-loop/src/run.rs:263` dispatched tool calls
+> **without consulting `resolve()` or `ApprovalQueue`**, and that "grep for both returns zero
+> matches". That was false and has been corrected here. The loop does consult permissions
+> (`resolve` at `run.rs`), routes ask-mode approval through `ApprovalQueue` with hold-and-resume,
+> tells `QuestionGate` about each call with per-message reset, refuses mixed questions by
+> lookahead, and bounds output on the way out — `D27` is enforced at dispatch. Since 2026-10-07 a
+> host drives turns (`src-tauri/src/turn.rs`, eleven commands registered). Still uncalled:
+> `resolve_answer`, and the idle-queue drain.
 
 **Unblocks:** Phase 3 (`fs` proves the workspace tree before `bash` exists; `artifact` needs the
 loop), Phase 4 (compaction needs tools to compact around).

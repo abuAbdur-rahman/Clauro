@@ -91,8 +91,16 @@ struct Script {
 }
 
 impl Exchange for Script {
-    fn step(&mut self, _request: &BuiltRequest) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
-        Ok(self.steps.pop_front().expect("script exhausted"))
+    fn step(
+        &mut self,
+        _request: &BuiltRequest,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
+        let events = self.steps.pop_front().expect("script exhausted");
+        for event in &events {
+            sink(event.clone());
+        }
+        Ok(events)
     }
 }
 
@@ -231,6 +239,7 @@ fn phase_two_turn_runs_end_to_end() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn must run");
 

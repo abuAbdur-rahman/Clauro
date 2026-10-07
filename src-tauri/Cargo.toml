@@ -27,4 +27,12 @@ keyring = "4"
 # Transport (D24): hand-rolled SSE over reqwest with rustls — no OpenSSL system
 # dependency for cross-distro packaging. 003 uses it for the catalogue fetch;
 # streaming arrives with 005.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "webpki-roots", "json", "blocking"] }
+# Turn driver (023): the shell is the only crate that knows Tauri exists, and
+# the only one allowed to compose the loop, the store, and the network.
+clauro-core = { path = "../crates/clauro-core" }
+clauro-store = { path = "../crates/clauro-store" }
+clauro-transport = { path = "../crates/clauro-transport" }
+clauro-tools = { path = "../crates/clauro-tools" }
+clauro-loop = { path = "../crates/clauro-loop" }
+clauro-fs = { path = "../crates/clauro-fs" }

@@ -19,6 +19,14 @@ pub const CATALOGUE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Cache filename inside the app-data directory.
 pub const CACHE_FILE: &str = "models-dev-cache.json";
 
+/// models.dev source of truth (D23). Fetched at runtime, never bundled.
+pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+
+/// Enrichment TTL: limits change on vendor-release cadence, not by the
+/// minute. Longer than the catalogue's own TTL was — enrichment is a
+/// background fact, not a picker blocker.
+pub const ENRICHMENT_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// The subset of a models.dev model entry the picker consumes.
 /// Catalogue `limit.context` → `context_window`, `limit.output` → `max_output`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

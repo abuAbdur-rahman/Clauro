@@ -8,3 +8,6 @@
 pub mod prompt;
 pub mod queue;
 pub mod run;
+pub mod seam;
+
+pub use seam::{blocks_to_contract, row_to_contract, RenderRow};

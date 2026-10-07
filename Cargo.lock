@@ -577,6 +577,12 @@ dependencies = [
 name = "clauro"
 version = "0.1.0"
 dependencies = [
+ "clauro-core",
+ "clauro-fs",
+ "clauro-loop",
+ "clauro-store",
+ "clauro-tools",
+ "clauro-transport",
  "keyring",
  "reqwest",
  "serde",

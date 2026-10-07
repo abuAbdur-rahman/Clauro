@@ -93,6 +93,9 @@ fn every_update_targets_the_mutable_column_allowlist() {
             BTreeSet::from(["paused", "include_sensitive"]),
         ),
         ("artifact", BTreeSet::from(["compiled_path"])),
+        // Providers are configuration, not transcript: the freshness stamp is
+        // the documented write path for model-list refresh (003/providers).
+        ("provider", BTreeSet::from(["models_fetched_at"])),
     ]);
     let mut violations = Vec::new();
     for (file, line) in src_lines() {

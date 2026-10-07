@@ -3,10 +3,11 @@
  * explained before first paint — never a blank window, never a bare crash.
  */
 import { useEffect, useState } from "react";
-import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "../features/catalogue/catalogue";
-import ModelPicker from "../components/ModelPicker";
+import { shortError, webviewStatus } from "../features/catalogue/catalogue";
 import Composer from "../components/Composer";
 import { useThreadStore } from "../features/catalogue/thread";
+import { ProvidersView } from "../features/providers/ProvidersView";
+import { ChatView } from "../features/turn/ChatView";
 import { ArtifactDrawer } from "../components/ArtifactDrawer";
 import { ProjectsRail } from "../features/projects/ProjectsRail";
 import { ProjectsGrid } from "../features/projects/ProjectsGrid";
@@ -29,11 +30,15 @@ const DEMO_PROJECTS = [
 ];
 
 type Boot = { stage: "checking" } | { stage: "missing"; hint: string } | { stage: "ready" };
-type View = { name: "home" } | { name: "projects" } | { name: "project"; id: string } | { name: "chat" };
+type View =
+  | { name: "home" }
+  | { name: "projects" }
+  | { name: "project"; id: string }
+  | { name: "chat" }
+  | { name: "providers" };
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>({ stage: "checking" });
-  const [payload, setPayload] = useState<CataloguePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const openThread = useThreadStore((s) => s.openThread);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -41,8 +46,7 @@ export default function App() {
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
-  const model = useThreadStore((s) => s.threads[THREAD]?.model ?? null);
-  const effort = useThreadStore((s) => s.threads[THREAD]?.effort ?? "medium");
+
 
   useEffect(() => {
     applyTheme({ mode: "system", accent: "neutral", density: "comfortable" }, false);
@@ -64,8 +68,6 @@ export default function App() {
         }
         setBoot({ stage: "ready" });
         openThread(THREAD);
-        const cat = await refreshCatalogue();
-        if (!isCancelled()) setPayload(cat);
       } catch (e) {
         if (!isCancelled()) setError(shortError(e));
       }
@@ -111,23 +113,18 @@ export default function App() {
             <div className="mx-auto mt-24 max-w-2xl">
               <HomeGreeting hour={new Date().getHours()} />
               <div className="mt-6">
-                {payload ? (
-                  <Composer
-                    threadId={THREAD}
-                    payload={payload}
-                    memoryOff={false}
-                    onSend={noop}
-                    onAttach={noop}
-                    onMemoryToggle={noop}
-                  />
-                ) : (
-                  <p className="text-neutral-500">Loading composer…</p>
-                )}
+                <Composer
+                  threadId={THREAD}
+                  memoryOff={false}
+                  onSend={noop}
+                  onAttach={noop}
+                  onMemoryToggle={noop}
+                />
                 <p className="mt-2 text-center text-xs text-neutral-500">
                   Clauro runs on your machine. Double-check important answers.
                 </p>
               </div>
-              <div className="mt-6 flex justify-center gap-2">
+              <div className="mt-6 flex justify-center gap-4">
                 <button
                   type="button"
                   className="text-xs text-neutral-400 hover:underline"
@@ -136,6 +133,15 @@ export default function App() {
                   }}
                 >
                   Browse projects
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-neutral-400 hover:underline"
+                  onClick={() => {
+                    setView({ name: "providers" });
+                  }}
+                >
+                  Providers
                 </button>
               </div>
             </div>
@@ -162,34 +168,24 @@ export default function App() {
           )}
           {view.name === "chat" && (
             <div>
-              <h1 className="text-base">Clauro — model catalogue (003)</h1>
-              <p className="mt-1 text-xs text-neutral-500">
-                thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
-              </p>
+              <h1 className="text-base">Clauro</h1>
               {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
-              <div className="mt-3 max-w-2xl">
-                {payload ? (
-                  <ModelPicker payload={payload} threadId={THREAD} />
-                ) : (
-                  <p className="text-neutral-500">Loading catalogue…</p>
-                )}
-              </div>
-              <div className="mt-4 max-w-2xl">
-                {payload ? (
-                  <Composer
-                    threadId={THREAD}
-                    payload={payload}
-                    memoryOff={false}
-                    onSend={noop}
-                    onAttach={noop}
-                    onMemoryToggle={noop}
-                  />
-                ) : (
-                  <p className="text-neutral-500">Loading composer…</p>
-                )}
-                <p className="mt-2 text-center text-xs text-neutral-500">
-                  Clauro runs on your machine. Double-check important answers.
-                </p>
+              <ChatView threadId={THREAD} />
+            </div>
+          )}
+          {view.name === "providers" && (
+            <div className="mx-auto mt-8 max-w-2xl">
+              <button
+                type="button"
+                className="text-xs text-neutral-400 hover:underline"
+                onClick={() => {
+                  setView({ name: "home" });
+                }}
+              >
+                ← Back
+              </button>
+              <div className="mt-4">
+                <ProvidersView />
               </div>
             </div>
           )}

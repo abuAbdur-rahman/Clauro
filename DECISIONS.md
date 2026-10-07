@@ -1299,6 +1299,29 @@ secondary, never blocks a Windows release) are untouched — Phase 7 is post-dep
 sequencing, not a scope cut. v1's definition of done (`SPEC.md` §6) reads "both floors" as
 the two Windows jobs until Phase 7 lands.
 
+**D116 — The picker shows only configured providers' models; model lists are per-provider with a 3-day TTL.**
+
+Decided 2026-10-07 (task 003/providers). The bulk models.dev fetch showed 200+ providers when
+zero keys existed — the overload was never the 5.3 MB, it was showing the whole world. The fix
+is gating, not a smaller catalogue: an unconfigured provider has no store row and cannot appear
+in the picker. Each configured provider fetches its own live `/models` (Anthropic's with the key
+header, OpenAI-compatible with bearer), stored in `provider_model`, refreshed on demand and
+stale-flagged past the TTL rather than blocking the picker. Keys live in the keyring under the
+provider id — the turn driver already read them that way, so this changes no convention. Picker
+gating is PORTED from OpenCode's connected-provider picker; per-endpoint discovery is behaviour
+MIRRORED from Open WebUI; keyring storage, the TTL, and lazy enrichment are ORIGINAL. **D103.**
+
+**D117 — models.dev is limits enrichment only, fetched lazily, never at boot.**
+
+Decided 2026-10-07 (task 003/providers). Provider `/models` endpoints report ids, not limits —
+Anthropic's returns no context window, OpenAI's returns almost nothing — and the token meter
+still needs honest numbers. So models.dev stays, but its role shrinks to enrichment: fetched on
+first enriched-models read (7-day TTL, file cache retained), joined per model, and a model it
+never heard of carries `limits_known: false` with selection refused rather than zero-guessed
+(CONTRACTS.md §5). Boot downloads nothing. Custom-endpoint models stay unselectable until the
+live-turn translator carries per-model limits — the request needs them anyway, so that slice
+owns them.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
