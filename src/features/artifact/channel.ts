@@ -141,11 +141,15 @@ export function hostSide(options: HostSideOptions): HostSide {
     bootChannel(options.frameWindow, channel.port2);
   };
 
-  const target = options.frameWindow as unknown as EventTarget;
-  target.addEventListener("message", listener);
+  // The listener rides the SHELL's own window, never the frame's: an opaque
+  // frame's window is cross-origin, and reaching into it is exactly what the
+  // sandbox refuses (D2, D122). The frame speaks to `parent`
+  // (frame-runtime.js), so the hello arrives here with origin "null" and
+  // `source === frameWindow` — the two things `validHandshake` compares.
+  window.addEventListener("message", listener);
   return {
     dispose: () => {
-      target.removeEventListener("message", listener);
+      window.removeEventListener("message", listener);
       open = false;
     },
   };

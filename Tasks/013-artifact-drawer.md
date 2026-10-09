@@ -91,3 +91,11 @@ code, in this order, each with its failing test first:
   under test — it now sits *beside* the production producer instead of standing in for it.
 
 Still **NOT RUN**: the five webview-observable criteria above (tauri-driver, 021) — unchanged.
+
+**Same date — the handshake loop closed (D122), a precondition of the proofs.** Criterion 5
+("a refused `MessageChannel` handshake leaves the frame inert") needed a handshake that exists;
+`hostSide` had no production caller and the frame never posted a window-level hello — two
+unit-tested halves that never met. Closed in production: frame → `parent.postMessage`, host
+listens on the shell's own window, `ArtifactDrawer` attaches per live document, readiness is
+`data-artifact-channel`, error-level reports surface through the failed presentation. Webview
+evidence lands with the tauri-driver run.

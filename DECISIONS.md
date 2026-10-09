@@ -1354,6 +1354,25 @@ artifact re-runs nothing while a refresh re-prepares exactly once. The producer 
 caller §7a demands; `phase3.e2e.test.tsx` keeps its test-local driver as the composition proof
 under test, now beside the production one rather than standing in for it.
 
+**D122 — The handshake's first contact is the frame's, and the host listens on its own window:
+cross-origin access is what the sandbox refuses, so the host never reaches in.**
+
+Decided 2026-10-09 (Phase 3 gate: the webview proofs). `hostSide` and the frame's boot responder
+existed as two halves that never met in the product: the host waited for a window-level
+`artifact.hello` **on the frame's window** — an opaque, cross-origin window, exactly what `D2`
+exists to refuse reaching into — and the frame waited for an `artifact.boot` that nothing sent.
+Both were unit-tested against each other by hand; neither was reachable by the app, so a webview
+proof of "a refused handshake leaves the frame inert" would have been unobservable theatre. The
+loop closes in the direction the sandbox permits: the frame posts its hello to `window.parent`
+(`"*"` — an opaque origin cannot name anyone, the same reason `bootChannel` uses it), and the
+host's listener rides the **shell's own window**, where `event.origin === "null"` and
+`event.source === frameWindow` are both observable without crossing the boundary.
+`ArtifactDrawer` attaches the host half when a live frame is on screen, re-attaching per document
+(the transferred port dies with the old one), exposes readiness as `data-artifact-channel`, and
+routes error-level reports into the drawer's existing failed presentation — a silent runtime
+error is the blank-frame bug again, which is the one thing that component exists to prevent. The
+proofs then observe the real chain end to end: hello → validated → boot + port → claimed → `ready`.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

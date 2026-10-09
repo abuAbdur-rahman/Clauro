@@ -252,6 +252,12 @@
     post(FRAME_TO_HOST.hello, {});
   });
 
+  // The first contact is the frame's, and it goes to the shell: the host has
+  // no reason to speak until asked, and this frame has no port until it asks.
+  // "*" is the only value available — an opaque origin cannot name anyone,
+  // which is the same reason the host's boot reply uses it (D122).
+  window.parent.postMessage({ type: FRAME_TO_HOST.hello }, "*");
+
   window.onerror = function (message) {
     post(FRAME_TO_HOST.error, { text: String(message) });
   };

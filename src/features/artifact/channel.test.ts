@@ -216,4 +216,35 @@ describe("host side wiring", () => {
     expect(created).toHaveBeenCalledOnce();
     host.dispose();
   });
+
+  it("the listener rides the shell's window, never the frame's (D122)", async () => {
+    // An opaque frame's window is cross-origin from the shell: attaching the
+    // host listener there is precisely the access the sandbox refuses (D2).
+    // The frame speaks to `parent`, so the hello arrives on the shell's own
+    // window with origin "null" and `source === frameWindow` — the two things
+    // `validHandshake` compares. jsdom has no opaque origins, so the origin
+    // is forced the way every other test in this file forces it.
+    const el = document.createElement("iframe");
+    document.body.appendChild(el);
+    const frameWindow = el.contentWindow;
+    if (!frameWindow) throw new Error("no frame window");
+    const boots: unknown[] = [];
+    // The boot is posted TO the frame's window, so the observer sits there.
+    frameWindow.addEventListener("message", (e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "artifact.boot") boots.push(data);
+    });
+    const channel = new MessageChannel();
+    const host = hostSide({
+      frameWindow,
+      createChannel: () => channel,
+      onLog: () => undefined,
+    });
+
+    window.dispatchEvent(helloFrom("null", frameWindow));
+    await untilSettled(() => boots.length === 1, "boot delivered into the frame window");
+    expect(boots).toEqual([{ type: "artifact.boot" }]);
+    host.dispose();
+    el.remove();
+  });
 });
