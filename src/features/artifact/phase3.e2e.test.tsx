@@ -10,10 +10,10 @@ import { transformJsx } from "./compile.transform";
  * Phase 3 gate e2e, frontend half (`Tasks/028`, D113): a tool result for
  * `artifact` renders live in the drawer through the REAL store actions and the
  * REAL `prepareArtifact` — injected policy + worker only, because jsdom has
- * neither Tauri nor a `Worker`. The last-inch driver (tool result → store
- * actions) is test-local and labelled as such: no production producer exists
- * until a host drives turns, and adding one now would be the §7a trap
- * (implemented, tested, no caller).
+ * neither Tauri nor a `Worker`. The last-inch driver here is test-local and
+ * labelled as such: the production producer landed with D121
+ * (`features/artifact/live.ts`), and this file keeps proving the composition
+ * it drives — real store, real prepare — under test.
  */
 
 const THREAD = "t1";
@@ -44,8 +44,9 @@ function worker(): WorkerLike {
 const policy = (): Promise<string> => Promise.resolve(CSP);
 
 /**
- * The test-local producer (D113): what a tool-result handler will do once a
- * host drives turns. Maps an artifact tool result onto drawer-store actions.
+ * The test-local driver (D113): a stand-in for the production producer
+ * (`features/artifact/live.ts`, D121) at the composition boundary. What a
+ * tool-result handler does once a host drives turns — now also done for real.
  */
 function onArtifactToolResult(input: { artifactId: string; version: number }) {
   // Every result kicks a fresh prepare; the drawer prepares while `compiling`.

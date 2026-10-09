@@ -1334,6 +1334,26 @@ Decided 2026-10-09 (tasks 005/023 — the OpenAI request translator slice). Thre
 
 Decided 2026-10-09 (Phase 1–5 completion plan, slice 2; serves the Tasks/005/013/020/021 gates). The e2e must drive real turns without a live key (no test may use a key by rule), and a lenient mock would let a translator or routing regression masquerade as a model answer. So `scripts/mock-openai-server.mjs` — zero dependencies, loopback-only — validates every request against the translated wire (`stream: true`, system-first messages, `tool_calls` arguments parseable JSON *strings*, `function.parameters` never `input_schema`, bearer auth, and no Anthropic header or top-level field) and answers `400` naming the offending field otherwise. Scenario selection rides the model id (`mock-text` with reasoning deltas first, `mock-artifact` and `mock-question` issuing scripted tool calls whose arguments the shell must execute and answer), so the app needs no control channel: pick a model in the picker, get that script. The harness inspects the recorded request log (`/__requests`, authorization always redacted) to assert the translator's output end to end; `pnpm mock` starts it for a manual run, and `/__shutdown` exits the process so teardown never leaves a listener behind.
 
+**D121 — The drawer's producer listens where the shell already listens: turn events say "compiling", turn-done says "live", and the row is the record.**
+
+Decided 2026-10-09 (Phase 1–5 completion plan, slice 3a; the second half of D113 — "no production
+producer until a host drives turns" — that host exists now: the translator turns (D119) and the e2e
+mock drives them (D120)). Two signals and one read. (1) `block_start` on the `artifact` tool flips
+the drawer to compiling **with no id**: the model asked, the id does not exist until the loop
+generates it, and the drawer must never sit silent through that window — so `setCompiling` widens to
+`string | null` for exactly this frame. (2) turn-done reads `artifact_latest`, a new command
+returning the thread's newest row (`latest_artifact`: newest `created_at` wins, tie by version,
+never crosses threads) with its source resolved from the session root, and lands it: content into
+the shell's store, then `setLive(id, version)`. **No row clears the spinner** instead of letting it
+spin forever — a call that never committed must not leave a permanent "Compiling…" — and a failed
+read is a typed reason through the view's notice, never swallowed and never fatal (the `ChatView`
+transcript precedent). (3) The drawer prepares when the artifact is *known*, not when the state
+says compiling: the input is what changes the output, so the compiling→live flip of an unchanged
+artifact re-runs nothing while a refresh re-prepares exactly once. The producer runs inside
+`ChatView` — the conversation-scoped view that already owns this thread's listeners — which is the
+caller §7a demands; `phase3.e2e.test.tsx` keeps its test-local driver as the composition proof
+under test, now beside the production one rather than standing in for it.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

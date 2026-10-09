@@ -119,4 +119,23 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(container.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts");
   });
+
+  it("a live entry prepares and renders without passing through compiling (D121)", async () => {
+    // The production producer's turn-done path lands straight in `live`: the
+    // row exists, so the drawer must prepare it. Gating prepare on the
+    // `compiling` state alone would spin forever on this path.
+    useDrawerStore.getState().setLive("t1", "a9", 2);
+    draw({ title: "Demo" });
+    await waitFor(() => {
+      expect(prepare.fn).toHaveBeenCalledOnce();
+    });
+    expect(prepare.fn.mock.calls[0]?.[0]).toMatchObject({
+      source: "<h1>hi</h1>",
+      mediaType: "text/html",
+    });
+    const frame = await screen.findByTitle("artifact-frame");
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(screen.getByText("Demo")).not.toBeNull();
+    expect(screen.getByText("v2")).not.toBeNull();
+  });
 });

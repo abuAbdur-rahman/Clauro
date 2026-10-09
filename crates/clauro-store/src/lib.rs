@@ -498,6 +498,20 @@ pub struct NewArtifact {
     pub created_at: i64,
 }
 
+/// One stored artifact version, as `latest_artifact` returns it. The drawer's
+/// producer (D121) needs the row's own version and path — the source bytes
+/// live on disk, never in the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRow {
+    pub id: String,
+    pub thread_id: String,
+    pub version: i64,
+    pub title: String,
+    pub media_type: String,
+    pub source_path: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockRow {
     pub id: String,
@@ -1490,6 +1504,33 @@ impl Store {
             rusqlite::params![path, id],
         )?;
         self.must_touch(rows, id)
+    }
+
+    /// The newest artifact row of one thread, if any. Refresh bumps
+    /// (`insert_artifact_version`), so the drawer shows the highest version
+    /// of whichever artifact was written last — newest wins, tie broken by
+    /// version. Never crosses threads.
+    #[must_use]
+    pub fn latest_artifact(&self, thread_id: &str) -> Option<ArtifactRow> {
+        self.conn
+            .query_row(
+                "SELECT id, thread_id, version, title, media_type, source_path, created_at
+                 FROM artifact WHERE thread_id = ?1
+                 ORDER BY created_at DESC, version DESC LIMIT 1",
+                rusqlite::params![thread_id],
+                |row| {
+                    Ok(ArtifactRow {
+                        id: row.get(0)?,
+                        thread_id: row.get(1)?,
+                        version: row.get(2)?,
+                        title: row.get(3)?,
+                        media_type: row.get(4)?,
+                        source_path: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .ok()
     }
 }
 

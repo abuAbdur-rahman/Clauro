@@ -27,6 +27,7 @@ vi.mock("./turn", () => ({
   turnStop: vi.fn(),
   transcriptRead: vi.fn(),
   questionAnswer: vi.fn(),
+  artifactLatest: vi.fn(() => Promise.resolve(null)),
   listenTurnEvents: vi.fn((_id: string, cb: EventCb) => {
     listeners.events.push(cb);
     return Promise.resolve(() => {});
@@ -37,7 +38,9 @@ vi.mock("./turn", () => ({
   }),
 }));
 
-import { questionAnswer, turnStart, turnStop, transcriptRead } from "./turn";
+import { artifactLatest, questionAnswer, turnStart, turnStop, transcriptRead } from "./turn";
+import { useDrawerStore } from "../artifact/store";
+import { useArtifactContent } from "../artifact/live";
 
 function selectModel() {
   useThreadStore.getState().openThread(THREAD);
@@ -59,6 +62,8 @@ beforeEach(() => {
   listeners.dones = [];
   useThreadStore.getState().reset();
   useThreadStore.getState().openThread(THREAD);
+  useDrawerStore.getState().reset();
+  useArtifactContent.getState().reset();
 });
 
 describe("ChatView", () => {
@@ -294,5 +299,62 @@ describe("ChatView", () => {
       expect(screen.getByText(/already answered/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
+  });
+
+  it("drives the artifact drawer from turn events (D121)", async () => {
+    // The production wiring: ChatView owns the producer, so the events this
+    // view already listens on flip the drawer, and turn-done lands the row
+    // in the content store the shell renders. This is the caller §7a asks
+    // for — the seam-tested producer alone would not prove it.
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    vi.mocked(artifactLatest).mockResolvedValue({
+      artifactId: "a9",
+      version: 2,
+      title: "Demo",
+      mediaType: "text/html",
+      source: "<h1>x</h1>",
+    });
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalled();
+    });
+    // Tauri delivers to every listener on the channel: ChatView's own and
+    // the producer's. Fire them all, exactly as the runtime would.
+    for (const cb of listeners.events) {
+      cb({
+        type: "block_start",
+        index: 1,
+        kind: "tool_use",
+        tool_id: "call-1",
+        tool_name: "artifact",
+      });
+    }
+    await waitFor(() => {
+      const entry = useDrawerStore.getState().drawers[THREAD];
+      expect(entry?.state).toBe("compiling");
+      expect(entry?.artifactId).toBeNull();
+    });
+    for (const cb of listeners.dones) {
+      cb({
+        thread_id: THREAD,
+        end: "EndTurn",
+        dispatched: [],
+        assistant_messages: 1,
+        pending_approvals: [],
+      });
+    }
+    await waitFor(() => {
+      const entry = useDrawerStore.getState().drawers[THREAD];
+      expect(entry?.state).toBe("live");
+      expect(entry?.artifactId).toBe("a9");
+      expect(entry?.version).toBe(2);
+      expect(useArtifactContent.getState().threads[THREAD]?.source).toBe("<h1>x</h1>");
+    });
+    expect(artifactLatest).toHaveBeenCalledWith(THREAD);
   });
 });

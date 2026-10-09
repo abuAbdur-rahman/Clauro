@@ -196,6 +196,7 @@ pub fn run() {
             turn::turn_start,
             turn::turn_stop,
             turn::transcript_read,
+            turn::artifact_latest,
             turn::question_answer,
             providers::provider_list,
             providers::provider_add_builtin,

@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  artifactLatest,
   parseTranscript,
   parseTurnDone,
   parseTurnEvent,
@@ -94,6 +95,34 @@ describe("invoke wire keys", () => {
         maxTokens: 4096,
       }),
     ).rejects.toThrow();
+  });
+
+  // The drawer's production producer (D121) reads the thread's newest
+  // artifact through this command; `null` is a valid answer (a thread with
+  // no artifacts) and the document shape is validated, never trusted.
+  it("artifactLatest sends threadId and passes null through", async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await expect(artifactLatest("t1")).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledWith("artifact_latest", { threadId: "t1" });
+  });
+
+  it("artifactLatest validates the document shape", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      artifactId: "a9",
+      version: 2,
+      title: "Demo",
+      mediaType: "text/html",
+      source: "<h1>x</h1>",
+    });
+    await expect(artifactLatest("t1")).resolves.toEqual({
+      artifactId: "a9",
+      version: 2,
+      title: "Demo",
+      mediaType: "text/html",
+      source: "<h1>x</h1>",
+    });
+    vi.mocked(invoke).mockResolvedValue({ artifactId: "a9" });
+    await expect(artifactLatest("t1")).rejects.toThrow();
   });
 });
 

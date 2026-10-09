@@ -17,6 +17,7 @@ import { CommandPalette } from "../features/shell/CommandPalette";
 import { useSettingsHotkey, useSummonHotkey } from "../features/shell/hotkey";
 import { useSettingsStore } from "../features/shell/settings";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
+import { useArtifactContent } from "../features/artifact/live";
 import { useTheme } from "../features/shell/usetheme";
 
 const THREAD = "thread-001";
@@ -46,6 +47,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
   const openSettings = useSettingsStore((s) => s.openSettings);
+  const artifactContent = useArtifactContent((s) => s.threads[THREAD]);
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
@@ -217,13 +219,14 @@ export default function App() {
         </div>
         {/* Engine gate is prop-driven: the shell passes the real verdict once
             the Tauri runtime check exists (021). Windows-verified is the dev
-            default per AGENTS.md §8a. */}
+            default per AGENTS.md §8a. The artifact content rides the
+            producer's store (D121); empty means nothing has been produced. */}
         <ArtifactDrawer
           threadId={THREAD}
           engine={{ platform: "windows", opaqueProven: true }}
-          source=""
-          mediaType="text/html"
-          title=""
+          source={artifactContent?.source ?? ""}
+          mediaType={artifactContent?.mediaType ?? "text/html"}
+          title={artifactContent?.title ?? ""}
         />
       </div>
     </div>

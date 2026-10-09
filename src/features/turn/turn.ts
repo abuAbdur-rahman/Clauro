@@ -119,6 +119,25 @@ export async function transcriptRead(threadId: string): Promise<RenderRow[]> {
   return parseTranscript(raw);
 }
 
+const ArtifactLatestSchema = z.object({
+  artifactId: z.string().min(1),
+  version: z.number().int().nonnegative(),
+  title: z.string(),
+  mediaType: z.string().min(1),
+  source: z.string(),
+});
+export type ArtifactLatest = z.infer<typeof ArtifactLatestSchema>;
+
+/**
+ * The thread's newest artifact (row metadata + source bytes), or `null` when
+ * the thread has none. The drawer's producer calls this on turn-done and on
+ * mount (D121); the shape is validated, never trusted.
+ */
+export async function artifactLatest(threadId: string): Promise<ArtifactLatest | null> {
+  const raw: unknown = await invoke("artifact_latest", { threadId });
+  return raw === null ? null : ArtifactLatestSchema.parse(raw);
+}
+
 const AnswerResolutionSchema = z.object({
   card_id: z.string().min(1),
   resolved: z.string(),
