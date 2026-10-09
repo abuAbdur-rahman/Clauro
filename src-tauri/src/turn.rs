@@ -599,7 +599,6 @@ pub fn turn_start(
     effort: String,
     max_tokens: u32,
 ) -> Result<TurnStarted, TurnError> {
-    use tauri::Emitter as _;
     validate_start(&thread_id, &text, &provider, &model)?;
     // The provider row decides the wire. Anthropic is live; OpenAI-compatible
     // rows are fully configured (key + models work) but turns need the
@@ -687,7 +686,7 @@ pub fn turn_start(
                 turns: &turns,
                 app: &app,
                 thread_id: &thread_owned,
-                text: &text,
+                start: TurnStartKind::New { text: &text },
                 model: &model,
                 budget,
                 max_tokens: max,
@@ -695,28 +694,7 @@ pub fn turn_start(
                 session_dir: &session_dir,
                 project_dir: &project_dir,
             });
-            // The turn is over however it ended: release the slot first so a
-            // retry is never refused by a finished turn, then report.
-            if let Ok(mut r) = running.lock() {
-                r.remove(&thread_owned);
-            }
-            if let Ok(mut s) = stops.lock() {
-                s.remove(&thread_owned);
-            }
-            let payload = match &outcome {
-                Ok(report) => serde_json::json!({
-                    "thread_id": thread_owned,
-                    "end": format!("{:?}", report.end),
-                    "dispatched": report.dispatched,
-                    "assistant_messages": report.assistant_messages,
-                    "pending_approvals": report.pending_approvals,
-                }),
-                Err(e) => serde_json::json!({ "thread_id": thread_owned, "error": e.to_string() }),
-            };
-            // A missed done-event is repaired by `transcript_read`: the store
-            // is the record, the event is the hint. So this emit may fail
-            // (no listener yet) without failing the turn.
-            let _ = app.emit(TURN_DONE, payload);
+            finish_turn(&running, &stops, &app, &thread_owned, outcome);
         })
         .map_err(|e| TurnError::Store {
             reason: format!("cannot spawn turn thread: {e}"),
@@ -725,14 +703,46 @@ pub fn turn_start(
     Ok(TurnStarted { thread_id })
 }
 
+/// The turn is over however it ended: release the slot first so a retry is
+/// never refused by a finished turn, then report. A missed done-event is
+/// repaired by `transcript_read`: the store is the record, the event is the
+/// hint, so this emit may fail (no listener yet) without failing the turn.
+fn finish_turn(
+    running: &Arc<Mutex<HashSet<String>>>,
+    stops: &Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    app: &tauri::AppHandle,
+    thread_id: &str,
+    outcome: Result<TurnReport, TurnError>,
+) {
+    use tauri::Emitter as _;
+    if let Ok(mut r) = running.lock() {
+        r.remove(thread_id);
+    }
+    if let Ok(mut s) = stops.lock() {
+        s.remove(thread_id);
+    }
+    let payload = match &outcome {
+        Ok(report) => serde_json::json!({
+            "thread_id": thread_id,
+            "end": format!("{:?}", report.end),
+            "dispatched": report.dispatched,
+            "assistant_messages": report.assistant_messages,
+            "pending_approvals": report.pending_approvals,
+            "pending_question": report.pending_question,
+        }),
+        Err(e) => serde_json::json!({ "thread_id": thread_id, "error": e.to_string() }),
+    };
+    let _ = app.emit(TURN_DONE, payload);
+}
+
 /// Everything one turn needs that is fixed before it spawns. Bundled so the
-/// blocking body takes one argument instead of eleven.
+/// blocking bodies take one argument instead of eleven.
 struct TurnJob<'a> {
     store: &'a Arc<Mutex<Store>>,
     turns: &'a Arc<Mutex<TurnLoop>>,
     app: &'a tauri::AppHandle,
     thread_id: &'a str,
-    text: &'a str,
+    start: TurnStartKind<'a>,
     model: &'a str,
     budget: u32,
     max_tokens: u32,
@@ -741,32 +751,28 @@ struct TurnJob<'a> {
     project_dir: &'a Path,
 }
 
-/// The blocking body of a turn. Runs on the dedicated thread: builds the
-/// registry, ensures the thread row, prepares the prompt surface, and drives
-/// the loop with a sink that emits each mapped event as it arrives.
-fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
-    let TurnJob {
-        store,
-        turns,
-        app,
-        thread_id,
-        text,
-        model,
-        budget,
-        max_tokens,
-        api_key,
-        session_dir,
-        project_dir,
-    } = job;
-    use tauri::Emitter as _;
+/// How the spawned turn begins: a fresh user message, or a resumed turn
+/// after an answer (or approval) without one.
+enum TurnStartKind<'a> {
+    New { text: &'a str },
+    Resume,
+}
+
+/// The shared half of every blocking turn body: thread row (new turns only),
+/// registry bindings, request surface, and the live exchange. Returns the
+/// registry, the prepared surface, and the exchange; the caller drives.
+fn prepare_loop(
+    job: &TurnJob<'_>,
+    ensure_thread_row: bool,
+) -> Result<(clauro_tools::Registry, PreparedThread, LiveExchange), TurnError> {
     let (system_text, frozen_hash) = first_turn();
-    {
-        let guard = store.lock().map_err(|_| TurnError::Store {
+    if ensure_thread_row {
+        let guard = job.store.lock().map_err(|_| TurnError::Store {
             reason: "store lock poisoned".to_string(),
         })?;
-        ensure_thread(&guard, thread_id, &frozen_hash)?;
+        ensure_thread(&guard, job.thread_id, &frozen_hash)?;
     }
-    let mut registry = build_registry(store.clone(), session_dir, project_dir, false)?;
+    let registry = build_registry(job.store.clone(), job.session_dir, job.project_dir, false)?;
     // The request surface: the safe six, granted. `bash` stays out (D28) and
     // `compact` never reaches the schema (D14) — `materialize` enforces both
     // structurally rather than by convention.
@@ -788,26 +794,31 @@ fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
     let prepared = PreparedThread {
         system_text,
         frozen_hash,
-        model: model.to_string(),
-        max_tokens,
+        model: job.model.to_string(),
+        max_tokens: job.max_tokens,
         tools: granted,
-        thinking_budget: budget,
+        thinking_budget: job.budget,
         rules: Vec::new(),
     };
-    let mut exchange = LiveExchange::anthropic(api_key.to_string())?;
-    let plan = TurnPlan {
-        thread_id,
-        user_text: text,
-        prepared: &prepared,
-        workspace_dir: session_dir,
-    };
+    let exchange = LiveExchange::anthropic(job.api_key.to_string())?;
+    Ok((registry, prepared, exchange))
+}
+
+/// The streaming sink every turn shares: each mapped event emitted as it
+/// arrives, thinking deltas routed by open block kind. Persistence is the
+/// record and events are hints, so a failed emit never fails the turn.
+fn streaming_sink<'a>(
+    app: &'a tauri::AppHandle,
+    thread_id: &'a str,
+) -> impl FnMut(NormalisedEvent) + 'a {
+    use tauri::Emitter as _;
     let app_each = app.clone();
     let tid = thread_id.to_string();
     // Open block kinds by index. `BlockDelta` carries no kind, so the sink
     // remembers what each open index is: thinking text streams as
     // `thinking_delta`, everything else renderable as `text_delta`.
     let mut open_kinds: HashMap<u32, InboundKind> = HashMap::new();
-    let mut sink = |event: NormalisedEvent| {
+    move |event: NormalisedEvent| {
         if let NormalisedEvent::BlockStart { index, kind, .. } = &event {
             open_kinds.insert(*index, *kind);
         }
@@ -834,16 +845,55 @@ fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
             // event is the hint. A failed emit must not fail the turn.
             let _ = app_each.emit(TURN_EVENT, payload);
         }
-    };
+    }
+}
+
+/// The blocking body of a turn. Runs on the dedicated thread: shared setup
+/// through `prepare_loop`, then `run_turn` or `continue_turn` with the shared
+/// streaming sink.
+fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
+    let (mut registry, prepared, mut exchange) =
+        prepare_loop(&job, matches!(job.start, TurnStartKind::New { .. }))?;
+    let TurnJob {
+        store,
+        turns,
+        app,
+        thread_id,
+        start,
+        session_dir,
+        ..
+    } = job;
+    let mut sink = streaming_sink(app, thread_id);
     let mut guard = turns.lock().map_err(|_| TurnError::Store {
         reason: "turn lock poisoned".to_string(),
     })?;
     let store_guard = store.lock().map_err(|_| TurnError::Store {
         reason: "store lock poisoned".to_string(),
     })?;
-    guard
-        .run_turn(&store_guard, &mut registry, &mut exchange, plan, &mut sink)
-        .map_err(map_loop_error)
+    match start {
+        TurnStartKind::New { text } => {
+            let plan = TurnPlan {
+                thread_id,
+                user_text: text,
+                prepared: &prepared,
+                workspace_dir: session_dir,
+            };
+            guard
+                .run_turn(&store_guard, &mut registry, &mut exchange, plan, &mut sink)
+                .map_err(map_loop_error)
+        }
+        TurnStartKind::Resume => guard
+            .continue_turn(
+                &store_guard,
+                &mut registry,
+                &mut exchange,
+                thread_id,
+                &prepared,
+                session_dir,
+                &mut sink,
+            )
+            .map_err(map_loop_error),
+    }
 }
 
 /// Stop a running turn. Sets the shared flag; the loop observes it between
@@ -872,6 +922,141 @@ pub fn transcript_read(
     thread_id: String,
 ) -> Result<Vec<RenderRow>, TurnError> {
     read_transcript(&state, &thread_id)
+}
+
+/// Answer-side lock/store failure. The message names what failed; the
+/// `Store { reason }` shape is used because `StoreError` is neither cloneable
+/// nor serializable and this error crosses the Tauri boundary.
+fn poisoned(what: &str) -> clauro_loop::run::AnswerError {
+    clauro_loop::run::AnswerError::Store {
+        reason: format!("{what} lock poisoned"),
+    }
+}
+
+fn store_failed(e: impl std::fmt::Display) -> clauro_loop::run::AnswerError {
+    clauro_loop::run::AnswerError::Store {
+        reason: e.to_string(),
+    }
+}
+
+/// Answer an awaiting question card, then resume the turn (009, D42).
+///
+/// Validates through `answer_question` — the card's own rules — persists the
+/// answer as the call's one `tool_result`, and spawns a continuation on the
+/// dedicated thread, so answering resumes the conversation in one round
+/// trip. A second answer, an unknown call id, or an answer outside the card
+/// fails typed with nothing persisted beyond the first answer. Answering
+/// while another turn holds the thread fails `Busy`: stop it first.
+// Nine arguments because Tauri commands take flat invoke args — the
+// framework dictates the signature, so bundling is not available here.
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn question_answer(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, TurnState>,
+    thread_id: String,
+    tool_call_id: String,
+    answer: String,
+    provider: String,
+    model: String,
+    effort: String,
+    max_tokens: u32,
+) -> Result<clauro_tools::AnswerResolution, clauro_loop::run::AnswerError> {
+    use clauro_loop::run::AnswerError;
+    if thread_id.trim().is_empty() || tool_call_id.trim().is_empty() {
+        return Err(AnswerError::BadInput {
+            reason: "thread and question ids must not be blank".to_string(),
+        });
+    }
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return Err(AnswerError::BadInput {
+            reason: "a model must be selected to resume the turn".to_string(),
+        });
+    }
+    // Resume pre-checks, all read-only: the provider must be live-routable
+    // and keyed, and no turn may hold the thread. Anything here fails before
+    // the answer is persisted, so a refusal never strands half a turn.
+    let kind = {
+        let store = state.store.lock().map_err(|_| poisoned("store"))?;
+        match store.get_provider(&provider).map_err(store_failed)? {
+            None => {
+                return Err(AnswerError::NoProvider {
+                    provider: provider.clone(),
+                });
+            }
+            Some(row) => row.kind,
+        }
+    };
+    if kind != clauro_store::ProviderKind::Anthropic {
+        return Err(AnswerError::UnsupportedProvider { provider });
+    }
+    let api_key = crate::keyring_store::retrieve(&provider).map_err(|_| AnswerError::NoKey {
+        provider: provider.clone(),
+    })?;
+    if api_key.trim().is_empty() {
+        return Err(AnswerError::NoKey { provider });
+    }
+    {
+        let running = state.running.lock().map_err(|_| poisoned("turn"))?;
+        if running.contains(&thread_id) {
+            return Err(AnswerError::Busy {
+                thread_id: thread_id.clone(),
+            });
+        }
+    }
+    // The answer itself. Short lock: persist and release, never drive.
+    let resolution = {
+        let turns = state.turns.lock().map_err(|_| poisoned("turn"))?;
+        let store = state.store.lock().map_err(|_| poisoned("store"))?;
+        turns.answer_question(&store, &thread_id, &tool_call_id, &answer)?
+    };
+    // Claim the slot and resume exactly like a fresh turn, minus the user
+    // message: the answer is already history.
+    {
+        let mut running = state.running.lock().map_err(|_| poisoned("turn"))?;
+        running.insert(thread_id.clone());
+    }
+    {
+        let mut turns = state.turns.lock().map_err(|_| poisoned("turn"))?;
+        let flag = turns.stop_flag(&thread_id);
+        flag.store(false, Ordering::SeqCst);
+        state
+            .stops
+            .lock()
+            .map_err(|_| poisoned("turn"))?
+            .insert(thread_id.clone(), flag);
+    }
+    let store = state.store.clone();
+    let turns = state.turns.clone();
+    let stops = state.stops.clone();
+    let running = state.running.clone();
+    let thread_owned = thread_id.clone();
+    let session_dir = state.session_dir(&thread_id).map_err(store_failed)?;
+    let project_dir = state.project_dir().map_err(store_failed)?;
+    let budget = thinking_budget(&effort);
+    let max = max_tokens.max(1_024);
+    std::thread::Builder::new()
+        .name(format!("clauro-turn-{thread_owned}"))
+        .spawn(move || {
+            let outcome = run_turn_blocking(TurnJob {
+                store: &store,
+                turns: &turns,
+                app: &app,
+                thread_id: &thread_owned,
+                start: TurnStartKind::Resume,
+                model: &model,
+                budget,
+                max_tokens: max,
+                api_key: &api_key,
+                session_dir: &session_dir,
+                project_dir: &project_dir,
+            });
+            finish_turn(&running, &stops, &app, &thread_owned, outcome);
+        })
+        .map_err(|e| AnswerError::Store {
+            reason: format!("cannot spawn turn thread: {e}"),
+        })?;
+    Ok(resolution)
 }
 
 #[cfg(test)]

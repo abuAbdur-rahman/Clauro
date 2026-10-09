@@ -18,7 +18,7 @@
  * - the transcript is **append-only**: nothing offers a delete or an edit that
  *   would remove a row (`D19`, `DESIGN.md:60`).
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, within, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TranscriptView, ThinkingRegion, ToolRow } from "./TranscriptView";
@@ -97,6 +97,86 @@ describe("TranscriptView", () => {
   it("renders an empty thread without an illustration or a spinner", () => {
     render(<TranscriptView rows={[]} />);
     expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+  });
+});
+
+describe("QuestionCard", () => {
+  const card: ContentBlock = {
+    kind: "question_card",
+    id: "q1",
+    prompt: "which one?",
+    options: [
+      { id: "a", label: "A" },
+      { id: "skip", label: "Skip / decide for me" },
+    ],
+    allow_free_text: false,
+    resolved: null,
+  };
+
+  function cardRow(over: Partial<RenderRow> = {}): RenderRow {
+    return row(card, { id: "qc1", seq: 7, ...over });
+  }
+
+  it("renders options as buttons, not bullets", () => {
+    render(<TranscriptView rows={[cardRow()]} />);
+    expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
+    // No static list: every option is actionable.
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+
+  it("always offers the skip escape, even when the card omits it", () => {
+    // The loop appends skip to the presented text but stores the model's
+    // input options — the card cannot rely on skip being stored.
+    const noskip: ContentBlock = {
+      kind: "question_card",
+      id: "q1",
+      prompt: "which one?",
+      options: [{ id: "a", label: "A" }],
+      allow_free_text: false,
+      resolved: null,
+    };
+    render(<TranscriptView rows={[row(noskip, { id: "qc9" })]} />);
+    expect(screen.getByRole("button", { name: /skip/i })).toBeTruthy();
+  });
+
+  it("choosing an option answers with its id", async () => {
+    const user = userEvent.setup();
+    const onQuestionAnswer = vi.fn().mockResolvedValue(undefined);
+    render(<TranscriptView rows={[cardRow()]} onQuestionAnswer={onQuestionAnswer} />);
+    await user.click(screen.getByRole("button", { name: "A" }));
+    expect(onQuestionAnswer).toHaveBeenCalledWith("q1", "a");
+  });
+
+  it("shows a free-text input only when the card allows it", async () => {
+    const user = userEvent.setup();
+    const onQuestionAnswer = vi.fn().mockResolvedValue(undefined);
+    const free: ContentBlock = { ...card, allow_free_text: true };
+    render(<TranscriptView rows={[row(free, { id: "qc2" })]} onQuestionAnswer={onQuestionAnswer} />);
+    await user.type(screen.getByLabelText(/your answer/i), "both");
+    await user.click(screen.getByRole("button", { name: /send answer/i }));
+    expect(onQuestionAnswer).toHaveBeenCalledWith("q1", "both");
+  });
+
+  it("hides the free-text input on a closed card", () => {
+    render(<TranscriptView rows={[cardRow()]} />);
+    expect(screen.queryByLabelText(/your answer/i)).toBeNull();
+  });
+
+  it("renders the resolved state with the choice, not the buttons", () => {
+    const done: ContentBlock = { ...card, resolved: "a" };
+    render(<TranscriptView rows={[row(done, { id: "qc3" })]} />);
+    expect(screen.getByText(/answered: a/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "A" })).toBeNull();
+  });
+
+  it("surfaces an answer failure on the card, not as a crash", async () => {
+    const user = userEvent.setup();
+    const onQuestionAnswer = vi.fn().mockRejectedValue(new Error("already answered"));
+    render(<TranscriptView rows={[cardRow()]} onQuestionAnswer={onQuestionAnswer} />);
+    await user.click(screen.getByRole("button", { name: "A" }));
+    expect(await screen.findByText(/already answered/i)).toBeTruthy();
+    // The card stays usable after a failure.
+    expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
   });
 });
 

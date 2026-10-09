@@ -22,8 +22,8 @@ use clauro_core::{Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
 use clauro_store::transcript::OpenCall;
 use clauro_store::{MessageRole, NewBlock, NewMessage, NewToolResult, NewUsage, Store, StoreError};
 use clauro_tools::{
-    bound_output, resolve, ApprovalError, ApprovalQueue, IncomingCall, MaterializedTool,
-    QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
+    bound_output, resolve, resolve_answer, AnswerResolution, ApprovalError, ApprovalQueue,
+    IncomingCall, MaterializedTool, QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
 };
 use clauro_transport::{
     build_normal_request, BuiltRequest, InboundKind, NormalBuildInput, NormalisedEvent,
@@ -91,6 +91,10 @@ pub enum TurnEnd {
     /// An ask-effect call was held for approval. Nothing dispatched for it;
     /// the driver approves and the next turn resumes with it.
     AwaitingApproval,
+    /// A sole, valid `question` call was asked and persisted as a card. The
+    /// turn pauses here — re-sending would echo the card back as if answered.
+    /// The driver answers via `answer_question` and resumes the turn.
+    AwaitingAnswer,
 }
 
 /// What a turn did.
@@ -102,7 +106,69 @@ pub struct TurnReport {
     pub stop_offer: Option<StopOffer>,
     /// Held call ids awaiting approval, in hold order.
     pub pending_approvals: Vec<String>,
+    /// The question call id awaiting an answer, if `end` is `AwaitingAnswer`.
+    pub pending_question: Option<String>,
 }
+
+/// Why an answer was refused. Every variant is user-visible; the model never
+/// sees these — by answer time the model is paused, not listening.
+///
+/// The resume half (provider, key, slot) mirrors `TurnError` deliberately:
+/// one command, one matchable error type for the view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AnswerError {
+    /// Blank thread, call, or provider id.
+    BadInput { reason: String },
+    /// Another turn holds this thread; stop it before answering into one.
+    Busy { thread_id: String },
+    /// The provider id has no row: never configured, or removed since.
+    NoProvider { provider: String },
+    /// Configured, but this build cannot speak its wire yet (same rule as
+    /// `TurnError::UnsupportedProvider`: key + models work, turns need the
+    /// request translator).
+    UnsupportedProvider { provider: String },
+    /// No stored key for the provider.
+    NoKey { provider: String },
+    /// No unanswered card with this call id on this thread.
+    NoSuchCard(String),
+    /// The card already has its one result. I1 pairs exactly once.
+    AlreadyAnswered(String),
+    /// The answer fails the card's own rules (unknown option, blank, closed
+    /// card with free text off).
+    Invalid(clauro_tools::QuestionError),
+    /// Storage or lock failure, with the message. A string rather than the
+    /// store error: `StoreError` wraps the engine and is neither cloneable
+    /// nor serializable, and this type crosses the Tauri boundary.
+    Store { reason: String },
+}
+
+impl std::fmt::Display for AnswerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadInput { reason } => write!(f, "bad answer input: {reason}"),
+            Self::Busy { thread_id } => write!(f, "a turn is already running on {thread_id}"),
+            Self::NoProvider { provider } => write!(
+                f,
+                "provider {provider} is not configured; add it before answering"
+            ),
+            Self::UnsupportedProvider { provider } => write!(
+                f,
+                "provider {provider} is configured but live turns need the OpenAI request translator, which is not built yet"
+            ),
+            Self::NoKey { provider } => write!(
+                f,
+                "no API key for {provider} in the keychain; add one before answering"
+            ),
+            Self::NoSuchCard(id) => write!(f, "no unanswered question {id}"),
+            Self::AlreadyAnswered(id) => write!(f, "question {id} already answered"),
+            Self::Invalid(e) => write!(f, "answer not accepted: {e}"),
+            Self::Store { reason } => write!(f, "store error: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for AnswerError {}
 
 /// Why a turn refused to run.
 #[derive(Debug)]
@@ -150,6 +216,17 @@ pub struct TurnLoop {
     stops: HashMap<String, Arc<AtomicBool>>,
     approvals: HashMap<String, ApprovalQueue>,
     gates: HashMap<String, QuestionGate>,
+}
+
+/// One string field out of a stored JSON payload. `None` covers corrupt
+/// payloads and missing fields alike: callers treat both as "no such row",
+/// never as a reason to invent one.
+fn payload_field(payload: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(str::to_string)
 }
 
 impl TurnLoop {
@@ -233,6 +310,92 @@ impl TurnLoop {
     pub fn approve_call(&mut self, thread_id: &str, id: &str) -> Result<(), ApprovalError> {
         self.approvals_for(thread_id).approve(id)?;
         Ok(())
+    }
+
+    /// Answer an awaiting question card (009, D42). Validates through    /// `resolve_answer` — the card's own rules, so an option outside the card
+    /// or a blank answer fails here, loudly — then persists the answer as the
+    /// call's one `tool_result` row plus its block. I1 pairs exactly once:
+    /// a second answer finds the sibling result and fails `AlreadyAnswered`.
+    /// The driver resumes the turn afterwards (usually `continue_turn`); this
+    /// method only records the answer, never drives.
+    pub fn answer_question(
+        &self,
+        store: &Store,
+        thread_id: &str,
+        tool_call_id: &str,
+        answer: &str,
+    ) -> Result<AnswerResolution, AnswerError> {
+        let blocks = store.blocks_for_thread(thread_id);
+        let card = blocks
+            .iter()
+            .find(|b| {
+                b.kind == "question_card"
+                    && payload_field(&b.payload, "id") == Some(tool_call_id.to_string())
+            })
+            .ok_or_else(|| AnswerError::NoSuchCard(tool_call_id.to_string()))?;
+        if blocks.iter().any(|b| {
+            b.kind == "tool_result"
+                && payload_field(&b.payload, "tool_use_id") == Some(tool_call_id.to_string())
+        }) {
+            return Err(AnswerError::AlreadyAnswered(tool_call_id.to_string()));
+        }
+        let card_value: Value = serde_json::from_str(&card.payload)
+            .map_err(|_| AnswerError::NoSuchCard(tool_call_id.to_string()))?;
+        let resolution = resolve_answer(&card_value, answer).map_err(AnswerError::Invalid)?;
+        let use_block = blocks.iter().find(|b| {
+            b.kind == "tool_use"
+                && payload_field(&b.payload, "id") == Some(tool_call_id.to_string())
+        });
+        let msg_id = match use_block {
+            Some(b) => store
+                .message_id_for_block(&b.id)
+                .map_err(|e| AnswerError::Store {
+                    reason: e.to_string(),
+                })?,
+            None => {
+                return Err(AnswerError::NoSuchCard(tool_call_id.to_string()));
+            }
+        };
+        store
+            .insert_tool_result(NewToolResult {
+                id: Store::new_id("tr"),
+                thread_id: thread_id.to_string(),
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: "question".to_string(),
+                status: ToolStatus::Ok,
+                preview: resolution.resolved.clone(),
+                preview_path: None,
+                full_path: None,
+                output_bytes: resolution.resolved.len() as i64,
+                created_at: now_ms(),
+            })
+            .map_err(|e| AnswerError::Store {
+                reason: e.to_string(),
+            })?;
+        self.insert_tool_block(
+            store,
+            &msg_id,
+            &PendingTool {
+                index: 0,
+                id: tool_call_id.to_string(),
+                name: "question".to_string(),
+                input: String::new(),
+            },
+            &ToolOutcome::Ok {
+                preview: resolution.resolved.clone(),
+                preview_path: None,
+                full_path: None,
+            },
+        )
+        .map_err(|e| match e {
+            LoopError::Store(s) => AnswerError::Store {
+                reason: s.to_string(),
+            },
+            _ => AnswerError::Store {
+                reason: "answer block write failed".to_string(),
+            },
+        })?;
+        Ok(resolution)
     }
 
     /// Reject a held call: a typed `error` result row, loop continues, the
@@ -477,6 +640,7 @@ impl TurnLoop {
             assistant_messages: 0,
             stop_offer: None,
             pending_approvals: Vec::new(),
+            pending_question: None,
         };
 
         // Approved held calls dispatch first, in hold order, before any new
@@ -592,12 +756,48 @@ impl TurnLoop {
                             workspace_dir,
                             pending,
                         );
+                        // A sole, valid question pauses the turn instead of
+                        // persisting a result: re-sending would echo the card
+                        // text back as if the user had answered (009, D42).
+                        // Refusals (mixed/second/secret) are Errors and flow
+                        // through the ordinary result path below.
+                        if pending.name == "question" && matches!(outcome, ToolOutcome::Ok { .. }) {
+                            match self.insert_question_card(store, &msg_id, pending) {
+                                Ok(()) => {
+                                    dispatched_here.push(pending.id.clone());
+                                    report.pending_question = Some(pending.id.clone());
+                                    report.end = TurnEnd::AwaitingAnswer;
+                                    break;
+                                }
+                                // No prompt to show is a malformed card, not
+                                // a pause: persist the refusal-shaped error.
+                                Err(_) => {
+                                    self.persist_result(
+                                        store,
+                                        thread_id,
+                                        &msg_id,
+                                        pending,
+                                        &ToolOutcome::Error {
+                                            message: QUESTION_REFUSAL.to_string(),
+                                        },
+                                    )?;
+                                    dispatched_here.push(pending.id.clone());
+                                    continue;
+                                }
+                            }
+                        }
                         self.persist_result(store, thread_id, &msg_id, pending, &outcome)?;
                         dispatched_here.push(pending.id.clone());
                     }
                 }
             }
             report.dispatched.extend(dispatched_here.iter().cloned());
+            if report.end == TurnEnd::AwaitingAnswer {
+                // The question is asked and persisted; re-sending now would
+                // echo the card back as an answer. The driver answers via
+                // `answer_question` and resumes the turn.
+                break;
+            }
             if held {
                 // The turn pauses for a decision; nothing dispatched for the
                 // held call, so nothing to close. Approved calls resume on a
@@ -842,6 +1042,54 @@ impl TurnLoop {
             .map_err(LoopError::Store)
     }
 
+    /// Persist a question card for a sole, valid `question` call. The tool_use
+    /// block already exists (written at `BlockStop`); the card carries what
+    /// the view needs to ask: prompt, options, free-text allowance. Returns
+    /// `Err(())` when the input has no prompt — a card with nothing to ask is
+    /// malformed, and the caller falls back to a refusal result instead of
+    /// pausing the turn on nothing.
+    fn insert_question_card(
+        &self,
+        store: &Store,
+        msg_id: &str,
+        pending: &PendingTool,
+    ) -> Result<(), ()> {
+        let input: Value = serde_json::from_str(&pending.input).map_err(|_| ())?;
+        let prompt = input
+            .get("prompt")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or(())?;
+        let options = input.get("options").cloned().unwrap_or(Value::Null);
+        let allow_free = input
+            .get("allowFreeText")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let seq = self.next_block_seq(store, msg_id);
+        store
+            .insert_block(NewBlock {
+                id: Store::new_id("b"),
+                message_id: msg_id.to_string(),
+                seq,
+                kind: "question_card".to_string(),
+                payload: json!({
+                    "id": pending.id,
+                    "prompt": prompt,
+                    "options": options,
+                    "allowFreeText": allow_free,
+                    "resolved": Value::Null,
+                })
+                .to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .map_err(|_| ())?;
+        Ok(())
+    }
+
     fn insert_tool_block(
         &self,
         store: &Store,
@@ -1068,13 +1316,33 @@ fn insert_text_message(
 type BlockRows = Vec<(i64, String, String, Option<String>)>;
 
 fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     let mut by_message: BTreeMap<(i64, String), BlockRows> = BTreeMap::new();
     for b in store.blocks_for_thread(thread_id) {
         by_message
             .entry((b.message_seq, b.role.clone()))
             .or_default()
             .push((b.seq, b.kind, b.payload, b.signature));
+    }
+    // Calls with answers, thread-wide: a `question` tool_use without its
+    // result is awaiting the user, not model history. Re-sending it would be
+    // a malformed request (Anthropic requires a result per use) and would
+    // echo the card as if answered — the exact failure 009 exists to prevent.
+    // Only `question` can be unpaired (every other dispatch persists its
+    // result synchronously), so only it is skipped.
+    let mut answered: HashSet<String> = HashSet::new();
+    for ((_, _), blocks) in by_message.iter() {
+        for (_, kind, payload, _) in blocks {
+            if kind == "tool_result" {
+                if let Some(id) = serde_json::from_str::<Value>(payload).ok().and_then(|v| {
+                    v.get("tool_use_id")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string)
+                }) {
+                    answered.insert(id);
+                }
+            }
+        }
     }
     let mut messages = Vec::new();
     for ((_, role), mut blocks) in by_message {
@@ -1111,12 +1379,22 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
                         }
                         content.push(block);
                     }
-                    "tool_use" => content.push(json!({
-                        "type": "tool_use",
-                        "id": v.get("id"),
-                        "name": v.get("name"),
-                        "input": v.get("input").and_then(|i| i.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Object(Default::default())),
-                    })),
+                    "tool_use" => {
+                        let id = v.get("id").and_then(|t| t.as_str()).unwrap_or("");
+                        let name = v.get("name").and_then(|t| t.as_str()).unwrap_or("");
+                        // Skip an unanswered question: it is awaiting the
+                        // user, and re-sending it is both malformed and a
+                        // lie about having been answered (see above).
+                        if name == "question" && !answered.contains(id) {
+                            continue;
+                        }
+                        content.push(json!({
+                            "type": "tool_use",
+                            "id": v.get("id"),
+                            "name": v.get("name"),
+                            "input": v.get("input").and_then(|i| i.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Object(Default::default())),
+                        }))
+                    }
                     "tool_result" => content.push(json!({
                         "type": "tool_result",
                         "tool_use_id": v.get("tool_use_id"),

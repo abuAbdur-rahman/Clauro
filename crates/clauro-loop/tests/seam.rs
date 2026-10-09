@@ -128,7 +128,7 @@ fn thinking_row_keeps_its_signature() {
         } => {
             assert_eq!(text, "pondering");
             assert_eq!(signature, "sig-abc");
-            assert_eq!(display, &ThinkingDisplay::Full);
+            assert!(matches!(display, ThinkingDisplay::Full));
         }
         other => panic!("expected thinking, got {other:?}"),
     }
@@ -265,4 +265,81 @@ fn rows_keep_store_order() {
         .collect();
     assert_eq!(texts, vec!["first", "second"]);
     drop(dir);
+}
+
+/// A stored card maps to the QuestionCard variant with its options intact.
+#[test]
+fn question_card_row_becomes_an_answerable_card() {
+    let store = one(
+        "question_card",
+        r#"{"id":"call-q","prompt":"which one?","options":[{"id":"a","label":"A"}],"allowFreeText":false,"resolved":null}"#,
+    );
+    let out = clauro_loop::blocks_to_contract(&store.blocks_for_thread("t1"));
+    assert_eq!(out.len(), 1);
+    match &out[0].block {
+        ContentBlock::QuestionCard {
+            id,
+            prompt,
+            options,
+            allow_free_text,
+            resolved,
+        } => {
+            assert_eq!(id, "call-q");
+            assert_eq!(prompt, "which one?");
+            assert_eq!(options.len(), 1);
+            assert_eq!(options[0].id, "a");
+            assert!(!allow_free_text);
+            assert_eq!(*resolved, None, "no sibling result yet");
+        }
+        other => panic!("expected a question card, got {other:?}"),
+    }
+}
+
+/// The resolved join: a sibling tool_result marks the card answered with the
+/// answer text — no schema change, no UPDATE, purely read-time.
+#[test]
+fn answered_card_renders_resolved_with_the_answer() {
+    let dir = TestDir::fresh();
+    let store = Store::open_memory().expect("store");
+    seed(
+        &store,
+        "t1",
+        &[
+            (
+                "question_card",
+                r#"{"id":"call-q","prompt":"which?","options":[],"allowFreeText":true,"resolved":null}"#,
+                None,
+            ),
+            (
+                "tool_result",
+                r#"{"tool_use_id":"call-q","status":"ok","preview":"my answer"}"#,
+                None,
+            ),
+        ],
+    );
+    let out = clauro_loop::blocks_to_contract(&store.blocks_for_thread("t1"));
+    let card = out
+        .iter()
+        .find_map(|r| match &r.block {
+            ContentBlock::QuestionCard { resolved, .. } => Some(resolved),
+            _ => None,
+        })
+        .expect("card must render");
+    assert_eq!(
+        card.as_deref(),
+        Some("my answer"),
+        "the answer text rides the card"
+    );
+    drop(dir);
+}
+
+/// A card without its prompt is malformed: notice, never a broken card.
+#[test]
+fn promptless_card_degrades_to_a_notice() {
+    let store = one("question_card", r#"{"id":"call-q"}"#);
+    let out = clauro_loop::blocks_to_contract(&store.blocks_for_thread("t1"));
+    assert!(
+        matches!(&out[0].block, ContentBlock::Notice { .. }),
+        "a promptless card must not render as a card"
+    );
 }

@@ -68,14 +68,17 @@ impl QuestionGate {
 }
 
 /// A validated user answer, ready to persist as an ordinary `tool_result`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serializable: it crosses the Tauri boundary as the answer command's
+/// success value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AnswerResolution {
     pub card_id: String,
     pub resolved: String,
 }
 
 /// Why an answer was rejected. Typed; the UI shows these, the model never does.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serializable for the same crossing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum QuestionError {
     MalformedCard,
     EmptyAnswer,

@@ -26,6 +26,12 @@ export interface TranscriptViewProps {
   rows: RenderRow[];
   /** Streamed text for the turn in flight, rendered as a trailing ghost row. */
   streaming?: string;
+  /**
+   * Answer one question card. Resolves when the answer is accepted; rejects
+   * with the user-visible reason otherwise. Absent in read-only contexts —
+   * the card then renders its options disabled with the reason inline.
+   */
+  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
 }
 
 /**
@@ -55,7 +61,7 @@ function Markdown({ text }: { text: string }) {
   return <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-export function TranscriptView({ rows, streaming }: TranscriptViewProps) {
+export function TranscriptView({ rows, streaming, onQuestionAnswer }: TranscriptViewProps) {
   if (rows.length === 0 && !streaming) {
     return (
       <p data-testid="transcript-empty" className="text-neutral-500">
@@ -66,7 +72,7 @@ export function TranscriptView({ rows, streaming }: TranscriptViewProps) {
   return (
     <div className="flex flex-col gap-4">
       {rows.map((row) => (
-        <Row key={row.id} row={row} />
+        <Row key={row.id} row={row} onQuestionAnswer={onQuestionAnswer} />
       ))}
       {streaming !== undefined && streaming.length > 0 && (
         <div data-testid="row-streaming" data-framed="false" className="max-w-none">
@@ -77,7 +83,13 @@ export function TranscriptView({ rows, streaming }: TranscriptViewProps) {
   );
 }
 
-function Row({ row }: { row: RenderRow }) {
+function Row({
+  row,
+  onQuestionAnswer,
+}: {
+  row: RenderRow;
+  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
+}) {
   const { block } = row;
   switch (block.kind) {
     case "text":
@@ -135,21 +147,8 @@ function Row({ row }: { row: RenderRow }) {
       );
     case "question_card":
       return (
-        <div
-          data-testid={`row-${row.id}`}
-          data-framed="false"
-          className="rounded border border-neutral-800 p-3"
-        >
-          <p className="text-neutral-200">{block.prompt}</p>
-          {block.options && (
-            <ul className="mt-2">
-              {block.options.map((o) => (
-                <li key={o.id} className="text-neutral-400">
-                  {o.label}
-                </li>
-              ))}
-            </ul>
-          )}
+        <div data-testid={`row-${row.id}`} data-framed="false">
+          <QuestionCard block={block} onQuestionAnswer={onQuestionAnswer} />
         </div>
       );
     case "artifact_ref":
@@ -167,6 +166,114 @@ function Row({ row }: { row: RenderRow }) {
 
 function assertNever(x: never): React.ReactElement {
   return <p className="text-red-400">Unrenderable block: {JSON.stringify(x)}</p>;
+}
+
+/**
+ * Inline answerable question card (DESIGN §2.3, D42). Options are buttons,
+ * free text appears only when the card allows it, and skip is always offered
+ * — the stored options may omit it (the loop appends it to the presented
+ * text, not the row). A resolved card shows the choice, never the buttons:
+ * answering appends, it never edits.
+ */
+export function QuestionCard({
+  block,
+  onQuestionAnswer,
+}: {
+  block: Extract<ContentBlock, { kind: "question_card" }>;
+  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (block.resolved !== null && block.resolved !== undefined) {
+    return (
+      <div className="rounded border border-neutral-800 p-3">
+        <p className="text-neutral-200">{block.prompt}</p>
+        <p className="mt-2 text-sm text-neutral-400">Answered: {block.resolved}</p>
+      </div>
+    );
+  }
+
+  const options = [...(block.options ?? [])];
+  if (!options.some((o) => o.id === "skip")) {
+    options.push({ id: "skip", label: "Skip / decide for me" });
+  }
+
+  async function answer(value: string): Promise<void> {
+    if (!onQuestionAnswer) {
+      setError("answering is unavailable in this view");
+      return;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      await onQuestionAnswer(block.id, value);
+    } catch (e) {
+      // The card stays usable: a refused answer (already answered, unknown
+      // option) is a field-level notice, never a dead card.
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="rounded border border-neutral-800 p-3">
+      <p className="text-neutral-200">{block.prompt}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              void answer(o.id);
+            }}
+            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      {block.allow_free_text && (
+        <div className="mt-2 flex gap-2">
+          <label htmlFor={`answer-${block.id}`} className="sr-only">
+            Your answer
+          </label>
+          <input
+            id={`answer-${block.id}`}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && draft.trim() !== "") {
+                void answer(draft.trim());
+              }
+            }}
+            placeholder="Or write your own answer…"
+            className="min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-200"
+          />
+          <button
+            type="button"
+            disabled={pending || draft.trim() === ""}
+            onClick={() => {
+              void answer(draft.trim());
+            }}
+            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+          >
+            Send answer
+          </button>
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="mt-2 text-xs text-amber-400">
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function UserRow({ row, text }: { row: RenderRow; text: string }) {

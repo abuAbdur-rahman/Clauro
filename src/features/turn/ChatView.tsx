@@ -18,6 +18,7 @@ import type { RenderRow } from "../transcript/types";
 import {
   listenTurnDone,
   listenTurnEvents,
+  questionAnswer,
   transcriptRead,
   turnStart,
   turnStop,
@@ -130,6 +131,38 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
     }
   }
 
+  /**
+   * Answer one question card, then watch the resumed turn. Sets running
+   * BEFORE awaiting: the command persists the answer and spawns the
+   * continuation, which reports through the channels this view already
+   * listens on. A refusal surfaces as the view notice and never starts a
+   * turn — the card itself shows the field-level reason and stays usable.
+   */
+  async function answerQuestion(toolCallId: string, answer: string): Promise<void> {
+    const selected = useThreadStore.getState().threads[threadId]?.model ?? null;
+    if (!selected) {
+      throw new Error("Select a model first — there is nothing to resume with yet.");
+    }
+    runningRef.current = true;
+    setRunning(true);
+    setNotice(null);
+    try {
+      await questionAnswer({
+        threadId,
+        toolCallId,
+        answer,
+        provider: selected.provider,
+        model: selected.id,
+        effort: useThreadStore.getState().threads[threadId]?.effort ?? "medium",
+        maxTokens: selected.maxOutput,
+      });
+    } catch (e) {
+      runningRef.current = false;
+      setRunning(false);
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+  }
+
   return (
     <div data-testid="chat-view" className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col">
       <p className="mt-1 shrink-0 text-xs text-neutral-500">
@@ -147,6 +180,7 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
         <TranscriptView
           rows={rows}
           streaming={streaming.length > 0 ? streaming : undefined}
+          onQuestionAnswer={(toolCallId, answer) => answerQuestion(toolCallId, answer)}
         />
         {thinking && streaming.length === 0 && (
           <p className="mt-2 text-xs text-neutral-500">Thinking…</p>

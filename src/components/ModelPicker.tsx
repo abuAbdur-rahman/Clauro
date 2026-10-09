@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import type { EnrichedModel } from "../features/providers/providers";
 import { providerList, providerModelsEnriched } from "../features/providers/providers";
 import { resolveLimits, switchWarnings, type ModelRef } from "../features/catalogue/models";
+import { useSettingsStore } from "../features/shell/settings";
 import { useThreadStore } from "../features/catalogue/thread";
 import {
   Select,
@@ -33,6 +34,10 @@ interface Entry {
   value: string;
 }
 
+/** Terminal picker value. Never a model id (no provider uses it); the
+ *  lookup would fail it as unknown, so interception must come first. */
+const ADD_PROVIDER_VALUE = "__add_provider__";
+
 export default function ModelPicker({
   threadId,
   compact = false,
@@ -44,6 +49,7 @@ export default function ModelPicker({
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const selectModel = useThreadStore((s) => s.selectModel);
+  const openSettings = useSettingsStore((s) => s.openSettings);
   const current = useThreadStore((s) => s.threads[threadId]?.model ?? null);
 
   useEffect(() => {
@@ -92,7 +98,13 @@ export default function ModelPicker({
 
   const currentValue = current === null ? undefined : `${current.provider}/${current.id}`;
 
+  /** Terminal entry id. Intercepted before lookup: it opens Settings, never
+   *  a model (DESIGN §2.5 requires it; the picker must not dead-end). */
   function choose(value: string) {
+    if (value === ADD_PROVIDER_VALUE) {
+      openSettings("providers");
+      return;
+    }
     const entry = entries?.find((e) => e.value === value);
     if (entry === undefined) {
       setNotice(`Unknown model ${value} — picker still usable.`);
@@ -170,6 +182,7 @@ export default function ModelPicker({
                   ))}
               </SelectGroup>
             ))}
+            <SelectItem value={ADD_PROVIDER_VALUE}>Add provider…</SelectItem>
           </SelectContent>
         </Select>
       )}

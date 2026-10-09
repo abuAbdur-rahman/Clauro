@@ -14,8 +14,10 @@ import { ProjectsGrid } from "../features/projects/ProjectsGrid";
 import { ProjectDetail } from "../features/projects/ProjectDetail";
 import { HomeGreeting } from "../features/home/HomeGreeting";
 import { CommandPalette } from "../features/shell/CommandPalette";
-import { applyTheme } from "../features/shell/theme";
-import { useSummonHotkey } from "../features/shell/hotkey";
+import { useSettingsHotkey, useSummonHotkey } from "../features/shell/hotkey";
+import { useSettingsStore } from "../features/shell/settings";
+import { SettingsDialog } from "../features/settings/SettingsDialog";
+import { useTheme } from "../features/shell/usetheme";
 
 const THREAD = "thread-001";
 
@@ -43,30 +45,21 @@ export default function App() {
   const openThread = useThreadStore((s) => s.openThread);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
+  const openSettings = useSettingsStore((s) => s.openSettings);
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
+  useSettingsHotkey(() => {
+    openSettings("providers");
+  });
 
 
-  // Device theme, followed live: white surfaces only exist in light mode.
-  // The hardcoded `false` that used to sit here pinned the whole shell to the
-  // light tokens (white cards on a dark OS) — proven by the running app
-  // 2026-10-07. `matchMedia` is the source; `applyTheme` stays pure so its
-  // unit tests keep passing injected values.
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      applyTheme(
-        { mode: "system", accent: "neutral", density: "comfortable" },
-        query.matches,
-      );
-    };
-    apply();
-    query.addEventListener("change", apply);
-    return () => {
-      query.removeEventListener("change", apply);
-    };
-  }, []);
+  // Device theme, followed live and user-overridable (Appearance pane):
+  // white surfaces only exist in light mode. Previously a hardcoded `false`
+  // pinned the shell to light tokens on a dark OS — proven by the running
+  // app 2026-10-07. `useTheme` owns the subscription; `applyTheme` stays pure
+  // so its unit tests keep passing injected values.
+  useTheme();
 
   useEffect(() => {
     // Read through a call: property narrowing would otherwise conclude the
@@ -112,12 +105,13 @@ export default function App() {
   return (
     <div className="h-dvh w-screen overflow-hidden bg-neutral-950 p-4 font-sans text-sm text-neutral-300">
       <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
+      <SettingsDialog threadId={THREAD} />
       <div className="flex h-full min-h-0 gap-4">
-        {/* Fixed rail width: the shadcn SidebarProvider wrapper is w-full by
-            design, and as a raw flex item it ate the whole row and crushed the
-            center column to zero (proven in-browser 2026-10-07). Fixed width +
-            shrink-0 keeps it a 260px column (UI-GUIDE §3). */}
-        <div className="w-[260px] shrink-0 self-stretch overflow-hidden">
+        {/* Shrink-0 shell only: the rail sets its own width (260px open,
+            48px collapsed) from SidebarProvider state, so this wrapper must
+            size to content, never pin it. Pinning it was the bug that crushed
+            the center column to zero (proven in-browser 2026-10-07). */}
+        <div className="shrink-0 self-stretch overflow-hidden">
           <ProjectsRail
             projects={DEMO_PROJECTS}
             memoryOff={false}
@@ -127,6 +121,15 @@ export default function App() {
             }}
             onSelectThread={() => {
               setView({ name: "chat" });
+            }}
+            onSearch={() => {
+              setPaletteOpen(true);
+            }}
+            onOpenProjects={() => {
+              setView({ name: "projects" });
+            }}
+            onOpenSettings={() => {
+              openSettings("providers");
             }}
           />
         </div>

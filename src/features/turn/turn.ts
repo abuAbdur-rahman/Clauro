@@ -119,6 +119,41 @@ export async function transcriptRead(threadId: string): Promise<RenderRow[]> {
   return parseTranscript(raw);
 }
 
+const AnswerResolutionSchema = z.object({
+  card_id: z.string().min(1),
+  resolved: z.string(),
+});
+export type AnswerResolution = z.infer<typeof AnswerResolutionSchema>;
+
+export interface QuestionAnswerParams {
+  threadId: string;
+  toolCallId: string;
+  answer: string;
+  provider: string;
+  model: string;
+  effort: string;
+  maxTokens: number;
+}
+
+/**
+ * Answer an awaiting question card. The host validates, persists the answer
+ * as the call's one result, and resumes the turn — so this resolves when the
+ * answer is accepted, while the resumed turn reports through the channels.
+ * Rejects typed on unknown/already-answered/invalid answers.
+ */
+export async function questionAnswer(params: QuestionAnswerParams): Promise<AnswerResolution> {
+  const raw: unknown = await invoke("question_answer", {
+    threadId: params.threadId,
+    toolCallId: params.toolCallId,
+    answer: params.answer,
+    provider: params.provider,
+    model: params.model,
+    effort: params.effort,
+    maxTokens: params.maxTokens,
+  });
+  return AnswerResolutionSchema.parse(raw);
+}
+
 /** Subscribe to streaming events for one thread. Returns the unlistener. */
 export async function listenTurnEvents(
   threadId: string,

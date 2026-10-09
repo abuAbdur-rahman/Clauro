@@ -9,6 +9,7 @@ import {
   parseTranscript,
   parseTurnDone,
   parseTurnEvent,
+  questionAnswer,
   transcriptRead,
   turnStart,
   turnStop,
@@ -53,6 +54,46 @@ describe("invoke wire keys", () => {
     vi.mocked(invoke).mockResolvedValue([]);
     await expect(transcriptRead("t1")).resolves.toEqual([]);
     expect(invoke).toHaveBeenCalledWith("transcript_read", { threadId: "t1" });
+  });
+
+  // Same Tauri rule: Rust `tool_call_id` arrives as camelCase. The resolution
+  // shape is validated — a malformed resolution throws instead of rendering.
+  it("questionAnswer sends camelCase keys and validates the resolution", async () => {
+    vi.mocked(invoke).mockResolvedValue({ card_id: "call-q", resolved: "a" });
+    const out = await questionAnswer({
+      threadId: "t1",
+      toolCallId: "call-q",
+      answer: "a",
+      provider: "anthropic",
+      model: "m",
+      effort: "medium",
+      maxTokens: 4096,
+    });
+    expect(out).toEqual({ card_id: "call-q", resolved: "a" });
+    expect(invoke).toHaveBeenCalledWith("question_answer", {
+      threadId: "t1",
+      toolCallId: "call-q",
+      answer: "a",
+      provider: "anthropic",
+      model: "m",
+      effort: "medium",
+      maxTokens: 4096,
+    });
+  });
+
+  it("questionAnswer rejects a malformed resolution", async () => {
+    vi.mocked(invoke).mockResolvedValue({ nope: true });
+    await expect(
+      questionAnswer({
+        threadId: "t1",
+        toolCallId: "call-q",
+        answer: "a",
+        provider: "anthropic",
+        model: "m",
+        effort: "medium",
+        maxTokens: 4096,
+      }),
+    ).rejects.toThrow();
   });
 });
 
