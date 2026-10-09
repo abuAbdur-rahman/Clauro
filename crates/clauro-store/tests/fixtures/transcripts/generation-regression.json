@@ -1,0 +1,4 @@
+[
+  { "role": "user", "kind": "text", "payload": {"text": "go"}, "generation": 1 },
+  { "role": "assistant", "kind": "text", "payload": {"text": "answer"}, "generation": 0 }
+]

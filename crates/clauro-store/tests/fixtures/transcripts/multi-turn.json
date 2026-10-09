@@ -1,0 +1,12 @@
+[
+  { "role": "user", "kind": "text", "payload": {"text": "first question"}, "generation": 0 },
+  { "role": "assistant", "kind": "text", "payload": {"text": "first answer"}, "generation": 0 },
+  { "role": "assistant", "kind": "tool_use", "payload": {"id": "call-1", "name": "memory", "input": "{}"}, "generation": 0 },
+  { "role": "assistant", "kind": "tool_result", "payload": {"tool_use_id": "call-1", "status": "ok", "preview": "saved"}, "generation": 0 },
+  { "role": "user", "kind": "text", "payload": {"text": "second question"}, "generation": 1 },
+  { "role": "assistant", "kind": "thinking", "payload": {"text": "considering", "display": "full"}, "signature": "sig-b", "generation": 1 },
+  { "role": "assistant", "kind": "text", "payload": {"text": "second answer"}, "generation": 1 },
+  { "role": "assistant", "kind": "tool_use", "payload": {"id": "call-2", "name": "fs", "input": "{}"}, "generation": 1 },
+  { "role": "assistant", "kind": "tool_result", "payload": {"tool_use_id": "call-2", "status": "error", "preview": "no such file"}, "generation": 1 },
+  { "role": "assistant", "kind": "notice", "payload": {"level": "warn", "text": "provider sent ping, which this app does not render; continuing"}, "generation": 1 }
+]
