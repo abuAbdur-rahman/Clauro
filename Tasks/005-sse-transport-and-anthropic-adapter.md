@@ -153,5 +153,10 @@ or slot claimed; `LiveExchange::build_http` is pure and tested — as-built body
 forwarded only where their controls still exist. Response side: the `extra_content.google.thought`
 marker recorded above is now parsed — `tests/openai_thought_marker.sse` (synthesised from this
 recording, labelled as such, no key used) pins thought→thinking region,
-`</thought>`+answer in one delta → split, and markup never reaching either region. Still not
-proven live: tool-call framing on this endpoint, and any in-app keyed turn (human-gated).
+`</thought>`+answer in one delta → split, and markup never reaching either region. The wire now
+has an executable witness: `scripts/mock-openai-server.mjs` (`pnpm mock`) — a zero-dependency
+loopback server that refuses every request violating the translated shape by field name (D120)
+and streams the three e2e scripts (`mock-text` with reasoning deltas, `mock-artifact` and
+`mock-question` issuing real tool calls); pinned by `scripts/mock-openai-server.test.mjs`
+(8 tests). Still not proven live: tool-call framing on a real endpoint, and any in-app keyed
+turn (human-gated).
