@@ -19,23 +19,23 @@ sample the images and update this file.
 
 ## 2. Tokens
 
-Dark theme default; light theme mirrors it. Define on `:root` / `.dark` (shadcn convention), never
-inline hex in components.
+Dark follows the device; light mirrors it. Canonical names are the shadcn
+variables in `src/styles.css` (D116 follow-up: shadcn names win) — the roles
+below map onto them, and components use the semantic slots, never hex:
+
+| Role | Canonical variable |
+|---|---|
+| app background / rail | `--background` / `--sidebar` |
+| composer, cards, dialogs | `--card` / `--popover` |
+| hover (non-accent) | `--accent` / `--sidebar-accent` |
+| text / muted / subtle | `--foreground` / `--muted-foreground` |
+| borders / inputs | `--border` / `--input` |
+| the one accent (send, focus ring, active) | `--primary` + `--ring` = `#d97757` |
 
 ```css
-:root {            /* dark values shown; light = inverse, same roles */
-  --bg:            #1f1e1d;   /* app background            */
-  --bg-sidebar:    #1a1918;   /* rail                      */
-  --bg-elevated:   #2a2927;   /* composer, cards, dialogs  */
-  --bg-hover:      #34332f;
-  --border:        #3a3835;
-  --fg:            #f2efe9;
-  --fg-muted:      #a8a39a;
-  --fg-subtle:     #77726a;
-  --accent:        #d97757;   /* one accent: send btn, focus ring, active */
-  --danger:        #e5484d;
-  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 20px; /* composer = lg */
-}
+/* Density: comfortable = 17px root; compact drops to 15px via
+   html[data-density="compact"] in styles.css. */
+/* Radius: --radius 0.625rem; composer card uses rounded-[20px]. */
 ```
 
 Typography (no webfonts fetched at runtime — app is offline-first; bundle or use system stacks):
@@ -97,8 +97,10 @@ Below 800px the drawer and sidebar are collapsed by the user, never auto-overlai
 ```
 
 ```tsx
-// Composer.tsx — the shape that must not regress
-<form className="mx-auto w-full max-w-[720px] rounded-[20px] border border-[--border] bg-[--bg-elevated] p-3">
+// Composer.tsx — the shape that must not regress. Token classes use the
+// v4 parenthesis form: border-(--border), NOT border-[--border] (which
+// silently produces no border).
+<form className="mx-auto w-full max-w-[720px] rounded-[20px] border border-(--border) bg-(--card) p-3">
   {attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2">…</div>}
   <Textarea className="w-full min-h-[44px] max-h-[40vh] resize-none border-0 bg-transparent
                        focus-visible:ring-0" />          {/* NOT inside a flex-row with the toolbar */}

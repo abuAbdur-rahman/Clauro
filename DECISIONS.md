@@ -1322,6 +1322,10 @@ never heard of carries `limits_known: false` with selection refused rather than 
 live-turn translator carries per-model limits — the request needs them anyway, so that slice
 owns them.
 
+**D118 — A sole valid question pauses the turn; the answer is the call's one result; refused questions never pause.**
+
+Decided 2026-10-09 (task 009). Before this, a `question` dispatch persisted an ordinary result and the loop re-sent with the card text echoed back as if answered — the user was never asked. Now the turn ends `AwaitingAnswer` with the `tool_use` plus a `question_card` row and deliberately no `tool_result` yet; answering validates through `resolve_answer` and persists the one result, and the driver resumes. The transiently unpaired `tool_use` is honest, not an I1 violation: I1 pairs exactly once answered, a second answer fails `AlreadyAnswered`, and the pause is visible in the transcript at the point of the question (DESIGN §2.3). Refusals (mixed, second, secret-shaped) keep refusal result rows and never pause — nothing to answer, nothing held. Re-sending an unanswered question is skipped at request build: it would be both malformed (Anthropic requires a result per use) and a lie.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

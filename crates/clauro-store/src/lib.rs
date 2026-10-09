@@ -1061,6 +1061,20 @@ impl Store {
         .collect()
     }
 
+    /// The owning message of one block. A read, not a write path: answering a
+    /// question appends the result block beside its `tool_use`, and the loop
+    /// needs the message id to place it.
+    pub fn message_id_for_block(&self, block_id: &str) -> Result<String, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT message_id FROM block WHERE id = ?1",
+                [block_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("no such block: {block_id}")))
+    }
+
     // ── the single write path per mutable column (CONTRACTS.md §1) ──
 
     fn must_touch(&self, rows: usize, what: &str) -> Result<(), StoreError> {

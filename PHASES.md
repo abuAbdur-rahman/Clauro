@@ -140,10 +140,10 @@ transcript to measure).
 
 | Task | State | Contract | D-refs |
 |---|---|---|---|
-| `Tasks/007-tool-registry-and-permissions.md` | ◐ wired at dispatch; `resolve_answer` still uncalled | §3 | D19, D26, D27, D39, D51, D55 |
+| `Tasks/007-tool-registry-and-permissions.md` | ✅ dispatch consults permissions; `resolve_answer` called by answer path | §3 | D19, D26, D27, D39, D51, D55 |
 | `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop enforces permissions/approval/gate/bounding; host drives turns, idle drain still open | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
 | `Tasks/008-memory-tool.md` | ✅ backend 8/10; two UI criteria unstarted | §1, §3 | D7, D8, D9, D10, D11, D35, D43, D51 |
-| `Tasks/009-question-tool.md` | ◐ gate wired to the loop; answers unpersisted (no card UI) | §2, §3 | D40, D41, D42, D43 |
+| `Tasks/009-question-tool.md` | ✅ pause + answer + resume answered end to end (D118); question card answerable inline | §2, §3 | D40, D41, D42, D43, D101, D118 |
 | `Tasks/010-fs-tool.md` | ◐ backend 11/11; ingest/serve/session-dirs uncalled (018/shell later) | §3 | D31, D32, D33, D34, D39, D44, D47, D52, D79, D109 |
 | `Tasks/011-web-search-and-fetch.md` | ◐ backend 9/9; live HTTP untested by rule, DDG shape assumed | §3 | D39, D48, D56 |
 
@@ -158,11 +158,12 @@ throws, and all five named tools exist and are callable through the registry (`m
 (`resolve`), ask-mode approval routes through `ApprovalQueue` with hold-and-resume,
 `QuestionGate` observes every call with per-message reset, mixed questions are refused by
 lookahead, and output is bounded on the way out (`D27`). A host drives turns end to end
-(`src-tauri/src/turn.rs`). What keeps the gate from ✅, and only this: `resolve_answer`
-is still uncalled (answer persistence needs the `009` card UI), and nothing observes idleness
-to drain the queue (`drain_next` has no caller outside tests) — so a message sent mid-turn
-waits. `question` is listed as callable while its turn boundary (answer persistence) does
-not exist.
+(`src-tauri/src/turn.rs`). A sole valid question pauses the turn (`AwaitingAnswer`) instead
+of echoing the card back; answering validates, persists the call's one result, and resumes
+(D118, `question_answer` command + answerable card). What keeps the gate from ✅, and only
+this: nothing observes idleness to drain the queue (`drain_next` has no caller outside
+tests) — so a message sent mid-turn waits. `resolve_answer`, uncalled for the life of the
+project, finally has its production caller.
 
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.
@@ -178,8 +179,9 @@ handler, so a handler written before it has no defined caller.
 > (`resolve` at `run.rs`), routes ask-mode approval through `ApprovalQueue` with hold-and-resume,
 > tells `QuestionGate` about each call with per-message reset, refuses mixed questions by
 > lookahead, and bounds output on the way out — `D27` is enforced at dispatch. Since 2026-10-07 a
-> host drives turns (`src-tauri/src/turn.rs`, eighteen commands registered). Still uncalled:
-> `resolve_answer`, and the idle-queue drain.
+> host drives turns (`src-tauri/src/turn.rs`, eighteen commands registered). Since 2026-10-09
+> questions pause and resume (D118, nineteen commands with `question_answer`). Still open:
+> the idle-queue drain.
 
 **Unblocks:** Phase 3 (`fs` proves the workspace tree before `bash` exists; `artifact` needs the
 loop), Phase 4 (compaction needs tools to compact around).

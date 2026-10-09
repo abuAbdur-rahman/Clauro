@@ -26,6 +26,7 @@ vi.mock("./turn", () => ({
   turnStart: vi.fn(),
   turnStop: vi.fn(),
   transcriptRead: vi.fn(),
+  questionAnswer: vi.fn(),
   listenTurnEvents: vi.fn((_id: string, cb: EventCb) => {
     listeners.events.push(cb);
     return Promise.resolve(() => {});
@@ -36,7 +37,7 @@ vi.mock("./turn", () => ({
   }),
 }));
 
-import { turnStart, turnStop, transcriptRead } from "./turn";
+import { questionAnswer, turnStart, turnStop, transcriptRead } from "./turn";
 
 function selectModel() {
   useThreadStore.getState().openThread(THREAD);
@@ -228,5 +229,70 @@ describe("ChatView", () => {
     // The bridge filters by thread, so no cross-thread text can arrive here.
     // What the view must guarantee: its own listener ignores nothing it owns.
     within(screen.getByTestId("chat-view")).getByLabelText(/message/i);
+  });
+
+  it("answering a card calls through with the thread model and runs", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: {
+          kind: "question_card",
+          id: "call-q",
+          prompt: "which one?",
+          options: [{ id: "a", label: "A" }],
+          allow_free_text: false,
+          resolved: null,
+        },
+        role: "assistant",
+        id: "qc1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    vi.mocked(questionAnswer).mockResolvedValue({ card_id: "call-q", resolved: "a" });
+    render(<ChatView threadId={THREAD} />);
+    await user.click(await screen.findByRole("button", { name: "A" }));
+    await waitFor(() => {
+      expect(questionAnswer).toHaveBeenCalledWith({
+        threadId: THREAD,
+        toolCallId: "call-q",
+        answer: "a",
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        effort: "medium",
+        maxTokens: 8192,
+      });
+    });
+    // The resumed turn is running: stop is offered until it reports done.
+    expect(await screen.findByRole("button", { name: /stop/i })).toBeTruthy();
+  });
+
+  it("a refused answer clears running and keeps the card usable", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: {
+          kind: "question_card",
+          id: "call-q",
+          prompt: "which one?",
+          options: [{ id: "a", label: "A" }],
+          allow_free_text: false,
+          resolved: null,
+        },
+        role: "assistant",
+        id: "qc1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    vi.mocked(questionAnswer).mockRejectedValue(new Error("question call-q already answered"));
+    render(<ChatView threadId={THREAD} />);
+    await user.click(await screen.findByRole("button", { name: "A" }));
+    await waitFor(() => {
+      expect(screen.getByText(/already answered/i)).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
   });
 });

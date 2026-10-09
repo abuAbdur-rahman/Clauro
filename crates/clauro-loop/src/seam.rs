@@ -38,9 +38,40 @@ pub struct RenderRow {
 ///
 /// Order is the caller's: pass `blocks_for_thread` output and it comes back in
 /// surface order. An empty thread yields an empty vec, not an error.
+///
+/// Read-time join: a `question_card` whose call has its one `tool_result`
+/// renders `resolved` with the answer text. No schema change, no UPDATE —
+/// the card row stays as asked and the result row stays as answered; only
+/// the view joins them.
 #[must_use]
 pub fn blocks_to_contract(blocks: &[FullBlock]) -> Vec<RenderRow> {
-    blocks.iter().map(row_to_contract).collect()
+    let mut answers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for b in blocks {
+        if b.kind == "tool_result" {
+            if let Ok(v) = serde_json::from_str::<Value>(&b.payload) {
+                if let (Some(id), Some(preview)) = (
+                    v.get("tool_use_id").and_then(Value::as_str),
+                    v.get("preview").and_then(Value::as_str),
+                ) {
+                    answers
+                        .entry(id.to_string())
+                        .or_insert_with(|| preview.to_string());
+                }
+            }
+        }
+    }
+    blocks
+        .iter()
+        .map(|b| {
+            let mut row = row_to_contract(b);
+            if let ContentBlock::QuestionCard { id, resolved, .. } = &mut row.block {
+                if resolved.is_none() {
+                    *resolved = answers.get(id).cloned();
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 /// Translate one block. Total: every input produces exactly one output row.
@@ -133,11 +164,43 @@ fn from_value(block: &FullBlock, value: Value) -> Option<ContentBlock> {
         "compaction" => Some(ContentBlock::Compaction {
             provider_block_id: value.get("provider_block_id")?.as_str()?.to_string(),
         }),
+        "question_card" => Some(question_card_from(&value)?),
         other => Some(ContentBlock::Notice {
             level: NoticeLevel::Warn,
             text: format!("this app does not render a {other} block yet; the row is preserved"),
         }),
     }
+}
+
+/// Map a stored question card. Total over well-formed payloads: prompt and id
+/// are required (a card with nothing to ask, or no id to answer, is a
+/// notice); options default to skip-only, exactly like the handler appends
+/// it — the stored row and the presented card agree by construction.
+fn question_card_from(value: &Value) -> Option<ContentBlock> {
+    let options: Vec<clauro_core::QuestionOption> = value
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    Some(clauro_core::QuestionOption {
+                        id: o.get("id")?.as_str()?.to_string(),
+                        label: o.get("label")?.as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ContentBlock::QuestionCard {
+        id: value.get("id")?.as_str()?.to_string(),
+        prompt: value.get("prompt")?.as_str()?.to_string(),
+        options,
+        allow_free_text: value
+            .get("allowFreeText")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        resolved: None,
+    })
 }
 
 /// An unrecognised status is a notice, never a default. Collapsing an unknown
