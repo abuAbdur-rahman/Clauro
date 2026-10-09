@@ -124,9 +124,9 @@ pub enum AnswerError {
     Busy { thread_id: String },
     /// The provider id has no row: never configured, or removed since.
     NoProvider { provider: String },
-    /// Configured, but this build cannot speak its wire yet (same rule as
-    /// `TurnError::UnsupportedProvider`: key + models work, turns need the
-    /// request translator).
+    /// A row this build cannot route (same rule as
+    /// `TurnError::UnsupportedProvider`: a compat provider with no endpoint
+    /// URL). Both wires ship (D48); there is no third to fall back to.
     UnsupportedProvider { provider: String },
     /// No stored key for the provider.
     NoKey { provider: String },
@@ -154,7 +154,7 @@ impl std::fmt::Display for AnswerError {
             ),
             Self::UnsupportedProvider { provider } => write!(
                 f,
-                "provider {provider} is configured but live turns need the OpenAI request translator, which is not built yet"
+                "provider {provider} has no endpoint URL configured; set one before answering"
             ),
             Self::NoKey { provider } => write!(
                 f,
@@ -1569,6 +1569,14 @@ fn assemble_messages(store: &Store, thread_id: &str) -> (Vec<Value>, Option<Thin
             messages.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
         } else if role == "assistant" {
             let mut content = Vec::new();
+            // Results never ride the assistant message on the wire: the
+            // Anthropic Messages API takes a `tool_result` back in a
+            // *subsequent user message* (platform.claude.com/docs/en/api/
+            // messages), and the OpenAI-compatible adapter needs the same
+            // separation to map onto `role: "tool"`. The store keeps the pair
+            // in one message (D61 pairing is a storage property); the split
+            // happens here, at assembly, in block order.
+            let mut results = Vec::new();
             for (_, kind, payload, signature) in &blocks {
                 let v: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
                 match kind.as_str() {
@@ -1612,7 +1620,7 @@ fn assemble_messages(store: &Store, thread_id: &str) -> (Vec<Value>, Option<Thin
                             "input": v.get("input").and_then(|i| i.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Object(Default::default())),
                         }))
                     }
-                    "tool_result" => content.push(json!({
+                    "tool_result" => results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": v.get("tool_use_id"),
                         "content": v.get("preview").and_then(|t| t.as_str()).unwrap_or(""),
@@ -1622,6 +1630,9 @@ fn assemble_messages(store: &Store, thread_id: &str) -> (Vec<Value>, Option<Thin
             }
             if !content.is_empty() {
                 messages.push(json!({"role": "assistant", "content": content}));
+            }
+            if !results.is_empty() {
+                messages.push(json!({"role": "user", "content": results}));
             }
         } else {
             // System rows (tool-change records and friends) re-send as text.

@@ -1,0 +1,11 @@
+data: {"id":"chatcmpl-g1","object":"chat.completion.chunk","created":1,"model":"models/gemma-4-26b-a4b-it","choices":[{"index":0,"delta":{"content":"<thought>2 + 2 is arithmetic.","extra_content":{"google":{"thought":true}}},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-g1","object":"chat.completion.chunk","created":1,"model":"models/gemma-4-26b-a4b-it","choices":[{"index":0,"delta":{"content":" The sum is 4.","extra_content":{"google":{"thought":true}}},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-g1","object":"chat.completion.chunk","created":1,"model":"models/gemma-4-26b-a4b-it","choices":[{"index":0,"delta":{"content":"</thought>The answer is 4.","extra_content":{"google":{"thought":true}}},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-g1","object":"chat.completion.chunk","created":1,"model":"models/gemma-4-26b-a4b-it","choices":[{"index":0,"delta":{"content":" Exactly."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-g1","object":"chat.completion.chunk","created":1,"model":"models/gemma-4-26b-a4b-it","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}
+
+data: [DONE]

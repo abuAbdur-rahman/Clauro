@@ -161,3 +161,143 @@ fn tool_call_framing_yields_start_then_input_deltas() {
         other => panic!("wrong first event: {other:?}"),
     }
 }
+
+/// Tasks/005's recorded Gemini wire, fixture-first (§6): thought deltas are
+/// marked per-delta by `extra_content.google.thought`, the `<thought>` /
+/// `</thought>` markup rides `delta.content`, and the closing chunk carries
+/// the close tag **and the first answer characters in one delta**. Ignoring
+/// the marker (or splitting on tags alone) renders reasoning as answer —
+/// the plausible-looking wrong transcript D80 exists to prevent.
+///
+/// The fixture is synthesised from the shape recorded live in `Tasks/005`
+/// (endpoint, envelope, marker name, shared closing delta); no key was used.
+#[test]
+fn gemini_thought_marker_routes_reasoning_to_thinking_not_answer() {
+    let events = run(4096, &fixture("openai_thought_marker.sse"));
+
+    // 1. The markup itself never reaches either block.
+    for event in &events {
+        if let NormalisedEvent::BlockDelta { text: Some(t), .. } = event {
+            assert!(
+                !t.contains("<thought") && !t.contains("</thought>"),
+                "markers are stripped before the transcript sees them: {events:?}"
+            );
+        }
+    }
+
+    // 2. Exactly two regions, thinking first: the thought streams into one
+    //    thinking block, the answer into one text block, never one shared.
+    let starts: Vec<(u32, InboundKind)> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockStart { index, kind, .. } => Some((*index, *kind)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 2, "one start per region: {events:?}");
+    assert_eq!(starts[0].1, InboundKind::Thinking, "{events:?}");
+    assert_eq!(starts[1].1, InboundKind::Text, "{events:?}");
+    let thinking_index = starts[0].0;
+    let text_index = starts[1].0;
+    assert_ne!(thinking_index, text_index);
+
+    // 3. The shared closing delta split correctly: the thought parts are the
+    //    thinking block's deltas, "The answer is 4." opens the text block.
+    let deltas_of = |index: u32| -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NormalisedEvent::BlockDelta {
+                    index: i,
+                    text: Some(t),
+                    ..
+                } if *i == index => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        deltas_of(thinking_index),
+        vec!["2 + 2 is arithmetic.", " The sum is 4."],
+        "thought deltas, markers stripped: {events:?}"
+    );
+    assert_eq!(
+        deltas_of(text_index),
+        vec!["The answer is 4.", " Exactly."],
+        "answer text only, starting after the close tag: {events:?}"
+    );
+}
+
+/// The shared closing delta may arrive without the marker (005 records the
+/// shape of the content, not the marking of every server variant): an open
+/// thought still closes on `</thought>`, and the tail is answer text.
+#[test]
+fn a_closing_delta_without_the_marker_still_splits_thought_from_answer() {
+    let events = feed_chunks(&[
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<thought>hmm\",\"extra_content\":{\"google\":{\"thought\":true}}},\"finish_reason\":null}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"</thought>4\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"!\"},\"finish_reason\":null}]}\n\n",
+    ]);
+    let starts: Vec<(u32, InboundKind)> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockStart { index, kind, .. } => Some((*index, *kind)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(starts.len(), 2, "one start per region: {events:?}");
+    let thinking_index = starts[0].0;
+    assert_eq!(starts[0].1, InboundKind::Thinking, "{events:?}");
+    let deltas_of = |index: u32| -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                NormalisedEvent::BlockDelta {
+                    index: i,
+                    text: Some(t),
+                    ..
+                } if *i == index => Some(t.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(deltas_of(thinking_index), vec!["hmm"], "{events:?}");
+    let all: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockDelta { text: Some(t), .. } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        all.contains(&"4!") || all == vec!["hmm", "4", "!"],
+        "answer tail arrives as text, never markup: {events:?}"
+    );
+}
+
+/// One delta can open and close the thought in a single frame — the shared
+/// delta shape collapses to thought-part then answer-part in one pass.
+#[test]
+fn a_single_delta_opening_and_closing_the_thought_splits_both_ways() {
+    let events = feed_chunks(&[
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"<thought>thinking</thought>answer\",\"extra_content\":{\"google\":{\"thought\":true}}},\"finish_reason\":null}]}\n\n",
+    ]);
+    let deltas: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockDelta { text: Some(t), .. } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        vec!["thinking", "answer"],
+        "thought part then answer part: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, NormalisedEvent::Ignored { .. })),
+        "recognised markers are not an unknown shape: {events:?}"
+    );
+}

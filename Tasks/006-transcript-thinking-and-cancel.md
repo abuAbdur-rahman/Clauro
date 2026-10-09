@@ -66,9 +66,12 @@ pipeline existed; `marked` is now adopted, with the rejected alternative recorde
   deltas into the streaming row, offers Stop (`turn_stop` sets the shared flag; the loop closes
   open calls as `aborted` and keeps completed work), and re-reads via `transcript_read` on mount
   and on every done — the store is the record, the events are hints. What "both adapters" still
-  excludes: a non-Anthropic provider fails typed `UnsupportedProvider` — the catalogue carries no
-  base URLs and no settings surface configures one, so the second live path is honestly absent
-  while its parser stays tested at the transport layer.
+  excluded at the time — a non-Anthropic provider failing typed `UnsupportedProvider` — closed
+  2026-10-09 (D119): the provider row picks the wire (Anthropic posts as built; compat rows post
+  the translated body to their configured endpoint with bearer auth), the second live path is no
+  longer absent, and only a compat row with no endpoint URL remains typed-refused. The parser was
+  already tested at the transport layer and now also parses the Gemini thought marker
+  (`tests/openai_thought_marker.sse`).
 
 Cancel semantics — the part this task exists for — remain genuinely done and untouched by this
 change: `tests/transcript.rs:165-198` asserts two `aborted` plus one `already_resolved` and an empty

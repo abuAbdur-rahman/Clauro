@@ -106,7 +106,7 @@ itself remains open under `Tasks/014` — that is Phase 3 work, not this gate.)
 | Task | State | Contract | D-refs |
 |---|---|---|---|
 | `Tasks/004-sqlite-schema-and-append-only.md` | ✅ 9/9 | §1 | D7, D8, D19, D32, D34, D47, D52, D55, D57, D63, D70, D79 |
-| `Tasks/005-sse-transport-and-anthropic-adapter.md` | ✅ 8/8 — retry policy has callers (`stream_step`, `LiveExchange`); OpenAI `Ignored`→notice wired; live Gemma 4 smoke shapes recorded | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81 |
+| `Tasks/005-sse-transport-and-anthropic-adapter.md` | ✅ 8/8 — retry policy has callers (`stream_step`, `LiveExchange`); OpenAI `Ignored`→notice wired; live Gemma 4 smoke shapes recorded; request translator + thought-marker parse landed 2026-10-09 (D119) | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81, D119 |
 | `Tasks/006-transcript-thinking-and-cancel.md` | ✅ renderer + streaming + purify + I1/I3 corpus + gap surfacing, all green 2026-10-09; live keyed turn still human-gated | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76, D100 |
 
 **Gate:** a streaming turn renders on both adapters; stop mid-turn keeps completed work and closes
@@ -131,8 +131,15 @@ streaming `data:` chunks plus `[DONE]` observed, and the in-band `<thought>` rea
 (`extra_content.google.thought`) recorded in `Tasks/005` for the translator. **2026-10-09
 update:** the transcript invariants are corpus-proven (I1/I3 over
 `tests/fixtures/transcripts/`, write-time `GenerationRegression` refusal) and thinking gaps are
-withheld from requests with one deduplicated notice. What remains is the in-app turn with a
-stored key (human-gated: no test may use a key by rule), plus the translator itself.
+withheld from requests with one deduplicated notice. **2026-10-09 update (translator, D119):**
+the second adapter's live path is built — `openai_request::translate_request` maps the loop's
+Anthropic body to chat-completions (Anthropic-only controls dropped, never approximated),
+`turn_start`/`question_answer` route from the provider row (compat rows post to
+`{base}/chat/completions` with bearer auth; a row with no endpoint URL stays typed-refused),
+`assemble_messages` now sends `tool_result` in the following user message — the shape both APIs
+require and a latent 400 no test had ever exercised — and Gemini's in-band thought marker parses
+response-side from a fixture (`tests/fixtures/openai_thought_marker.sse`). What remains for this
+gate is the in-app turn with a stored key (human-gated: no test may use a key by rule).
 
 **Unblocks:** Phase 2 (the loop needs a surface to run against), Phase 4 (the meter needs a real
 transcript to measure).

@@ -490,6 +490,105 @@ fn resent_requests_carry_prior_tool_results() {
     assert!(second.contains("file!"), "{second}");
 }
 
+/// The wire shape both adapters require, proven on the stored transcript.
+///
+/// The Anthropic Messages API takes a `tool_result` back **in a subsequent
+/// user message** — never inside the assistant message that made the call
+/// (platform.claude.com/docs/en/api/messages: tool results "return ... in a
+/// subsequent `user` message"). The OpenAI-compatible adapter needs the same
+/// separation to map onto `role: "tool"`. `assemble_messages` groups blocks by
+/// their stored message, and results persist into the assistant message that
+/// held the `tool_use`, so the split has to happen at assembly time.
+#[test]
+fn tool_results_ride_the_next_user_message_not_the_assistant() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    reg.set_handler("fs", |_, _| ToolOutcome::Ok {
+        preview: "file!".to_string(),
+        preview_path: None,
+        full_path: None,
+    })
+    .expect("bind");
+    let mut ex = Script::new(vec![
+        tool_use_step(&[("call-a", "fs", "{}")]),
+        text_step("ok"),
+    ]);
+    let mut turn_loop = TurnLoop::new();
+    turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &prepared(available_tools()),
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("turn");
+    let messages = ex.bodies[1]["messages"]
+        .as_array()
+        .expect("messages array")
+        .clone();
+
+    // 1. No assistant message ever carries a tool_result block.
+    for (i, m) in messages.iter().enumerate() {
+        if m["role"] != "assistant" {
+            continue;
+        }
+        if let Some(blocks) = m["content"].as_array() {
+            for block in blocks {
+                assert_ne!(
+                    block["type"], "tool_result",
+                    "tool_result inside assistant message {i}: {messages:?}"
+                );
+            }
+        }
+    }
+
+    // 2. The result rides a user message that directly follows its tool_use.
+    let use_at = messages
+        .iter()
+        .position(|m| {
+            m["role"] == "assistant"
+                && m["content"]
+                    .as_array()
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .any(|b| b["type"] == "tool_use" && b["id"] == "call-a")
+                    })
+                    .unwrap_or(false)
+        })
+        .expect("assistant message holds call-a");
+    let next = messages
+        .get(use_at + 1)
+        .expect("a message follows the tool_use");
+    assert_eq!(
+        next["role"], "user",
+        "tool results must ride the next user message: {messages:?}"
+    );
+    let carried = next["content"]
+        .as_array()
+        .map(|blocks| {
+            blocks.iter().any(|b| {
+                b["type"] == "tool_result"
+                    && b["tool_use_id"] == "call-a"
+                    && b["content"] == "file!"
+            })
+        })
+        .unwrap_or(false);
+    assert!(
+        carried,
+        "user message after call-a carries its result: {messages:?}"
+    );
+}
+
 // ── queue through the loop ───────────────────────────────────────────────────
 
 #[test]

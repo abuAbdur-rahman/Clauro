@@ -1,8 +1,10 @@
 //! The OpenAI-compatible adapter: third-party chunks, same union.
 //!
 //! Everything else funnels through this adapter (D48), and the dialect varies
-//! across providers in streaming deltas, tool-call framing, and
-//! reasoning-token fields. Two consequences:
+//! across providers in streaming deltas, tool-call framing,
+//! reasoning-token fields, and in-band thought markers (Gemini's
+//! `extra_content.google.thought` over `<thought>` markup — Tasks/005).
+//! Two consequences:
 //! - The parser is **stateful**: chat chunks carry no start markers, so the
 //!   first sight of content / reasoning / a tool call synthesises the
 //!   `BlockStart` the transcript pairs against.
@@ -43,6 +45,90 @@ impl OpenAiParser {
         let index = self.next_index;
         self.next_index += 1;
         index
+    }
+
+    /// Stream one answer-text delta, synthesising the text block start once.
+    fn emit_text(&mut self, out: &mut Vec<NormalisedEvent>, text: &str) {
+        let index = match self.text_index {
+            Some(i) => i,
+            None => {
+                let i = self.fresh_index();
+                self.text_index = Some(i);
+                out.push(NormalisedEvent::BlockStart {
+                    index: i,
+                    kind: InboundKind::Text,
+                    tool: None,
+                });
+                i
+            }
+        };
+        out.push(NormalisedEvent::BlockDelta {
+            index,
+            text: Some(text.to_string()),
+            signature: None,
+        });
+    }
+
+    /// Stream one reasoning delta, synthesising the thinking block start once.
+    fn emit_thinking(&mut self, out: &mut Vec<NormalisedEvent>, text: &str) {
+        let index = match self.thinking_index {
+            Some(i) => i,
+            None => {
+                let i = self.fresh_index();
+                self.thinking_index = Some(i);
+                out.push(NormalisedEvent::BlockStart {
+                    index: i,
+                    kind: InboundKind::Thinking,
+                    tool: None,
+                });
+                i
+            }
+        };
+        out.push(NormalisedEvent::BlockDelta {
+            index,
+            text: Some(text.to_string()),
+            signature: None,
+        });
+    }
+}
+
+/// Peel Gemini's in-band thought markers off one `delta.content`
+/// (Tasks/005's recorded wire; the load-bearing fact for this adapter).
+///
+/// Returns `(thought, answer, closes)`: the thought portion with `<thought>`
+/// stripped, the answer portion, and whether the thought region ends here.
+/// The **marker** (`extra_content.google.thought`), not the markup alone,
+/// decides which block text belongs to — and the shared closing delta
+/// (`</thought>` plus the first answer characters in one frame) splits into
+/// both. Splitting on tags alone, or ignoring the marker, renders reasoning
+/// as answer: the plausible-looking wrong transcript D80 exists to prevent.
+fn peel_thought(raw: &str, marked: bool, open: bool) -> (String, String, bool) {
+    const OPEN: &str = "<thought>";
+    const CLOSE: &str = "</thought>";
+    if let Some(pos) = raw.find(CLOSE) {
+        let (head, tail) = raw.split_at(pos);
+        let after = &tail[CLOSE.len()..];
+        if marked || open {
+            let thought = head.strip_prefix(OPEN).unwrap_or(head);
+            (thought.to_string(), after.to_string(), true)
+        } else {
+            // A stray close outside any thought: the markup is never
+            // rendered, and the text around it is never lost.
+            (String::new(), format!("{head}{after}"), false)
+        }
+    } else if marked {
+        (
+            raw.strip_prefix(OPEN).unwrap_or(raw).to_string(),
+            String::new(),
+            false,
+        )
+    } else if open {
+        // Unmarked while a thought streams: the marker is authoritative —
+        // this is answer text, and the thought ends here rather than
+        // interleaving (each region stays contiguous on its own block).
+        (String::new(), raw.to_string(), true)
+    } else {
+        (String::new(), raw.to_string(), false)
     }
 }
 
@@ -87,66 +173,36 @@ impl StreamParser for OpenAiParser {
                 continue;
             }
             let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-            if let Some(text) = delta.get("content").and_then(Value::as_str) {
-                let index = match self.text_index {
-                    Some(i) => i,
-                    None => {
-                        let i = self.fresh_index();
-                        self.text_index = Some(i);
-                        out.push(NormalisedEvent::BlockStart {
-                            index: i,
-                            kind: InboundKind::Text,
-                            tool: None,
-                        });
-                        i
+            if let Some(raw) = delta.get("content").and_then(Value::as_str) {
+                if !raw.is_empty() {
+                    // Gemini's in-band thought marker decides which block the
+                    // text belongs to (see `peel_thought`): read from the delta
+                    // first — Tasks/005's recording is per-delta — with a
+                    // choice-level fallback for servers that mark the choice.
+                    let marked = delta
+                        .pointer("/extra_content/google/thought")
+                        .or_else(|| choice.pointer("/extra_content/google/thought"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let open = self.thinking_index.is_some();
+                    let (thought, answer, closes) = peel_thought(raw, marked, open);
+                    if !thought.is_empty() {
+                        self.emit_thinking(&mut out, &thought);
                     }
-                };
-                out.push(NormalisedEvent::BlockDelta {
-                    index,
-                    text: Some(text.to_string()),
-                    signature: None,
-                });
+                    if closes {
+                        self.thinking_index = None;
+                    }
+                    if !answer.is_empty() {
+                        self.emit_text(&mut out, &answer);
+                    }
+                }
             }
             if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                let index = match self.thinking_index {
-                    Some(i) => i,
-                    None => {
-                        let i = self.fresh_index();
-                        self.thinking_index = Some(i);
-                        out.push(NormalisedEvent::BlockStart {
-                            index: i,
-                            kind: InboundKind::Thinking,
-                            tool: None,
-                        });
-                        i
-                    }
-                };
-                out.push(NormalisedEvent::BlockDelta {
-                    index,
-                    text: Some(reasoning.to_string()),
-                    signature: None,
-                });
+                self.emit_thinking(&mut out, reasoning);
             }
             if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
                 // A refusal is shown, not dropped: silence would read as a stall.
-                let index = match self.text_index {
-                    Some(i) => i,
-                    None => {
-                        let i = self.fresh_index();
-                        self.text_index = Some(i);
-                        out.push(NormalisedEvent::BlockStart {
-                            index: i,
-                            kind: InboundKind::Text,
-                            tool: None,
-                        });
-                        i
-                    }
-                };
-                out.push(NormalisedEvent::BlockDelta {
-                    index,
-                    text: Some(refusal.to_string()),
-                    signature: None,
-                });
+                self.emit_text(&mut out, refusal);
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
