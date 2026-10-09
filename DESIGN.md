@@ -56,7 +56,12 @@ column, root scrolled horizontally).
   `w-full max-w-*`, never `100vw` or fixed widths.
 - Notices (no provider, errors) are full-width inline banners, never squeezed into a toolbar.
 - The same UI must render identically in the browser harness (`pnpm dev:web`, port 1420, Tauri
-  stubbed) and in `pnpm tauri dev`. Layout is verified by screenshot and by the scroll/size
+  stubbed) and in the **bundled** app (`pnpm tauri build --debug --no-bundle`, then run the
+  binary). Plain `pnpm tauri dev` renders BLANK and is not a verification path: Vite dev injects
+  an inline module preamble and the shipping CSP (`script-src 'self'`, pinned by test) blocks
+  all inline scripts. That is the CSP working, not a bug — dev convenience never weakens it
+  (D3, D78). Proven 2026-10-09: dev window blank twice independently, same tree bundled renders
+  full dark UI. Layout is verified by screenshot and by the scroll/size
   assertions in `UI-GUIDE.md` §9, not by reading code.
 - Type: sans for UI, serif for the greeting and page titles, mono only for code, paths and tool rows.
 - Icons: `lucide-react` only. No emoji or text glyphs in product chrome.
@@ -310,7 +315,8 @@ ours. The mic stays visible but disabled, with its reason in the tooltip.
 
 ## 7. UI acceptance
 
-A UI change is not done until: it renders the same in `pnpm dev:web` and `pnpm tauri dev` on port
-1420; screenshots at 1920×1080, 1280×720, 1024×640 and 800×600 show no root scrollbar and no
+A UI change is not done until: it renders the same in `pnpm dev:web` and the bundled app
+(`pnpm tauri build --debug --no-bundle`, never plain `pnpm tauri dev` — blank under the shipping
+CSP, see §1.1); screenshots at 1920×1080, 1280×720, 1024×640 and 800×600 show no root scrollbar and no
 clipped or off-centre content; the scroll/size assertions pass; and the critique rubric in
 `UI-GUIDE.md` §10 scores ≥ 9 on every axis, logged in `UI-CRITIQUE.md`.
