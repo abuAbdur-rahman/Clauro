@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Composer from "../../components/Composer";
 import { useThreadStore } from "../catalogue/thread";
+import { useArtifactProducer } from "../artifact/live";
 import { TranscriptView } from "../transcript/TranscriptView";
 import type { RenderRow } from "../transcript/types";
 import {
@@ -42,6 +43,13 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
       setNotice(e instanceof Error ? e.message : String(e));
     }
   }, [threadId]);
+
+  // The drawer's producer (D121) rides this view's listeners; its failures
+  // surface as the same notice as a failed transcript read.
+  const onArtifactError = useCallback((reason: string) => {
+    setNotice(reason);
+  }, []);
+  useArtifactProducer(threadId, onArtifactError);
 
   useEffect(() => {
     runningRef.current = false;

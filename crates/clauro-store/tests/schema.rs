@@ -353,6 +353,64 @@ fn every_mutable_column_has_its_single_write_path() {
         .expect("compiled_path is set once after the Worker transform");
 }
 
+/// The drawer's production producer (D121) reads the thread's newest artifact
+/// row; refresh bumps, never rewrites, so "latest" is a real query and not a
+/// scan of every version the thread ever wrote.
+#[test]
+fn latest_artifact_is_the_newest_row_of_that_thread_and_none_when_empty() {
+    let dir = TestDir::fresh();
+    let (store, _) = seeded(&dir);
+    for id in ["t-latest", "t-other"] {
+        store
+            .insert_thread(NewThread {
+                id: id.to_string(),
+                project_id: Some("p1".to_string()),
+                title: None,
+                incognito: false,
+                memory_off: false,
+                system_frozen: "sys".to_string(),
+                tools_frozen: "[]".to_string(),
+            })
+            .expect("thread insert must succeed");
+    }
+    let mk = |id: &str, thread: &str, title: &str, created: i64| NewArtifact {
+        id: id.to_string(),
+        thread_id: thread.to_string(),
+        title: title.to_string(),
+        media_type: "text/html".to_string(),
+        source_path: format!("artifacts/{id}/source"),
+        created_at: created,
+    };
+    store
+        .insert_artifact(mk("a-first", "t-latest", "first", 100))
+        .expect("insert");
+    store
+        .insert_artifact(mk("a-second", "t-latest", "second", 200))
+        .expect("insert");
+    store
+        .insert_artifact(mk("a-refresh", "t-latest", "refreshed", 300))
+        .expect("insert");
+    // Another thread's artifact must never leak across.
+    store
+        .insert_artifact(mk("a-elsewhere", "t-other", "elsewhere", 400))
+        .expect("insert");
+
+    let latest = store
+        .latest_artifact("t-latest")
+        .expect("newest row of that thread");
+    assert_eq!(latest.id, "a-refresh", "newest by created_at wins");
+    assert_eq!(latest.title, "refreshed");
+    assert_eq!(latest.media_type, "text/html");
+    assert_eq!(latest.source_path, "artifacts/a-refresh/source");
+    assert_eq!(latest.created_at, 300);
+    assert_eq!(latest.version, 1, "a fresh insert is version one");
+
+    assert!(
+        store.latest_artifact("t-never-used").is_none(),
+        "an empty thread is None, not an error"
+    );
+}
+
 #[test]
 fn global_memory_paths_are_unique_while_project_paths_scope_per_project() {
     let dir = TestDir::fresh();

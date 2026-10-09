@@ -533,6 +533,63 @@ impl TurnState {
     }
 }
 
+// ── The drawer's production producer (D121) ────────────────────────────────
+
+/// The thread's newest artifact as the drawer needs it: row metadata plus the
+/// source bytes, read from disk — the row stores the path, never the bytes.
+/// camelCase on the wire like every other command payload.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactLatest {
+    pub artifact_id: String,
+    pub version: i64,
+    pub title: String,
+    pub media_type: String,
+    pub source: String,
+}
+
+/// Newest artifact row of a thread, with its source file resolved under the
+/// session root. `Ok(None)` means the thread has no artifacts — not an error.
+/// A row whose file is gone fails typed: the drawer must never show a
+/// plausible-looking blank frame for content the database says exists.
+pub fn latest_artifact_document(
+    store: &Store,
+    session_root: &Path,
+    thread_id: &str,
+) -> Result<Option<ArtifactLatest>, TurnError> {
+    let Some(row) = store.latest_artifact(thread_id) else {
+        return Ok(None);
+    };
+    let path = session_root.join(&row.source_path);
+    let source = std::fs::read_to_string(&path).map_err(|e| TurnError::Store {
+        reason: format!(
+            "artifact {} v{} source unreadable: {e}",
+            row.id, row.version
+        ),
+    })?;
+    Ok(Some(ArtifactLatest {
+        artifact_id: row.id,
+        version: row.version,
+        title: row.title,
+        media_type: row.media_type,
+        source,
+    }))
+}
+
+/// Command: the webview's producer calls this on turn-done and on mount to
+/// put the drawer live (D121).
+#[tauri::command]
+pub fn artifact_latest(
+    state: tauri::State<'_, TurnState>,
+    thread_id: String,
+) -> Result<Option<ArtifactLatest>, TurnError> {
+    let store = state.store.lock().map_err(|_| TurnError::Store {
+        reason: "store lock poisoned".to_string(),
+    })?;
+    let session_root = state.session_dir(&thread_id)?;
+    latest_artifact_document(&store, &session_root, &thread_id)
+}
+
 /// Build the per-turn registry: the fixed eight with live handlers bound.
 /// `bash` stays unbound unless the project opts in (D28, D46) — an unbound
 /// tool resolves through permissions, never by accident.
@@ -1528,5 +1585,59 @@ mod tests {
                 text: "boom".to_string()
             }]
         );
+    }
+
+    // ── The drawer's production producer (D121) ─────────────────────────────
+
+    #[test]
+    fn latest_artifact_document_reads_the_row_and_its_source_from_disk() {
+        let store = clauro_store::Store::open_memory().expect("store");
+        store
+            .insert_thread(NewThread {
+                id: "t1".to_string(),
+                project_id: None,
+                title: None,
+                incognito: false,
+                memory_off: false,
+                system_frozen: "sys".to_string(),
+                tools_frozen: "[]".to_string(),
+            })
+            .expect("thread row");
+        let root = std::env::temp_dir().join(format!("clauro-art-doc-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("artifacts/a9-2")).expect("dir");
+        std::fs::write(root.join("artifacts/a9-2/source"), "<html>hi</html>").expect("source");
+        store
+            .insert_artifact_version(
+                &clauro_store::NewArtifact {
+                    id: "a9".to_string(),
+                    thread_id: "t1".to_string(),
+                    title: "Demo".to_string(),
+                    media_type: "text/html".to_string(),
+                    source_path: "artifacts/a9-2/source".to_string(),
+                    created_at: 1,
+                },
+                2,
+            )
+            .expect("row");
+
+        let doc = latest_artifact_document(&store, &root, "t1")
+            .expect("readable")
+            .expect("present");
+        assert_eq!(doc.artifact_id, "a9");
+        assert_eq!(doc.version, 2);
+        assert_eq!(doc.title, "Demo");
+        assert_eq!(doc.media_type, "text/html");
+        assert_eq!(
+            doc.source, "<html>hi</html>",
+            "source comes from disk, not the row"
+        );
+
+        assert!(
+            latest_artifact_document(&store, &root, "t-empty")
+                .expect("readable")
+                .is_none(),
+            "a thread with no artifacts is None, not an error"
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 }

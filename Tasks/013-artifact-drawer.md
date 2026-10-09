@@ -66,3 +66,28 @@ nothing to do with artifacts.
 - [x] Windows and Linux both render — or Linux disables with a notice — gate matrix + notice render (see above); engine proof pending 021
 - [x] Artifact tool schema is ours, documented — `crates/clauro-tools/src/registry.rs` artifact block (`title`, `mediaType`, `source`, optional `artifactId`); strict validation in `crates/clauro-tools/src/artifact.rs` (the "classifier" the contract points at)
 - [x] `DESIGN.md` §3 matches the shipped behaviour — §3 states the D45 guarantee; tabs/download promise corrected to v2-only per `SPEC.md` §5 (D87)
+
+## Addendum 2026-10-09 — the production producer (D121)
+
+The D113 precondition ("no production producer until a host drives turns") is met: the translator
+(**D119**) and the mock witness (**D120**) drive real turns, so the last inch landed as production
+code, in this order, each with its failing test first:
+
+- **Store**: `latest_artifact` newest-row query (`crates/clauro-store/src/lib.rs`, `ArtifactRow` —
+  newest `created_at` wins, tie by version, never crosses threads; empty thread is `None`, not an
+  error) — `crates/clauro-store/tests/schema.rs::latest_artifact_is_the_newest_row_of_that_thread_and_none_when_empty`.
+- **Command**: `artifact_latest` → `ArtifactLatest { artifactId, version, title, mediaType,
+  source }`, source resolved from the session root and a missing file failing typed —
+  `src-tauri/src/turn.rs::latest_artifact_document`, registered in `src-tauri/src/lib.rs`.
+- **Producer**: `src/features/artifact/live.ts` — `block_start` on `artifact` flips the drawer to
+  compiling with **no id** (the id does not exist yet); turn-done reads `artifact_latest` and lands
+  content + `setLive`; no row clears the spinner instead of spinning forever; a failed read is a
+  typed reason through the view's notice. Wired by `ChatView` (`useArtifactProducer`), whose test
+  `"drives the artifact drawer from turn events (D121)"` is the §7a caller proof.
+- **Drawer**: prepares when the artifact is *known*, not when the state says `compiling`
+  (`src/components/ArtifactDrawer.tsx`); live-path test in `src/components/ArtifactDrawer.test.tsx`.
+- **Shell**: drawer props come from the content store (`src/app/App.tsx`).
+- `src/features/artifact/phase3.e2e.test.tsx` keeps its test-local driver as the composition proof
+  under test — it now sits *beside* the production producer instead of standing in for it.
+
+Still **NOT RUN**: the five webview-observable criteria above (tauri-driver, 021) — unchanged.

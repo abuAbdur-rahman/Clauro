@@ -38,6 +38,15 @@ describe("drawer states (DESIGN.md §2.4)", () => {
     s.setLive("t1", "a1", 1);
     expect(useDrawerStore.getState().drawers["t2"]).toBeUndefined();
   });
+
+  it("compiling may carry no artifact id yet (D121)", () => {
+    // The producer learns the model asked for an artifact at block start —
+    // the id does not exist until the loop generates it downstream.
+    useDrawerStore.getState().setCompiling("t1", null);
+    const entry = useDrawerStore.getState().drawers["t1"];
+    expect(entry?.state).toBe("compiling");
+    expect(entry?.artifactId).toBeNull();
+  });
 });
 
 describe("sandbox tokens (D2)", () => {

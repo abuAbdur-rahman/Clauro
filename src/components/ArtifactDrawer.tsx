@@ -51,7 +51,13 @@ export function ArtifactDrawer({
   const state = entry?.state ?? "empty";
 
   useEffect(() => {
-    if (state !== "compiling" || artifactId === null) return undefined;
+    // Prepare when the artifact is *known* (D121): during compiling the
+    // drawer says so, and the turn-done path lands straight in `live` — the
+    // input is what changes the output, so the state is not a gate. With
+    // `artifactId` and `source` in deps, the compiling→live flip of an
+    // unchanged artifact re-runs nothing, while a refresh (new bytes)
+    // re-prepares exactly once.
+    if (artifactId === null) return undefined;
     let live = true;
     // Preparing is where the policy request, the Worker and the sanitiser all
     // happen, so the spinner covers exactly that window and nothing more.
@@ -73,7 +79,7 @@ export function ArtifactDrawer({
     return () => {
       live = false;
     };
-  }, [state, artifactId, source, mediaType, fetchPolicy, createWorker]);
+  }, [artifactId, source, mediaType, fetchPolicy, createWorker]);
 
   const gate = artifactGate(engine);
 
