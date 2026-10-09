@@ -13,8 +13,9 @@
  * Worker (D4). No Tauri API is reachable from inside; that is verified under a
  * real webview in 021, not here.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDrawerStore, sandboxAttr, artifactGate, type EngineGate } from "../features/artifact/store";
+import { hostSide } from "../features/artifact/channel";
 import {
   prepareArtifact,
   type PrepareInput,
@@ -81,6 +82,35 @@ export function ArtifactDrawer({
     };
   }, [artifactId, source, mediaType, fetchPolicy, createWorker]);
 
+  // The channel's host half (D6/D122): attach when a live frame is on
+  // screen, and re-attach on every new document — the transferred port dies
+  // with the old document, so the handshake must run again for the new one.
+  // `onReady` is the frame having claimed its port; an error-level report is
+  // a reason, surfaced through the same failed presentation a prepare
+  // failure gets, because a silent runtime error is the blank-frame bug
+  // again.
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [channelReady, setChannelReady] = useState(false);
+  useEffect(() => {
+    if (result?.kind !== "live") return undefined;
+    const frameWindow = frameRef.current?.contentWindow;
+    if (!frameWindow) return undefined;
+    setChannelReady(false);
+    const host = hostSide({
+      frameWindow,
+      onLog: (report) => {
+        if (report.level === "error") setResult({ kind: "failed", reason: report.text });
+      },
+      onReady: () => {
+        setChannelReady(true);
+      },
+    });
+    return () => {
+      host.dispose();
+      setChannelReady(false);
+    };
+  }, [result]);
+
   const gate = artifactGate(engine);
 
   if (!gate.enabled) {
@@ -121,10 +151,12 @@ export function ArtifactDrawer({
       <h2 className="font-mono text-xs text-neutral-200">{title}</h2>
       <p className="font-mono text-[11px] text-neutral-500">v{version}</p>
       <iframe
+        ref={frameRef}
         title="artifact-frame"
         sandbox={sandboxAttr()}
         srcDoc={result.doc}
         className="mt-2 h-96 w-full bg-white"
+        data-artifact-channel={channelReady ? "ready" : "pending"}
       />
     </aside>
   );

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, act } from "@testing-library/react";
 import { ArtifactDrawer } from "./ArtifactDrawer";
 import { useDrawerStore } from "../features/artifact/store";
 import type { prepareArtifact, PrepareResult } from "../features/artifact/prepare";
+import type { HostSide, HostSideOptions } from "../features/artifact/channel";
 
 /**
  * The drawer is where a compiled artifact becomes visible, so its contract is
@@ -25,10 +26,19 @@ vi.mock("../features/artifact/prepare", () => ({
   newNonce: () => "n1",
 }));
 
+const host = vi.hoisted(() => ({
+  hostSide: vi.fn<(options: HostSideOptions) => HostSide>(() => ({ dispose: vi.fn() })),
+}));
+
+vi.mock("../features/artifact/channel", () => ({
+  hostSide: host.hostSide,
+}));
+
 beforeEach(() => {
   cleanup();
   prepare.fn.mockClear();
   prepare.fn.mockResolvedValue({ kind: "live", doc: "<!doctype html><p>doc</p>", nonce: "n1" });
+  host.hostSide.mockClear();
   useDrawerStore.getState().reset();
 });
 
@@ -137,5 +147,38 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(screen.getByText("Demo")).not.toBeNull();
     expect(screen.getByText("v2")).not.toBeNull();
+  });
+
+  it("attaches the channel host half to the live frame (D6, D122)", async () => {
+    // The handshake's host side exists for a caller, and this is it: attach
+    // when a live frame is on screen, report readiness when the frame has
+    // claimed its port, and treat an error-level report as a reason through
+    // the same failed presentation a prepare failure gets.
+    useDrawerStore.getState().setLive("t1", "a9", 2);
+    const { unmount } = draw({ title: "Demo" });
+    const frame = await screen.findByTitle<HTMLIFrameElement>("artifact-frame");
+    expect(frame.getAttribute("data-artifact-channel")).toBe("pending");
+    await waitFor(() => {
+      expect(host.hostSide).toHaveBeenCalledOnce();
+    });
+    const options = host.hostSide.mock.calls[0]?.[0];
+    expect(options.frameWindow).toBe(frame.contentWindow);
+    act(() => {
+      options.onReady?.();
+    });
+    expect(frame.getAttribute("data-artifact-channel")).toBe("ready");
+    // The frame's own runtime reports its errors down the port; a silence
+    // there is the blank-frame bug again.
+    act(() => {
+      options.onLog({ level: "error", text: "artifact threw at runtime" });
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/artifact threw at runtime/)).not.toBeNull();
+    });
+    // The host half is disposed the moment its frame goes away — by the
+    // frame failing here, or by unmount in the steady case.
+    unmount();
+    const disposal = host.hostSide.mock.results[0].value as HostSide;
+    expect(disposal.dispose).toHaveBeenCalledOnce();
   });
 });

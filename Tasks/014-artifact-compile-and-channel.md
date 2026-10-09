@@ -75,5 +75,26 @@ disable only the named directives, never the boolean form (`D78`), which switche
 - **No webview.** `connect-src 'none'` is asserted as an assembled string, and `event.origin`/`event.source` as a validated predicate. Neither has been observed *in* an engine. The `001` spike observed the same properties in a throwaway app on WebView2; the product frame is unobserved until `021` brings `tauri-driver`. Every webview-dependent `013` criterion stays open for the same reason.
 - **The real Worker thread.** jsdom has no `Worker`, so the tests drive the same message contract with an injected factory that runs the same `transformJsx`. The `Worker` construction in `prepare.ts:29` is therefore untested code — it is three lines and it is the only untested line in the pipeline, but it is untested.
 - **No Tailwind in the frame.** `D111`: the stylesheet slot is wired and deliberately empty. Artifacts render unstyled until `022` vendors the build. The prompt tells the model to use predefined utility classes, so this is a visible gap, not a silent one.
-- **Nothing calls the drawer yet.** `setCompiling`/`setLive` have no producer, because no tool-result handler exists — `src/` is still the Phase-0 shell, which `PHASES.md` already records as why the Phase 2 gate cannot pass. Checked rather than assumed:
-  `Select-String -Path src\*.ts* -Pattern "setCompiling|setLive"`.
+- ~~**Nothing calls the drawer yet.**~~ **Closed 2026-10-09 (D121):** the production producer
+  lives in `src/features/artifact/live.ts`, called by `ChatView` — turn events flip the drawer,
+  turn-done fetches `artifact_latest`. (Was: no tool-result handler existed and `src/` was the
+  Phase-0 shell; the check that proved it then was
+  `Select-String -Path src\*.ts* -Pattern "setCompiling|setLive"`.)
+
+## Addendum 2026-10-09 — the handshake's production wiring (D122)
+
+**Finding:** `hostSide` and the frame's boot responder were two halves that never met in the
+product — the host listened on the *frame's* window (cross-origin, unreachable by design) and the
+frame never posted a window-level hello. Both were unit-tested; neither was reachable. The
+webview proof of "a refused handshake leaves the frame inert" could not have observed a real
+handshake, so the loop closed first, in the direction the sandbox permits (D122):
+
+- **Frame half:** `frame-runtime.js` posts `artifact.hello` to `window.parent` on start —
+  `frame-runtime.test.ts` "says hello to its parent on start" pins the direction by spying on the
+  parent's `postMessage`.
+- **Host half:** `channel.ts::hostSide` attaches to the shell's own window —
+  `channel.test.ts` "the listener rides the shell's window, never the frame's (D122)" dispatches
+  the hello on the shell with `source === frameWindow` and observes the boot *inside* the frame.
+- **Caller:** `ArtifactDrawer.tsx` attaches per live document and disposes with it;
+  `onReady` → `data-artifact-channel="ready"`; error-level reports → the failed presentation
+  (test: `ArtifactDrawer.test.tsx` "attaches the channel host half to the live frame (D6, D122)").

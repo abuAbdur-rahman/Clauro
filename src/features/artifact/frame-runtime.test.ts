@@ -291,3 +291,25 @@ describe("in-frame navigation is contained (D102)", () => {
     expect(inbound.map((m) => m.text ?? "").join(" ")).toMatch(/form submission/);
   });
 });
+
+describe("handshake start (D122)", () => {
+  it("says hello to its parent on start", () => {
+    // The first contact is the frame's: the host has no reason to speak
+    // until asked, and the frame has no port until it asks. Spying on the
+    // parent's postMessage pins the direction — the host's listener sits on
+    // the SHELL's window (an opaque frame's window is cross-origin, and
+    // reaching in there is what the sandbox refuses), so the hello must go
+    // to the parent, not to the frame's own window.
+    const posted: unknown[] = [];
+    const original = window.postMessage.bind(window);
+    window.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    try {
+      boot();
+    } finally {
+      window.postMessage = original;
+    }
+    expect(posted).toEqual([{ type: "artifact.hello" }]);
+  });
+});
