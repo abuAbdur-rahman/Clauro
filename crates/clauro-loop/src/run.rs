@@ -18,7 +18,7 @@
 //! still open at that point close as `aborted` through `cancel_turn` (006).
 
 use crate::queue::{QueuedItem, StopOffer, ThreadQueue};
-use clauro_core::{Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
+use clauro_core::{unbroken_run_end, Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
 use clauro_store::transcript::OpenCall;
 use clauro_store::{MessageRole, NewBlock, NewMessage, NewToolResult, NewUsage, Store, StoreError};
 use clauro_tools::{
@@ -491,6 +491,139 @@ impl TurnLoop {
         Some(item)
     }
 
+    /// Run one turn, then keep going while the thread's queue holds unsent
+    /// input (D98, D105): each drained item becomes its own turn, in order,
+    /// never merged into one prompt. A stop between turns — or any ending
+    /// other than `end_turn` — ends the chain. Reports accumulate across the
+    /// chain; `end` and the pending/offer fields describe the last turn.
+    /// This is the driver entry: anything that starts turns from the host
+    /// starts them here, so queued follow-ups dispatch once idle (023).
+    pub fn run_turn_drained(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        plan: TurnPlan<'_>,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        let TurnPlan {
+            thread_id,
+            user_text,
+            prepared,
+            workspace_dir,
+        } = plan;
+        let report = self.run_turn(
+            store,
+            registry,
+            exchange,
+            TurnPlan {
+                thread_id,
+                user_text,
+                prepared,
+                workspace_dir,
+            },
+            sink,
+        )?;
+        self.drain_chain(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            report,
+            sink,
+        )
+    }
+
+    /// Continue a truncated turn, then drain exactly like `run_turn_drained`.
+    /// The resume itself carries no user message (D106); drained items do.
+    // Eight parameters because a resumed drive needs the full context and
+    // Rust has no partial application; bundling would rename, not shrink.
+    #[allow(clippy::too_many_arguments)]
+    pub fn continue_turn_drained(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        let report = self.continue_turn(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            sink,
+        )?;
+        self.drain_chain(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            report,
+            sink,
+        )
+    }
+
+    /// The shared chain tail: while the last turn ended cleanly and the
+    /// queue holds input, run the next item as its own turn. Reports
+    /// accumulate across the chain (every dispatched call, every assistant
+    /// message); `end` and the pending/offer fields describe the last turn.
+    // Nine parameters for the same reason as above; private, two callers.
+    #[allow(clippy::too_many_arguments)]
+    fn drain_chain(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+        mut acc: TurnReport,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        loop {
+            if acc.end != TurnEnd::EndTurn {
+                return Ok(acc);
+            }
+            if self.stopped(thread_id) {
+                // A stop landing exactly between turns: halt without
+                // draining. Same shape as a mid-turn stop, minus the
+                // aborted calls (there are none open).
+                acc.end = TurnEnd::Stopped;
+                acc.stop_offer = self.queues.get(thread_id).and_then(ThreadQueue::stop_offer);
+                return Ok(acc);
+            }
+            let Some(next) = self.drain_next(thread_id) else {
+                return Ok(acc);
+            };
+            let report = self.run_turn(
+                store,
+                registry,
+                exchange,
+                TurnPlan {
+                    thread_id,
+                    user_text: &next.text,
+                    prepared,
+                    workspace_dir,
+                },
+                sink,
+            )?;
+            acc.dispatched.extend(report.dispatched);
+            acc.assistant_messages += report.assistant_messages;
+            acc.end = report.end;
+            acc.stop_offer = report.stop_offer;
+            acc.pending_approvals = report.pending_approvals;
+            acc.pending_question = report.pending_question;
+        }
+    }
     /// Run one turn to `end_turn`, stop, or transport failure.
     ///
     /// `sink` receives every provider event as it arrives; pass `&mut |_| {}`
@@ -677,7 +810,7 @@ impl TurnLoop {
             }
             // One assistant message, one gate window (D42, D101).
             self.gate_for(thread_id).reset();
-            let request = self.build_request(store, thread_id, prepared);
+            let (request, gap) = self.build_request(store, thread_id, prepared);
             let events = match exchange.step(&request, sink) {
                 Ok(events) => events,
                 Err(failure) => {
@@ -691,6 +824,26 @@ impl TurnLoop {
             let msg_id = self.insert_assistant(store, thread_id, seq)?;
             seq += 1;
             report.assistant_messages += 1;
+            // A thinking gap is a property of history, not of this turn, so
+            // it is noticed once per gap — never per-turn spam. The marker
+            // scan below is the dedup: an identical notice already on the
+            // thread means an earlier turn already said it.
+            if let Some(g) = gap {
+                if g.withheld > 0 && !thread_has_gap_notice(store, thread_id) {
+                    let seq0 = self.next_block_seq(store, &msg_id);
+                    self.insert_notice(
+                        store,
+                        &msg_id,
+                        seq0,
+                        &format!(
+                            "{}: {} later reasoning block{} withheld, not re-sent",
+                            THINKING_GAP_MARKER,
+                            g.withheld,
+                            if g.withheld == 1 { "" } else { "s" }
+                        ),
+                    )?;
+                }
+            }
             let pendings = self.persist_step(store, thread_id, turn_id, &msg_id, &events)?;
 
             // D101 at the loop: a question beside any other call — or a second
@@ -1193,7 +1346,7 @@ impl TurnLoop {
         store: &Store,
         thread_id: &str,
         prepared: &PreparedThread,
-    ) -> BuiltRequest {
+    ) -> (BuiltRequest, Option<ThinkingGap>) {
         let tools: Vec<Value> = prepared
             .tools
             .iter()
@@ -1210,11 +1363,12 @@ impl TurnLoop {
                 v
             })
             .collect();
+        let (messages, gap) = assemble_messages(store, thread_id);
         let mut request = build_normal_request(NormalBuildInput {
             model: prepared.model.clone(),
             max_tokens: prepared.max_tokens,
             system: prepared.system_text.clone(),
-            messages: assemble_messages(store, thread_id),
+            messages,
             tools,
             thinking: ThinkingConfig {
                 budget_tokens: prepared.thinking_budget,
@@ -1230,8 +1384,32 @@ impl TurnLoop {
                 value.push_str(INLINE_TOOLS_BETA);
             }
         }
-        request
+        (request, gap)
     }
+}
+
+/// A thinking-history gap found while rebuilding the request: later
+/// reasoning blocks withheld this turn, not re-sent into a verification that
+/// must fail (D72). Surfaced as one transcript notice, deduplicated by the
+/// caller — the gap is a property of history, not of the turn.
+pub struct ThinkingGap {
+    pub withheld: usize,
+}
+
+/// Marker prefix for gap notices. The driver scans for it to deduplicate:
+/// one gap, one notice, never per-turn spam.
+pub const THINKING_GAP_MARKER: &str = "thinking history has a gap";
+
+/// Whether this thread already carries a gap notice. The scan is over stored
+/// rows, not memory: a restart must not re-notice a gap it already named.
+fn thread_has_gap_notice(store: &Store, thread_id: &str) -> bool {
+    store.blocks_for_thread(thread_id).iter().any(|b| {
+        b.kind == "notice"
+            && serde_json::from_str::<Value>(&b.payload)
+                .ok()
+                .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
+                .is_some_and(|t| t.contains(THINKING_GAP_MARKER))
+    })
 }
 
 /// Rebuild the input value a held call was dispatched with.
@@ -1315,7 +1493,7 @@ fn insert_text_message(
 /// Stored rows for one message: block seq, kind, payload, signature.
 type BlockRows = Vec<(i64, String, String, Option<String>)>;
 
-fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
+fn assemble_messages(store: &Store, thread_id: &str) -> (Vec<Value>, Option<ThinkingGap>) {
     use std::collections::{BTreeMap, HashSet};
     let mut by_message: BTreeMap<(i64, String), BlockRows> = BTreeMap::new();
     for b in store.blocks_for_thread(thread_id) {
@@ -1345,6 +1523,36 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
         }
     }
     let mut messages = Vec::new();
+    // Thinking presence in surface order, over the same ordered walk the
+    // message loop below performs. A block counts as present when it carries
+    // a signature (the `dropped` column exists for compaction to mark
+    // removals; nothing sets it today, so signature presence is the whole
+    // signal — documented, not assumed). `end` is the unbroken prefix; every
+    // present block at or past it is withheld, never replayed.
+    let mut presence: Vec<bool> = Vec::new();
+    for ((_, role), blocks) in by_message.iter() {
+        // Same filter as the main loop below: only assistant thinking
+        // replays, so only it participates in the run. Counting any other
+        // role would shift every ordinal past it.
+        if role != "assistant" {
+            continue;
+        }
+        let mut ordered = blocks.clone();
+        ordered.sort_by_key(|(seq, _, _, _)| *seq);
+        for (_, kind, _, signature) in &ordered {
+            if kind == "thinking" {
+                presence.push(signature.as_ref().is_some_and(|s| !s.is_empty()));
+            }
+        }
+    }
+    let end = unbroken_run_end(&presence);
+    let withheld = presence.iter().skip(end).filter(|p| **p).count();
+    let gap = if withheld > 0 {
+        Some(ThinkingGap { withheld })
+    } else {
+        None
+    };
+    let mut think_ord: usize = 0;
     for ((_, role), mut blocks) in by_message {
         blocks.sort_by_key(|(seq, _, _, _)| *seq);
         if role == "user" {
@@ -1368,6 +1576,15 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
                         json!({"type": "text", "text": v.get("text").and_then(|t| t.as_str()).unwrap_or("")}),
                     ),
                     "thinking" => {
+                        let ord = think_ord;
+                        think_ord += 1;
+                        // Withhold everything past the unbroken prefix: a
+                        // later block replayed without its run fails
+                        // verification server-side (D72), so it never goes
+                        // on the wire. The transcript notice names the count.
+                        if ord >= end {
+                            continue;
+                        }
                         let mut block = json!({
                             "type": "thinking",
                             "thinking": v.get("text").and_then(|t| t.as_str()).unwrap_or(""),
@@ -1422,7 +1639,7 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
             }
         }
     }
-    messages
+    (messages, gap)
 }
 
 fn now_ms() -> i64 {

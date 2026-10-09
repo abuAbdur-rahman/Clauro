@@ -879,11 +879,11 @@ fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
                 workspace_dir: session_dir,
             };
             guard
-                .run_turn(&store_guard, &mut registry, &mut exchange, plan, &mut sink)
+                .run_turn_drained(&store_guard, &mut registry, &mut exchange, plan, &mut sink)
                 .map_err(map_loop_error)
         }
         TurnStartKind::Resume => guard
-            .continue_turn(
+            .continue_turn_drained(
                 &store_guard,
                 &mut registry,
                 &mut exchange,

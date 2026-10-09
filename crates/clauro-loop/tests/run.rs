@@ -691,3 +691,144 @@ fn regenerate_without_prior_user_text_fails_typed() {
         "typed store error, never a panic: {err:?}"
     );
 }
+
+#[test]
+fn drained_queue_runs_in_order_as_separate_turns() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    // Two follow-ups queued before the first turn runs (D98: appends, never
+    // blocks; D105: in-order turns, never merged).
+    turn_loop.send_while_busy("t1", "second q");
+    turn_loop.send_while_busy("t1", "third q");
+    let mut ex = Script::new(vec![
+        text_step("first a"),
+        text_step("second a"),
+        text_step("third a"),
+    ]);
+    let report = turn_loop
+        .run_turn_drained(
+            &store,
+            &mut reg,
+            &mut ex,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "first q",
+                prepared: &tools,
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("drained run");
+    assert_eq!(report.end, TurnEnd::EndTurn);
+    assert_eq!(report.assistant_messages, 3);
+    assert_eq!(
+        role_texts(&store, "user"),
+        vec!["first q", "second q", "third q"]
+    );
+    assert_eq!(
+        role_texts(&store, "assistant"),
+        vec!["first a", "second a", "third a"]
+    );
+    assert!(
+        turn_loop.drain_next("t1").is_none(),
+        "the queue is empty afterwards"
+    );
+}
+
+#[test]
+fn empty_queue_runs_exactly_one_turn() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    let report = turn_loop
+        .run_turn_drained(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("only a")]),
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "only q",
+                prepared: &tools,
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("drained run");
+    assert_eq!(report.end, TurnEnd::EndTurn);
+    assert_eq!(report.assistant_messages, 1);
+}
+
+#[test]
+fn failed_first_turn_does_not_drain() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    turn_loop.send_while_busy("t1", "queued q");
+    let report = turn_loop
+        .run_turn_drained(
+            &store,
+            &mut reg,
+            &mut Script::failing_after(text_step("first a"), "boom"),
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "first q",
+                prepared: &tools,
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("drained run");
+    assert_eq!(report.end, TurnEnd::TransportError);
+    // The queued input became a turn and stays in history (D68) — it is
+    // consumed, not lost and not silently dropped. A retry continues from
+    // the transcript; re-queueing would duplicate the row.
+    assert_eq!(role_texts(&store, "user"), vec!["first q", "queued q"]);
+    assert_eq!(role_texts(&store, "assistant"), vec!["first a"]);
+    assert!(
+        turn_loop.drain_next("t1").is_none(),
+        "consumed input is history now, not queue"
+    );
+}
+
+#[test]
+fn continue_drained_resumes_then_drains() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let tools = prepared(available_tools());
+    let mut turn_loop = TurnLoop::new();
+    turn_loop.send_while_busy("t1", "queued q");
+    let report = turn_loop
+        .continue_turn_drained(
+            &store,
+            &mut reg,
+            &mut Script::new(vec![text_step("part one"), text_step("part two")]),
+            "t1",
+            &tools,
+            &dir.path,
+            &mut |_| {},
+        )
+        .expect("drained continue");
+    assert_eq!(report.end, TurnEnd::EndTurn);
+    // The resume appends no user row; the drained item does.
+    assert_eq!(role_texts(&store, "user"), vec!["queued q"]);
+    assert_eq!(
+        role_texts(&store, "assistant"),
+        vec!["part one", "part two"]
+    );
+}

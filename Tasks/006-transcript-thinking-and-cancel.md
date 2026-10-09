@@ -2,7 +2,6 @@
 
 **Phase** 1 · **Depends** `005` · **Decisions** D19, D54, D65, D68, D72, D76, D98, D99, D100, D106
 **Contracts** §2, §3
-
 **Status: the store half, the cancel semantics, and the renderer all exist and are verified
 2026-10-07.** `cargo test --workspace --locked` 259/259, `vitest` 167/167 on this host.
 
@@ -42,13 +41,23 @@ in the repo" — false, `package.json` has carried one since `Tasks/014`. It als
 pipeline existed; `marked` is now adopted, with the rejected alternative recorded in
 `TECH_STACK.md` §7.2 per §6.1 rule 3.
 
-**Still open, and not by any amount of backend work:**
+**Still open after 2026-10-09 (one item, and it needs a human):**
 
-- **Middle-removal is detected and nothing surfaces it.** `unbroken_run_end`
-  (`clauro-core/src/content.rs:132`) still has no caller outside its own test. This change gave
-  `ContentBlock::Notice` a producer at the seam, but the **resume-prefix** call site — the one this
-  criterion is about — is still absent.
-- **I1/I3 still have no fixture corpus.** Unchanged by this work; that criterion is untouched.
+- **A live turn with a stored key.** Every layer except the socket is proven;
+  the socket needs a real key, and no test may use one by rule.
+
+**Closed 2026-10-09:**
+
+- **Middle-removal is surfaced, not just detected.** `assemble_messages` now
+  computes the unbroken thinking prefix via `unbroken_run_end` (its first
+  production caller), withholds later blocks from the request, and the driver
+  inserts one deduplicated `notice` row naming the withheld count
+  (`crates/clauro-loop/tests/thinking.rs`, 3 tests, all failed first).
+- **I1/I3 run over a fixture corpus.** `crates/clauro-store/tests/fixtures/
+  transcripts/*.json` (basic, multi-turn, broken-pairing, regression) seeded
+  through the real write path and checked over real `blocks_for_thread`
+  output (`tests/transcript_fixtures.rs`, 3 tests). The regression file
+  additionally proves I3 is *enforced* at write time (`GenerationRegression`).
 - **A host now drives turns from the UI (2026-10-07).** `src-tauri/src/turn.rs`:
   `turn_start` validates, reads the key from the keychain, ensures the thread row, and spawns a
   dedicated thread running `run_turn` through `LiveExchange` (blocking Anthropic SSE, `retry_delay`
@@ -114,13 +123,13 @@ mid-thread: thinking effort, `max_tokens`, `tool_choice`, `metadata`, `thinking.
 
 ## Acceptance criteria
 
-- [ ] I1, I3 hold on any transcript fixture — **STILL PARTIAL, untouched by this change.** I1 is
-      enforced at write time (`crates/clauro-store/src/lib.rs:563-586`) and checked on three
-      hand-built rows (`tests/transcript.rs:119,130,139`). I3's `check_generation_monotonic`
-      (`src/transcript.rs:72`) is still only tested on hand-constructed `FullBlock` values
-      (`tests/transcript.rs:276-289`) — `blocks_for_thread` output never flows through it. The
-      fixture corpus this criterion names still does not exist; the only fixtures in the repo are
-      the SSE ones under `crates/clauro-transport/tests/fixtures/`
+- [x] I1, I3 hold on any transcript fixture — DONE 2026-10-09. The corpus lives at
+      `crates/clauro-store/tests/fixtures/transcripts/` (`basic-turn`, `multi-turn`,
+      `broken-pairing`, `generation-regression` JSON), seeded through the real write path and
+      checked over real `blocks_for_thread` output (`tests/transcript_fixtures.rs`, 3 tests).
+      Valid fixtures hold both invariants; the broken one is detected (`unpaired ==
+      ["call-x"]`); the regression file proves I3 is *enforced* at write time with a typed
+      `GenerationRegression` refusal — the row never lands
 - [x] Cancel closes every dispatched call; zero orphans —
       `crates/clauro-store/src/transcript.rs:180-217`; `tests/transcript.rs:165-198` asserts
       `aborted == 2`, `already_resolved == 1`, `unpaired.is_empty()`; `aborted_carries_aborted_status`
@@ -134,12 +143,12 @@ mid-thread: thinking effort, `max_tokens`, `tool_choice`, `metadata`, `thinking.
       asserted across the new seam: `tests/seam.rs::thinking_row_keeps_its_signature`, and a
       thinking row stored **without** a signature degrades to a notice rather than becoming a
       re-sendable-looking block
-- [ ] Middle-removal invalidation is detected and surfaced — **STILL PARTIAL: detection only.**
-      Detection is real — `unbroken_run_end` at `clauro-core/src/content.rs:132`, tested at
-      `clauro-core/tests/content.rs:85-90`. **Still nothing surfaces it**: that function still has no
-      caller outside its own test. This change gave `ContentBlock::Notice` a producer (`seam.rs`
-      degrades unreadable rows into one) but did **not** add the resume-prefix call site the
-      criterion is actually about
+- [x] Middle-removal invalidation is detected and surfaced — DONE 2026-10-09.
+      `assemble_messages` computes the unbroken thinking prefix via `unbroken_run_end`
+      (its first production caller — detection finally has one), withholds later blocks from
+      the request, and the driver inserts one deduplicated notice row naming the withheld
+      count (`THINKING_GAP_MARKER`). `crates/clauro-loop/tests/thinking.rs`: withhold +
+      surface, dedup across turns, whole-run control — all three failed first
 - [x] One `Thinking` shape renders for both adapters — shape **and** render, both asserted. The data
       shape was already unified and is asserted from both adapters' real events —
       `crates/clauro-transport/tests/thinking_shape.rs:87-117` compares `mem::discriminant` over

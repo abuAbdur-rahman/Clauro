@@ -79,10 +79,12 @@ a display.
 **Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
 Windows CI jobs. **Linux jobs parked 2026-10-06 (D114), owned by Phase 7 (D115)** — see the Phase 7 gate.
 
-**Gate status:** ◐ half met. `002` and `003` are complete; `001`'s Windows verdict is committed
-(`docs/spikes/sandbox-verdict.md`) but **the WebKitGTK app was never written**, so the Linux column
-is empty by rule (`AGENTS.md` §8a). `event.origin` and `event.source` were also never captured even on
-Windows. Two named cells still need a re-run under `Tasks/014`.
+**Gate status:** ✅ closed Windows-only 2026-10-09 (D115). `002` and `003` are complete;
+`001`'s Windows verdict is committed (`docs/spikes/sandbox-verdict.md`). The Linux column —
+the WebKitGTK app, `event.origin`/`event.source` capture, both Linux jobs — is owned by
+Phase 7 and gates nothing here: an unrun floor blocks nothing (D50), and Phases 0–6 close
+Windows-only by decision, not by omission. (`event.origin`/`event.source` capture on Windows
+itself remains open under `Tasks/014` — that is Phase 3 work, not this gate.)
 
 > **The two floor jobs are labels, not floors yet.** `ci.yml:119-122` is a `Write-Host` stub that pins
 > no runtime, and `linux floor` is byte-identical to `linux primary`. The labels are there; `D50`'s
@@ -105,7 +107,7 @@ Windows. Two named cells still need a re-run under `Tasks/014`.
 |---|---|---|---|
 | `Tasks/004-sqlite-schema-and-append-only.md` | ✅ 9/9 | §1 | D7, D8, D19, D32, D34, D47, D52, D55, D57, D63, D70, D79 |
 | `Tasks/005-sse-transport-and-anthropic-adapter.md` | ✅ 8/8 — retry policy has callers (`stream_step`, `LiveExchange`); OpenAI `Ignored`→notice wired; live Gemma 4 smoke shapes recorded | §5 | D20, D21, D24, D48, D56, D69, D70, D71, D73, D75, D80, D81 |
-| `Tasks/006-transcript-thinking-and-cancel.md` | ◐ renderer + streaming sink + purify done 2026-10-07; I1/I3 fixtures and middle-removal surfacing still open | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76, D100 |
+| `Tasks/006-transcript-thinking-and-cancel.md` | ✅ renderer + streaming + purify + I1/I3 corpus + gap surfacing, all green 2026-10-09; live keyed turn still human-gated | §2, §3 | D18, D19, D54, D61, D65, D68, D72, D76, D100 |
 
 **Gate:** a streaming turn renders on both adapters; stop mid-turn keeps completed work and closes
 every dispatched call; reasoning is one collapsible region for both providers.
@@ -126,8 +128,11 @@ gate's remaining work is a live-key run plus the translator, not more investigat
 update:** the socket-level half is now proven for the second adapter by a direct live smoke
 (Google Gemini key, `models/gemma-4-26b-a4b-it`): 62 models listed, one text turn completed,
 streaming `data:` chunks plus `[DONE]` observed, and the in-band `<thought>` reasoning marker
-(`extra_content.google.thought`) recorded in `Tasks/005` for the translator. What remains is
-the in-app turn with a stored key, plus the translator itself.
+(`extra_content.google.thought`) recorded in `Tasks/005` for the translator. **2026-10-09
+update:** the transcript invariants are corpus-proven (I1/I3 over
+`tests/fixtures/transcripts/`, write-time `GenerationRegression` refusal) and thinking gaps are
+withheld from requests with one deduplicated notice. What remains is the in-app turn with a
+stored key (human-gated: no test may use a key by rule), plus the translator itself.
 
 **Unblocks:** Phase 2 (the loop needs a surface to run against), Phase 4 (the meter needs a real
 transcript to measure).
@@ -141,7 +146,7 @@ transcript to measure).
 | Task | State | Contract | D-refs |
 |---|---|---|---|
 | `Tasks/007-tool-registry-and-permissions.md` | ✅ dispatch consults permissions; `resolve_answer` called by answer path | §3 | D19, D26, D27, D39, D51, D55 |
-| `Tasks/023-turn-loop-and-system-prompt.md` | ◐ loop enforces permissions/approval/gate/bounding; host drives turns, idle drain still open | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85 |
+| `Tasks/023-turn-loop-and-system-prompt.md` | ✅ loop enforces permissions/approval/gate/bounding; host drives turns and drains the queue | §2, §3 | D7, D11, D19, D27, D33, D39, D51, D55, D65, D67, D68, D76, D82, D85, D98, D105 |
 | `Tasks/008-memory-tool.md` | ✅ backend 8/10; two UI criteria unstarted | §1, §3 | D7, D8, D9, D10, D11, D35, D43, D51 |
 | `Tasks/009-question-tool.md` | ✅ pause + answer + resume answered end to end (D118); question card answerable inline | §2, §3 | D40, D41, D42, D43, D101, D118 |
 | `Tasks/010-fs-tool.md` | ◐ backend 11/11; ingest/serve/session-dirs uncalled (018/shell later) | §3 | D31, D32, D33, D34, D39, D44, D47, D52, D79, D109 |
@@ -152,18 +157,15 @@ transcript to measure).
 schema; no handler throws. `artifact` and `bash` arrive in Phase 3, so **two of the eight tools are
 not yet callable at this gate** — that is expected, not a failure.
 
-**Gate status:** ◐ **substantially met 2026-10-07.** The loop runs to `end_turn`, nothing
-throws, and all five named tools exist and are callable through the registry (`memory`,
-`question`, `fs`, `web-search`, `web-fetch`). Permissions are consulted at dispatch
-(`resolve`), ask-mode approval routes through `ApprovalQueue` with hold-and-resume,
-`QuestionGate` observes every call with per-message reset, mixed questions are refused by
-lookahead, and output is bounded on the way out (`D27`). A host drives turns end to end
-(`src-tauri/src/turn.rs`). A sole valid question pauses the turn (`AwaitingAnswer`) instead
-of echoing the card back; answering validates, persists the call's one result, and resumes
-(D118, `question_answer` command + answerable card). What keeps the gate from ✅, and only
-this: nothing observes idleness to drain the queue (`drain_next` has no caller outside
-tests) — so a message sent mid-turn waits. `resolve_answer`, uncalled for the life of the
-project, finally has its production caller.
+**Gate status:** ✅ **met 2026-10-09.** Every clause verified on this host: the loop runs to
+`end_turn` (`tests/run.rs` asserts `end == EndTurn` across fixtures); all five named tools are
+callable through the registry and driven end to end (`e2e_phase2.rs`: memory, fs, web-fetch,
+question through real dispatch); `compact` is filtered out of the request schema by construction
+(`build_request`); no handler throws (`catch_unwind` → typed `Error`, `tests/registry.rs`). On top
+of the gate's letter: permissions consulted at dispatch, approval hold-and-resume, question-gate
+per-message windows, mixed-question refusal, output bounding, a host driving turns, queued
+follow-ups draining as in-order turns, and questions pausing/answering/resuming (D118). The two
+tools outside this gate (`artifact`, `bash`) remain Phase 3's, as expected.
 
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.
