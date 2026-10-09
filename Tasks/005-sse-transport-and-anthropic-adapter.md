@@ -136,5 +136,22 @@ script outside the repo (TEMP, deleted after the run; key from a gitignored
   D80 exists to prevent. Non-thinking deltas carry no `extra_content`.
 
 What this does NOT prove: tool-call framing on this endpoint (no `tools` were
-sent — one text turn only), and nothing inside the app (no key is stored on
+sent - one text turn only), and nothing inside the app (no key is stored on
 this host, and the in-app turn path is still unverified end to end).
+
+**2026-10-09 addendum — the translator landed (D119).** Request side:
+`crates/clauro-transport/src/openai_request.rs::translate_request` rewrites the loop's
+Anthropic body as chat-completions (system → the first message, `input_schema` →
+`function.parameters`, `tool_use` → `tool_calls` with JSON-string arguments, `tool_result` →
+`role: "tool"` messages directly after the call; `thinking`/`context_management`/beta headers
+**dropped, never approximated**) — pinned by `tests/openai_request.rs` (7 tests), and
+`assemble_messages` now sends `tool_result` in the following user message, the shape both APIs
+require (the latent 400 this task's body-shape notes implied). Routing:
+`src-tauri/src/turn.rs::wire_for` picks the wire from the provider row *before* any key is read
+or slot claimed; `LiveExchange::build_http` is pure and tested — as-built body with
+`x-api-key` on Anthropic, translated body with `Authorization: Bearer` on compat, beta headers
+forwarded only where their controls still exist. Response side: the `extra_content.google.thought`
+marker recorded above is now parsed — `tests/openai_thought_marker.sse` (synthesised from this
+recording, labelled as such, no key used) pins thought→thinking region,
+`</thought>`+answer in one delta → split, and markup never reaching either region. Still not
+proven live: tool-call framing on this endpoint, and any in-app keyed turn (human-gated).

@@ -86,14 +86,17 @@ showing 200+ providers when zero keys exist is an overload no fetch policy fixes
   (key first, then rows), `provider_set_key` (stores key, proves it against live `/models`,
   rolls the key back on failure), `provider_models` (stored + stale flag), `provider_refresh`,
   `provider_models_enriched` (one-invoke join with lazy models.dev enrichment, 7-day TTL).
-- **Turn integration:** `turn_start` reads the provider row — unknown id is `NoProvider`,
-  Anthropic is live, OpenAI-compatible rows are `UnsupportedProvider` until the request
-  translator lands (the loop builds Anthropic-shaped bodies; sending one at a chat-completions
-  endpoint would be a silent 400 — refused here instead).
+- **Turn integration:** `turn_start` reads the provider row — unknown id is `NoProvider`, and the
+  row picks the wire (D119, landed 2026-10-09): Anthropic posts as built, OpenAI-compatible rows
+  post the translated body to `{base}/chat/completions` with bearer auth; a compat row with no
+  endpoint URL is `UnsupportedProvider` (never a guessed host).
 - **UI:** `ProvidersView` (add/key/refresh/remove, 6 tests), `ModelPicker` re-sourced to
   configured providers only with unknown-limits models unselectable (6 tests), boot no longer
   fetches anything, providers view wired into `App`.
 - **Still honestly open:** the live-key proof (no key on this host — `provider_set_key` and
-  `provider_refresh` are untested against a real endpoint by rule), the OpenAI request
-  translator, and per-model limits for custom endpoints (owned by the translator slice, which
-  needs them for the request anyway).
+  `provider_refresh` are untested against a real endpoint by rule) and per-model limits for
+  custom endpoints (models.dev cannot cover an arbitrary host; unknown-limits models stay
+  unselectable until limits arrive by another route). The OpenAI request translator landed
+  2026-10-09 (D119: request side in `clauro-transport/src/openai_request.rs`, routing in
+  `turn.rs` — both with tests; the response side and the Gemini thought-marker shape live in
+  `tests/openai_compat.rs`).

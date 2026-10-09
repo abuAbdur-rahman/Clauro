@@ -16,11 +16,12 @@
 //! `AtomicBool` directly, and the loop's own `stopped()` reads the same
 //! allocation. Same flag, no lock.
 //!
-//! Provider routing: `turn_start` reads the provider row first. Anthropic is
-//! the live path; OpenAI-compatible rows are configured (key + models work)
-//! but turns need the request translator, so they fail typed
-//! (`UnsupportedProvider`) rather than sending an Anthropic-shaped body at an
-//! endpoint that would 400 it. An unknown id is `NoProvider`.
+//! Provider routing: `turn_start` reads the provider row first, and the row
+//! decides the wire (D48): Anthropic rows post the loop's Anthropic-shaped
+//! body at the fixed endpoint; OpenAI-compatible rows post the translator's
+//! chat-completions body at their configured endpoint, bearer-authenticated.
+//! A compat row with no endpoint URL is refused typed (`UnsupportedProvider`)
+//! rather than sent to a guessed host; an unknown id is `NoProvider`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -36,8 +37,8 @@ use clauro_loop::{
 };
 use clauro_store::{NewThread, Store};
 use clauro_transport::{
-    retry_delay, AnthropicParser, BuiltRequest, InboundKind, NormalisedEvent, SseFramer,
-    StreamParser,
+    openai_request::translate_request, retry_delay, AnthropicParser, BuiltRequest, InboundKind,
+    NormalisedEvent, OpenAiParser, SseFramer, StreamParser,
 };
 
 /// Per-event channel: emitted as each provider event arrives.
@@ -224,7 +225,49 @@ pub fn map_event(event: &NormalisedEvent) -> Vec<TurnEvent> {
     }
 }
 
-/// The live HTTP exchange: one Anthropic SSE stream per `step` (D24, D56).
+/// Which wire an exchange speaks (D48): Anthropic's Messages API, or one
+/// OpenAI-compatible `chat/completions` endpoint. The provider row decides —
+/// there is no negotiation, and no request is ever sent on a wire the row
+/// did not name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wire {
+    Anthropic,
+    OpenAi { endpoint: String },
+}
+
+/// Why a provider row cannot be routed. Mapped by the command that reads the
+/// row: both `TurnError` and `AnswerError` carry `UnsupportedProvider` for
+/// exactly this case, so the view sees one typed refusal either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WireError {
+    /// A compat row with no endpoint URL: there is nothing to POST to.
+    NoEndpoint,
+}
+
+/// Decide the wire for a provider row, before any key is read or any slot is
+/// claimed. Anthropic needs no endpoint (the one URL the shell is allowed to
+/// know); a compat row must name one — refused typed rather than guessed.
+pub(crate) fn wire_for(
+    kind: clauro_store::ProviderKind,
+    base_url: Option<&str>,
+) -> Result<Wire, WireError> {
+    match kind {
+        clauro_store::ProviderKind::Anthropic => Ok(Wire::Anthropic),
+        clauro_store::ProviderKind::OpenAiCompatible => {
+            let base = base_url.map(str::trim).unwrap_or("");
+            let base = base.trim_end_matches('/');
+            if base.is_empty() {
+                return Err(WireError::NoEndpoint);
+            }
+            Ok(Wire::OpenAi {
+                endpoint: format!("{base}/chat/completions"),
+            })
+        }
+    }
+}
+
+/// The live HTTP exchange: one SSE stream per `step` (D24, D56), on whichever
+/// wire the provider row named (D48).
 ///
 /// Blocking client, called from the dedicated turn thread. Retries use
 /// `retry_delay` unchanged — the policy's second real caller (the first is
@@ -232,41 +275,97 @@ pub fn map_event(event: &NormalisedEvent) -> Vec<TurnEvent> {
 /// parsed event is sunk **before** the next chunk is read, which is what makes
 /// the turn stream rather than appear whole.
 ///
-/// Anthropic-only by construction: the loop builds Anthropic-shaped requests,
-/// so only an Anthropic-shaped endpoint can receive them. The OpenAI request
-/// translator arrives separately; until then `turn_start` refuses compat
-/// providers before an exchange is ever built.
+/// `build_http` is the seam between the two wires — pure, so URL, headers,
+/// and translation are provable without a socket. The Anthropic wire posts
+/// the loop's body as built; the compat wire runs `translate_request`
+/// (Anthropic-only controls dropped, never faked) and swaps the key header
+/// for bearer auth, with no beta header to forward.
 pub struct LiveExchange {
     client: reqwest::blocking::Client,
     api_key: String,
+    wire: Wire,
+}
+
+/// Everything a send needs, decided by the wire alone. Pure output of
+/// `build_http`, so tests pin the routing without a socket.
+struct WireRequest {
+    url: String,
+    headers: Vec<(String, String)>,
+    body: serde_json::Value,
 }
 
 impl LiveExchange {
-    pub fn anthropic(api_key: String) -> Result<Self, TurnError> {
+    pub fn new(wire: Wire, api_key: String) -> Result<Self, TurnError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| TurnError::Transport {
                 message: format!("cannot build HTTP client: {e}"),
             })?;
-        Ok(Self { client, api_key })
+        Ok(Self {
+            client,
+            api_key,
+            wire,
+        })
+    }
+
+    /// Decide URL, headers, and body for one request. Pure — no socket.
+    fn build_http(&self, request: &BuiltRequest) -> WireRequest {
+        // SSE streaming is a transport concern, not a loop concern: the loop
+        // builds a complete request and this layer asks for it as a stream.
+        match &self.wire {
+            Wire::Anthropic => {
+                let mut body = request.body.clone();
+                body["stream"] = serde_json::Value::Bool(true);
+                let mut headers = vec![
+                    ("content-type".to_string(), "application/json".to_string()),
+                    ("x-api-key".to_string(), self.api_key.clone()),
+                    (
+                        "anthropic-version".to_string(),
+                        ANTHROPIC_VERSION.to_string(),
+                    ),
+                ];
+                headers.extend(
+                    request
+                        .headers
+                        .iter()
+                        .map(|(name, value)| (name.clone(), value.clone())),
+                );
+                WireRequest {
+                    url: ANTHROPIC_URL.to_string(),
+                    headers,
+                    body,
+                }
+            }
+            Wire::OpenAi { endpoint } => {
+                // The translator drops Anthropic-only controls, so the beta
+                // header that gated them drops with them — sending it would
+                // claim controls this body does not carry. Auth is bearer,
+                // the one header every chat-completions endpoint reads.
+                let mut body = translate_request(&request.body);
+                body["stream"] = serde_json::Value::Bool(true);
+                WireRequest {
+                    url: endpoint.clone(),
+                    headers: vec![
+                        ("content-type".to_string(), "application/json".to_string()),
+                        (
+                            "authorization".to_string(),
+                            format!("Bearer {}", self.api_key),
+                        ),
+                    ],
+                    body,
+                }
+            }
+        }
     }
 
     fn send_once(&self, request: &BuiltRequest) -> Result<reqwest::blocking::Response, TurnError> {
-        let mut body = request.body.clone();
-        // SSE streaming is a transport concern, not a loop concern: the loop
-        // builds a complete request and this layer asks for it as a stream.
-        body["stream"] = serde_json::Value::Bool(true);
-        let mut req = self
-            .client
-            .post(ANTHROPIC_URL)
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json");
-        for (name, value) in &request.headers {
+        let wire = self.build_http(request);
+        let mut req = self.client.post(&wire.url);
+        for (name, value) in &wire.headers {
             req = req.header(name.as_str(), value.as_str());
         }
-        req.json(&body).send().map_err(|e| {
+        req.json(&wire.body).send().map_err(|e| {
             // No status exists to back off on (DNS, TLS, refused): report, do
             // not loop on it until the cap.
             if e.is_timeout() {
@@ -339,7 +438,11 @@ impl Exchange for LiveExchange {
             // next chunk is read. A fresh framer per step: resuming a stale
             // buffer across steps would replay a judged prefix.
             let mut framer = SseFramer::new();
-            let mut parser: Box<dyn StreamParser> = Box::new(AnthropicParser::new());
+            // The wire names the parser: same union, two framings (D48).
+            let mut parser: Box<dyn StreamParser> = match &self.wire {
+                Wire::Anthropic => Box::new(AnthropicParser::new()),
+                Wire::OpenAi { .. } => Box::new(OpenAiParser::new()),
+            };
             let mut out = Vec::new();
             let mut stream = resp;
             let mut buf = [0u8; 8192];
@@ -519,9 +622,9 @@ pub enum TurnError {
     NoProvider {
         provider: String,
     },
-    /// Configured, but this build cannot speak its wire yet. Today that is
-    /// every OpenAI-compatible provider: key + models work, turns need the
-    /// Anthropic→chat-completions request translator (tracked, not silent).
+    /// A row this build cannot route: an OpenAI-compatible provider with no
+    /// endpoint URL. Both wires ship (D48); a row that names neither is
+    /// refused typed rather than sent to a guessed host.
     UnsupportedProvider {
         provider: String,
     },
@@ -555,7 +658,7 @@ impl std::fmt::Display for TurnError {
             ),
             Self::UnsupportedProvider { provider } => write!(
                 f,
-                "provider {provider} is configured but live turns need the OpenAI request translator, which is not built yet"
+                "provider {provider} has no endpoint URL configured; set one before starting a turn"
             ),
             Self::ThreadMissing { thread_id } => write!(f, "no such thread: {thread_id}"),
             Self::PrefixChanged { want, got } => write!(
@@ -600,13 +703,12 @@ pub fn turn_start(
     max_tokens: u32,
 ) -> Result<TurnStarted, TurnError> {
     validate_start(&thread_id, &text, &provider, &model)?;
-    // The provider row decides the wire. Anthropic is live; OpenAI-compatible
-    // rows are fully configured (key + models work) but turns need the
-    // request translator — tracked work, refused here rather than sent as a
-    // body the endpoint would 400. An unknown id is `NoProvider`: the gated
-    // picker cannot produce it, so it means a removed provider or a race
-    // with removal.
-    let kind = {
+    // The provider row decides the wire (D48), before any key is read or any
+    // slot is claimed. A compat row with no endpoint URL cannot be routed:
+    // refused typed rather than sent to a guessed host. An unknown id is
+    // `NoProvider`: the gated picker cannot produce it, so it means a removed
+    // provider or a race with removal.
+    let (kind, base_url) = {
         let store = state.store.lock().map_err(|_| TurnError::Store {
             reason: "store lock poisoned".to_string(),
         })?;
@@ -620,12 +722,12 @@ pub fn turn_start(
                     provider: provider.clone(),
                 });
             }
-            Some(row) => row.kind,
+            Some(row) => (row.kind, row.base_url),
         }
     };
-    if kind != clauro_store::ProviderKind::Anthropic {
-        return Err(TurnError::UnsupportedProvider { provider });
-    }
+    let wire = wire_for(kind, base_url.as_deref()).map_err(|_| TurnError::UnsupportedProvider {
+        provider: provider.clone(),
+    })?;
     // The key lives in the OS keychain under the provider name. Read it here,
     // on the command thread, so the turn thread never touches the keychain —
     // and the key itself never crosses into an event payload.
@@ -691,6 +793,7 @@ pub fn turn_start(
                 budget,
                 max_tokens: max,
                 api_key: &api_key,
+                wire,
                 session_dir: &session_dir,
                 project_dir: &project_dir,
             });
@@ -747,6 +850,9 @@ struct TurnJob<'a> {
     budget: u32,
     max_tokens: u32,
     api_key: &'a str,
+    /// The wire the provider row named (D48) — decided in `turn_start` /
+    /// `question_answer`, before the thread spawned.
+    wire: Wire,
     session_dir: &'a Path,
     project_dir: &'a Path,
 }
@@ -800,7 +906,7 @@ fn prepare_loop(
         thinking_budget: job.budget,
         rules: Vec::new(),
     };
-    let exchange = LiveExchange::anthropic(job.api_key.to_string())?;
+    let exchange = LiveExchange::new(job.wire.clone(), job.api_key.to_string())?;
     Ok((registry, prepared, exchange))
 }
 
@@ -975,8 +1081,10 @@ pub fn question_answer(
     }
     // Resume pre-checks, all read-only: the provider must be live-routable
     // and keyed, and no turn may hold the thread. Anything here fails before
-    // the answer is persisted, so a refusal never strands half a turn.
-    let kind = {
+    // the answer is persisted, so a refusal never strands half a turn. The
+    // row decides the wire here exactly as at start (D48) — a resume never
+    // switches wire mid-thread.
+    let (kind, base_url) = {
         let store = state.store.lock().map_err(|_| poisoned("store"))?;
         match store.get_provider(&provider).map_err(store_failed)? {
             None => {
@@ -984,12 +1092,13 @@ pub fn question_answer(
                     provider: provider.clone(),
                 });
             }
-            Some(row) => row.kind,
+            Some(row) => (row.kind, row.base_url),
         }
     };
-    if kind != clauro_store::ProviderKind::Anthropic {
-        return Err(AnswerError::UnsupportedProvider { provider });
-    }
+    let wire =
+        wire_for(kind, base_url.as_deref()).map_err(|_| AnswerError::UnsupportedProvider {
+            provider: provider.clone(),
+        })?;
     let api_key = crate::keyring_store::retrieve(&provider).map_err(|_| AnswerError::NoKey {
         provider: provider.clone(),
     })?;
@@ -1048,6 +1157,7 @@ pub fn question_answer(
                 budget,
                 max_tokens: max,
                 api_key: &api_key,
+                wire,
                 session_dir: &session_dir,
                 project_dir: &project_dir,
             });
@@ -1118,6 +1228,129 @@ mod tests {
             validate_start("t1", "hi", "anthropic", "  "),
             Err(TurnError::BadInput { .. })
         ));
+    }
+
+    // ── Wire routing (D48: two adapters, the provider row decides) ─────────
+
+    #[test]
+    fn anthropic_rows_keep_the_fixed_wire() {
+        assert_eq!(
+            wire_for(clauro_store::ProviderKind::Anthropic, None)
+                .expect("anthropic is always routable"),
+            Wire::Anthropic
+        );
+    }
+
+    #[test]
+    fn compat_rows_post_to_their_configured_chat_completions_endpoint() {
+        assert_eq!(
+            wire_for(
+                clauro_store::ProviderKind::OpenAiCompatible,
+                Some("http://127.0.0.1:8787/v1/")
+            )
+            .expect("an endpoint routes"),
+            Wire::OpenAi {
+                endpoint: "http://127.0.0.1:8787/v1/chat/completions".to_string()
+            },
+            "trailing slash canonicalised, /chat/completions appended"
+        );
+    }
+
+    #[test]
+    fn compat_row_without_an_endpoint_is_refused_not_guessed() {
+        assert_eq!(
+            wire_for(clauro_store::ProviderKind::OpenAiCompatible, None),
+            Err(WireError::NoEndpoint),
+            "no URL, no wire — never a guessed host"
+        );
+        assert_eq!(
+            wire_for(clauro_store::ProviderKind::OpenAiCompatible, Some("   ")),
+            Err(WireError::NoEndpoint)
+        );
+    }
+
+    #[test]
+    fn anthropic_wire_posts_as_built_with_its_own_headers() {
+        let ex = LiveExchange::new(Wire::Anthropic, "sk-test".to_string()).expect("client");
+        let built = BuiltRequest {
+            headers: vec![("anthropic-beta".to_string(), "beta-1".to_string())],
+            body: serde_json::json!({
+                "model": "claude-x",
+                "max_tokens": 64,
+                "system": "hi",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "yo"}]}],
+                "thinking": {"type": "enabled", "budget_tokens": 4_000}
+            }),
+        };
+        let wire = ex.build_http(&built);
+        assert_eq!(wire.url, ANTHROPIC_URL);
+        let header = |name: &str| {
+            wire.headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(header("x-api-key"), Some("sk-test"));
+        assert_eq!(header("anthropic-version"), Some(ANTHROPIC_VERSION));
+        assert_eq!(
+            header("anthropic-beta"),
+            Some("beta-1"),
+            "the loop's beta header rides the Anthropic wire"
+        );
+        assert!(
+            wire.body.get("thinking").is_some(),
+            "the Anthropic body travels as built"
+        );
+        assert_eq!(wire.body["stream"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn compat_wire_translates_and_authorizes_without_anthropic_controls() {
+        let ex = LiveExchange::new(
+            Wire::OpenAi {
+                endpoint: "http://127.0.0.1:8787/v1/chat/completions".to_string(),
+            },
+            "mock-key".to_string(),
+        )
+        .expect("client");
+        let built = BuiltRequest {
+            headers: vec![("anthropic-beta".to_string(), "beta-1".to_string())],
+            body: serde_json::json!({
+                "model": "gemma-4-26b",
+                "max_tokens": 64,
+                "system": "hi",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "yo"}]}],
+                "tools": [{"name": "fs", "description": "d", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "auto"},
+                "thinking": {"type": "enabled", "budget_tokens": 4_000}
+            }),
+        };
+        let wire = ex.build_http(&built);
+        assert_eq!(wire.url, "http://127.0.0.1:8787/v1/chat/completions");
+        let has = |name: &str| wire.headers.iter().any(|(k, _)| k == name);
+        assert!(
+            wire.headers
+                .iter()
+                .any(|(k, v)| k == "authorization" && v == "Bearer mock-key"),
+            "compat auth is bearer: {:?}",
+            wire.headers
+        );
+        assert!(!has("x-api-key"));
+        assert!(
+            !has("anthropic-beta"),
+            "the beta header gates controls this wire dropped"
+        );
+        assert!(
+            wire.body.get("thinking").is_none(),
+            "Anthropic-only controls are dropped, never faked (D48)"
+        );
+        assert_eq!(wire.body["messages"][0]["role"], "system");
+        assert_eq!(wire.body["tools"][0]["type"], "function");
+        assert_eq!(
+            wire.body["stream"],
+            serde_json::Value::Bool(true),
+            "stream is a transport concern, set after translation"
+        );
     }
 
     #[test]
