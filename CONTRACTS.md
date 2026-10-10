@@ -1,6 +1,6 @@
 # Clauro — CONTRACTS.md
 
-**The shapes every test hangs off.** `DECISIONS.md` (D1–D115) says *why*. This file says *what you can
+**The shapes every test hangs off.** `DECISIONS.md` (D1–D124) says *why*. This file says *what you can
 assert against*. Nothing here is a new decision — every type traces to one.
 
 **Rule:** if a type in this file cannot cite a D-number, it is either missing a decision or it is a
