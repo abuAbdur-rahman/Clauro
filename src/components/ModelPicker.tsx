@@ -48,6 +48,9 @@ export default function ModelPicker({
 }): React.JSX.Element {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Filter stays on the Select (not a popover+command rebuild): no command
+  // primitive exists in ui/ and the Select role contract pins grouping/tests.
+  const [filter, setFilter] = useState("");
   const selectModel = useThreadStore((s) => s.selectModel);
   const openSettings = useSettingsStore((s) => s.openSettings);
   const current = useThreadStore((s) => s.threads[threadId]?.model ?? null);
@@ -142,7 +145,17 @@ export default function ModelPicker({
     selectModel(threadId, next);
   }
 
-  const groups = [...new Set(entries.map((e) => e.provider))];
+  const query = filter.trim().toLowerCase();
+  const visible =
+    query === ""
+      ? entries
+      : entries.filter(
+          (e) =>
+            e.model.display_name.toLowerCase().includes(query) ||
+            e.model.id.toLowerCase().includes(query) ||
+            e.providerName.toLowerCase().includes(query),
+        );
+  const visibleGroups = [...new Set(visible.map((e) => e.provider))];
 
   return (
     <div>
@@ -165,23 +178,41 @@ export default function ModelPicker({
             <SelectValue placeholder="Choose a model" />
           </SelectTrigger>
           <SelectContent>
-            {groups.map((provider) => (
-              <SelectGroup key={provider}>
-                <SelectLabel>
-                  {entries.find((e) => e.provider === provider)?.providerName ?? provider}
-                </SelectLabel>
-                {entries
-                  .filter((e) => e.provider === provider)
-                  .map(({ model, value }) => (
-                    <SelectItem key={value} value={value} disabled={!model.limits_known}>
-                      {model.display_name} ·{" "}
-                      {model.limits_known && model.context_window && model.max_output
-                        ? `${formatTokens(model.context_window)} ctx · ${formatTokens(model.max_output)} out${model.reasoning ? " · thinking" : ""}`
-                        : "limits unknown"}
-                    </SelectItem>
-                  ))}
-              </SelectGroup>
-            ))}
+            <div className="p-2">
+              <input
+                aria-label="Search models"
+                placeholder="Search models"
+                value={filter}
+                onChange={(e) => {
+                  setFilter(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                }}
+                className="w-full rounded-md border border-neutral-700 bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-neutral-500"
+              />
+            </div>
+            {visible.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-neutral-500">No matches</p>
+            ) : (
+              visibleGroups.map((provider) => (
+                <SelectGroup key={provider}>
+                  <SelectLabel>
+                    {entries.find((e) => e.provider === provider)?.providerName ?? provider}
+                  </SelectLabel>
+                  {visible
+                    .filter((e) => e.provider === provider)
+                    .map(({ model, value }) => (
+                      <SelectItem key={value} value={value} disabled={!model.limits_known}>
+                        {model.display_name} ·{" "}
+                        {model.limits_known && model.context_window && model.max_output
+                          ? `${formatTokens(model.context_window)} ctx · ${formatTokens(model.max_output)} out${model.reasoning ? " · thinking" : ""}`
+                          : "limits unknown"}
+                      </SelectItem>
+                    ))}
+                </SelectGroup>
+              ))
+            )}
             <SelectItem value={ADD_PROVIDER_VALUE}>Add provider…</SelectItem>
           </SelectContent>
         </Select>

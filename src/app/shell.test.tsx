@@ -45,7 +45,9 @@ describe("App shell wires Phase 5", () => {
     expect(screen.queryByLabelText("command palette")).toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
     expect(await screen.findByLabelText("command palette")).toBeDefined();
-  });
+  },
+  // Full-App render: exceeds the 5s default under full-suite parallel load.
+  30000);
   it("navigates home -> projects -> detail", async () => {
     window.matchMedia = (query: string) =>
       ({

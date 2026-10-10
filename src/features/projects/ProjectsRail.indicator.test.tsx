@@ -3,7 +3,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import { ProjectsRail } from "./ProjectsRail";
-import type { ThreadStatus } from "@/mock/seed";
+import type { ThreadStatus } from "@/features/catalogue/thread";
 
 class MockResizeObserver {
   observe(): void {}

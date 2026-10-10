@@ -2,13 +2,18 @@
 /**
  * Settings shell tests (UI-GUIDE §7). The dialog is a Dialog, not a page;
  * sections switch without reload; Appearance writes through to the theme;
- * Data exports a real download and blocks on key-shaped content.
+ * Data exports a real download and blocks on key-shaped content. Eight pages
+ * mirror the prototype; search filters the nav; every page has a data-testid.
  */
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SettingsDialog, rowToExportBlock } from "./SettingsDialog";
-import { useSettingsStore } from "../shell/settings";
+import {
+  SettingsDialog,
+  filterSettingsSections,
+  rowToExportBlock,
+} from "./SettingsDialog";
+import { useSettingsStore, type SettingsSection } from "../shell/settings";
 import type { RenderRow } from "../transcript/types";
 
 class MockResizeObserver {
@@ -18,14 +23,16 @@ class MockResizeObserver {
 }
 vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
-vi.mock("../providers/ProvidersView", () => ({
-  ProvidersView: () => <div data-testid="providers-pane-stub" />,
+vi.mock("../providers/providers", () => ({
+  providerList: vi.fn(),
+  providerModelsEnriched: vi.fn(),
 }));
 
 vi.mock("../turn/turn", () => ({
   transcriptRead: vi.fn(),
 }));
 
+import { providerList } from "../providers/providers";
 import { transcriptRead } from "../turn/turn";
 
 function threadText(id: string, text: string): RenderRow {
@@ -35,6 +42,7 @@ function threadText(id: string, text: string): RenderRow {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(providerList).mockResolvedValue([]);
   useSettingsStore.getState().closeSettings();
   window.localStorage.clear();
   window.matchMedia = (query: string) =>
@@ -55,6 +63,23 @@ describe("settings store", () => {
     useSettingsStore.getState().closeSettings();
     expect(useSettingsStore.getState().open).toBe(false);
   });
+
+  it("accepts all eight sections", () => {
+    const sections: SettingsSection[] = [
+      "general",
+      "appearance",
+      "providers",
+      "models",
+      "memory",
+      "data",
+      "shortcuts",
+      "about",
+    ];
+    for (const s of sections) {
+      useSettingsStore.getState().openSettings(s);
+      expect(useSettingsStore.getState().section).toBe(s);
+    }
+  });
 });
 
 describe("SettingsDialog", () => {
@@ -63,19 +88,69 @@ describe("SettingsDialog", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     useSettingsStore.getState().openSettings();
     expect(await screen.findByRole("dialog")).toBeTruthy();
-    expect(screen.getByText("Providers")).toBeTruthy();
-    expect(screen.getByText("Appearance")).toBeTruthy();
-    expect(screen.getByText("Data")).toBeTruthy();
+    const nav = screen.getByTestId("settings-nav");
+    expect(within(nav).getByRole("button", { name: "Providers" })).toBeTruthy();
+    expect(within(nav).getByRole("button", { name: "Appearance" })).toBeTruthy();
+    expect(within(nav).getByRole("button", { name: "Data" })).toBeTruthy();
+  });
+
+  it("shows all eight nav entries with a search box", () => {
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    const nav = screen.getByTestId("settings-nav");
+    for (const label of [
+      "General",
+      "Appearance",
+      "Providers",
+      "Models",
+      "Memory",
+      "Data",
+      "Shortcuts",
+      "About",
+    ]) {
+      expect(within(nav).getByRole("button", { name: label })).toBeTruthy();
+    }
+    expect(screen.getByRole("textbox", { name: /search settings/i })).toBeTruthy();
+  });
+
+  it("every page renders its data-testid", async () => {
+    const pages: Array<[SettingsSection, string]> = [
+      ["general", "settings-page-general"],
+      ["appearance", "settings-page-appearance"],
+      ["providers", "settings-page-providers"],
+      ["models", "settings-page-models"],
+      ["memory", "settings-page-memory"],
+      ["data", "settings-page-data"],
+      ["shortcuts", "settings-page-shortcuts"],
+      ["about", "settings-page-about"],
+    ];
+    for (const [section, testid] of pages) {
+      cleanup();
+      useSettingsStore.getState().openSettings(section);
+      render(<SettingsDialog threadId="t1" />);
+      expect(await screen.findByTestId(testid)).toBeTruthy();
+      useSettingsStore.getState().closeSettings();
+    }
+  });
+
+  it("search filters the nav to matching sections", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    await user.type(screen.getByRole("textbox", { name: /search settings/i }), "short");
+    const nav = screen.getByTestId("settings-nav");
+    expect(within(nav).queryByRole("button", { name: "General" })).toBeNull();
+    expect(within(nav).getByRole("button", { name: "Shortcuts" })).toBeTruthy();
   });
 
   it("switches sections without reload", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().openSettings("providers");
     render(<SettingsDialog threadId="t1" />);
-    expect(screen.getByTestId("providers-pane-stub")).toBeTruthy();
+    expect(screen.getByTestId("settings-page-providers")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Appearance" }));
     expect(screen.getByText("Theme")).toBeTruthy();
-    expect(screen.queryByTestId("providers-pane-stub")).toBeNull();
+    expect(screen.queryByTestId("settings-page-providers")).toBeNull();
   });
 
   it("appearance mode persists the choice", async () => {
@@ -85,6 +160,62 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("radio", { name: "Dark" }));
     expect(window.localStorage.getItem("clauro.theme.mode")).toBe("dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
+
+  it("appearance has accent swatches, font slider, preview, density", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("appearance");
+    render(<SettingsDialog threadId="t1" />);
+    expect(screen.getByRole("button", { name: "Clay" })).toBeTruthy();
+    expect(screen.getByLabelText("Chat font size")).toBeTruthy();
+    expect(screen.getByText(/quick brown fox/i)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Blue" }));
+    expect(window.localStorage.getItem("clauro.theme.accent")).toBe("#0067c0");
+    expect(screen.getByRole("radio", { name: "Compact" })).toBeTruthy();
+  });
+
+  it("general page persists display name and send preference", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    await user.type(screen.getByLabelText("Display name"), "Abu");
+    expect(window.localStorage.getItem("clauro.prefs.name")).toBe("Abu");
+    expect(screen.getByLabelText("Language")).toBeTruthy();
+    expect(screen.getByLabelText("Send message with")).toBeTruthy();
+    expect(screen.getByLabelText("Default system prompt")).toBeTruthy();
+  });
+
+  it("models page shows the honest empty state without providers", async () => {
+    useSettingsStore.getState().openSettings("models");
+    render(<SettingsDialog threadId="t1" />);
+    expect(await screen.findByText(/no models/i)).toBeTruthy();
+    expect(screen.getByLabelText("Default model")).toBeTruthy();
+    expect(screen.getByLabelText("Temperature")).toBeTruthy();
+  });
+
+  it("memory adds, edits, and deletes entries in local state", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("memory");
+    render(<SettingsDialog threadId="t1" />);
+    expect(screen.getByText(/no memories yet/i)).toBeTruthy();
+    await user.type(screen.getByLabelText("Add a memory"), "Prefers short answers");
+    await user.click(screen.getByRole("button", { name: "Add memory" }));
+    expect(screen.getByText("Prefers short answers")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /delete memory/i }));
+    expect(screen.queryByText("Prefers short answers")).toBeNull();
+  });
+
+  it("shortcuts table lists kbd rows, about names the app", async () => {
+    useSettingsStore.getState().openSettings("shortcuts");
+    const { unmount } = render(<SettingsDialog threadId="t1" />);
+    expect(await screen.findByTestId("settings-page-shortcuts")).toBeTruthy();
+    expect(screen.getByText("Open command palette")).toBeTruthy();
+    unmount();
+    cleanup();
+    useSettingsStore.getState().openSettings("about");
+    render(<SettingsDialog threadId="t1" />);
+    expect(await screen.findByTestId("settings-page-about")).toBeTruthy();
+    expect(screen.getByText("0.1.0-prototype")).toBeTruthy();
   });
 
   it("export downloads markdown with thinking stripped", async () => {
@@ -124,6 +255,7 @@ describe("SettingsDialog", () => {
     ]);
     const createObjectURL = vi.fn((): string => "blob:mock");
     window.URL.createObjectURL = createObjectURL;
+    window.URL.revokeObjectURL = vi.fn();
     useSettingsStore.getState().openSettings("data");
     render(<SettingsDialog threadId="t1" />);
     await user.click(screen.getByRole("button", { name: /export markdown/i }));
@@ -131,6 +263,24 @@ describe("SettingsDialog", () => {
       expect(screen.getByText(/blocked.*key material/i)).toBeTruthy();
     });
     expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it("data clears chats through the thread store", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("data");
+    render(<SettingsDialog threadId="t1" />);
+    await user.click(screen.getByRole("button", { name: /^Clear$/ }));
+    expect(screen.getByText(/cleared all chats/i)).toBeTruthy();
+    expect(screen.getByText(/local storage/i)).toBeTruthy();
+  });
+});
+
+describe("filterSettingsSections", () => {
+  it("matches labels and content keywords", () => {
+    expect(filterSettingsSections("")).toHaveLength(8);
+    expect(filterSettingsSections("short")).toEqual(["shortcuts"]);
+    expect(filterSettingsSections("keyboard")).toEqual(["shortcuts"]);
+    expect(filterSettingsSections("accent")).toEqual(["appearance"]);
   });
 });
 

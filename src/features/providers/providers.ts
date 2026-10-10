@@ -121,3 +121,82 @@ export async function providerRefresh(id: string): Promise<ModelsView> {
   const raw: unknown = await invoke("provider_refresh", { id });
   return parseModelsView(raw);
 }
+
+// ── add/edit dialog contract ─────────────────────────────────────────────
+// The dialog validates client-side (B23) before any invoke runs: name
+// required, http(s) URL, key required except ollama. Anthropic rides the
+// host's fixed endpoint, so its base URL stays optional. The stored key is
+// never echoed back — the dialog only ever collects a replacement.
+
+export const PROVIDER_TYPES = ["openai", "anthropic", "openrouter", "ollama", "custom"] as const;
+export type ProviderType = (typeof PROVIDER_TYPES)[number];
+
+export const PROVIDER_PRESETS: Record<
+  ProviderType,
+  { label: string; name: string; baseUrl: string }
+> = {
+  openai: { label: "OpenAI", name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
+  anthropic: { label: "Anthropic", name: "Anthropic", baseUrl: "" },
+  openrouter: { label: "OpenRouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
+  ollama: { label: "Ollama (local)", name: "Ollama (local)", baseUrl: "http://localhost:11434" },
+  custom: { label: "Custom (OpenAI-compatible)", name: "", baseUrl: "" },
+};
+
+const HTTP_URL = /^https?:\/\/.+/i;
+
+export const ProviderFormSchema = z
+  .object({
+    type: z.enum(PROVIDER_TYPES),
+    name: z.string().trim().min(1, "Name is required"),
+    baseUrl: z.string().trim(),
+    key: z.string(),
+  })
+  .superRefine((val, ctx) => {
+    const url = val.baseUrl.trim();
+    if (val.type !== "anthropic" && !HTTP_URL.test(url)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Base URL must be an http(s) URL",
+      });
+    } else if (val.type === "anthropic" && url !== "" && !HTTP_URL.test(url)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["baseUrl"],
+        message: "Base URL must be an http(s) URL",
+      });
+    }
+    if (val.type !== "ollama" && val.key.trim() === "") {
+      ctx.addIssue({ code: "custom", path: ["key"], message: "Key is required" });
+    }
+  });
+export type ProviderForm = z.infer<typeof ProviderFormSchema>;
+
+/**
+ * Whether the dialog's Save may enable. Edit mode passes
+ * `{ allowBlankKey: true }`: a blank key means "keep the stored one" and
+ * waives only the key rule — a bad URL or blank name still fails.
+ */
+export function isProviderFormValid(raw: unknown, opts?: { allowBlankKey?: boolean }): boolean {
+  if (ProviderFormSchema.safeParse(raw).success) return true;
+  if (opts?.allowBlankKey === true && typeof raw === "object" && raw !== null) {
+    const rec = raw as Record<string, unknown>;
+    if (typeof rec["key"] === "string" && rec["key"].trim() === "") {
+      return ProviderFormSchema.safeParse({ ...rec, key: "keep-existing-key" }).success;
+    }
+  }
+  return false;
+}
+
+/**
+ * Custom and ollama adds need a row id the dialog never asks for — derive
+ * it from the display name so Save has something honest to send.
+ */
+export function slugifyProviderId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug === "" ? "custom" : slug;
+}
