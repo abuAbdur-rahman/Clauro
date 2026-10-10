@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod artifact_doc;
 mod catalogue;
 mod csp;
 mod keyring_store;
@@ -154,6 +155,19 @@ fn artifact_csp(nonce: String) -> String {
     csp::artifact_csp(&nonce)
 }
 
+/// Publish one render's artifact document (D123). The web app hands over the
+/// envelope and the nonce it was built with and gets back the absolute URL the
+/// frame navigates to; the response header is assembled from that same nonce,
+/// so the document's single policy and its tags can never disagree.
+#[tauri::command]
+fn artifact_publish(
+    registry: tauri::State<'_, artifact_doc::DocRegistry>,
+    nonce: String,
+    doc: String,
+) -> Result<String, artifact_doc::DocError> {
+    registry.publish(&nonce, &doc)
+}
+
 // ── platform commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -169,6 +183,14 @@ fn _catalogue_types() -> Option<(Catalogue, CatalogueError)> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // D123/D124: the artifact documents live on their own `artifact`
+        // scheme, registered here at the wry level — never through Tauri's
+        // protocol map, whose ignorance of the scheme is what keeps the
+        // documents remote to Tauri's IPC. The shell's own `tauri` scheme
+        // keeps its built-in handler untouched, including `csp_header`.
+        .register_uri_scheme_protocol(artifact_doc::SCHEME, |ctx, request| {
+            artifact_doc::handle_request(ctx.app_handle(), &request)
+        })
         .setup(|app| {
             // The turn driver owns its store under the app-data dir. Opening
             // it here (not lazily in the first command) means a corrupt
@@ -182,6 +204,9 @@ pub fn run() {
             let state =
                 turn::TurnState::open(&dir).map_err(|e| format!("cannot open turn store: {e}"))?;
             app.manage(state);
+            // Published artifact documents live as long as the app does; the
+            // registry is bounded, and a re-render republishes (D123).
+            app.manage(artifact_doc::DocRegistry::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -192,6 +217,7 @@ pub fn run() {
             catalogue_status,
             catalogue_refresh,
             artifact_csp,
+            artifact_publish,
             webview_status,
             turn::turn_start,
             turn::turn_stop,

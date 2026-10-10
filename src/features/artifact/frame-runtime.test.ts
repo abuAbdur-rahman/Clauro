@@ -5,12 +5,12 @@ import { transformJsx } from "./compile.transform";
 import { wrapModule } from "./wrap";
 
 /**
- * The frame runtime is emitted as source text into a `srcdoc` document, where
- * no module system exists. That makes it the one piece of behaviour that cannot
- * be tested by importing it — so it is evaluated here, in a real document,
- * against the same wrapper the shipped document carries. No `eval` inside the
- * frame itself: the compiled code arrives as a nonce'd `<script>` tag, and the
- * test host has no CSP to stop it.
+ * The frame runtime is emitted as source text into the published artifact
+ * document (D123), where no module system exists. That makes it the one piece
+ * of behaviour that cannot be tested by importing it — so it is evaluated here,
+ * in a real document, against the same wrapper the shipped document carries. No
+ * `eval` inside the frame itself: the compiled code arrives as a nonce'd
+ * `<script>` tag, and the test host has no CSP to stop it.
  */
 
 interface FrameApi {
@@ -115,7 +115,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("the runtime is shippable into a srcdoc document", () => {
+describe("the runtime is shippable into the published document", () => {
   it("is self-contained: no imports, no requires, no network calls", () => {
     expect(FRAME_RUNTIME).not.toMatch(/^\s*import\s/m);
     expect(FRAME_RUNTIME).not.toMatch(/\brequire\s*\(/);

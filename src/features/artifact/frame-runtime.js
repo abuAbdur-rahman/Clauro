@@ -1,8 +1,8 @@
 /*
- * The artifact frame's runtime. Emitted as source text into a srcdoc document,
- * where there is no module system, no bundler, and no import of anything -
- * including the Tauri API, which must stay unreachable from inside the frame
- * (D6). Every line here runs inside the sandbox.
+ * The artifact frame's runtime. Emitted as source text into the published
+ * artifact document (D123), where there is no module system, no bundler, and
+ * no import of anything - including the Tauri API, which must stay unreachable
+ * from inside the frame (D6). Every line here runs inside the sandbox.
  *
  * It provides, in order:
  *   - h() / Fragment: build DOM nodes directly. No React, no runtime library,

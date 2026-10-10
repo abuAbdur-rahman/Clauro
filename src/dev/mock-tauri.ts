@@ -71,6 +71,27 @@ export function invoke(cmd: string, args?: Record<string, unknown>): Promise<unk
       return Promise.resolve(true);
     case "artifact_csp":
       return Promise.resolve("default-src 'none'; script-src 'nonce-browser-harness'");
+    // D123: there is no Rust registry in the browser harness, so the document
+    // travels in the URL itself — a `data:` URL the frame can navigate to.
+    // Empty input is refused rather than published, matching Rust's refusal:
+    // a blank frame must never be the answer.
+    case "artifact_publish": {
+      const nonce = typeof args?.nonce === "string" ? args.nonce : "";
+      const doc = typeof args?.doc === "string" ? args.doc : "";
+      if (nonce.trim() === "") {
+        return Promise.reject(
+          new Error('browser harness invoke("artifact_publish") refused: missing nonce'),
+        );
+      }
+      if (doc.trim() === "") {
+        return Promise.reject(
+          new Error('browser harness invoke("artifact_publish") refused: empty artifact document'),
+        );
+      }
+      return Promise.resolve(
+        `data:text/html;charset=utf-8,${encodeURIComponent(doc)}`,
+      );
+    }
     case "keyring_available":
       return Promise.resolve(undefined);
     default:
