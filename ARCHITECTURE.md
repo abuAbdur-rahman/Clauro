@@ -20,7 +20,7 @@ a D-number, cited from here. **D87.**
         │ Tauri IPC (capability-scoped)                │ MessageChannel
 ┌───────▼───────────────────────────────┐  ┌───────────▼──────────────────┐
 │  Rust workspace                        │  │  Artifact frame               │
-│                                        │  │  srcdoc                       │
+│                                        │  │  served document (D123)      │
 │  clauro-app      ← Tauri shell, thin   │  │  sandbox="allow-scripts"     │
 │  src-tauri       ← window, menus, tray  │  │  NO allow-same-origin        │
 │  (artifact pane) ← compile, CSP, ch. │  │  CSP built in Rust (D83)     │
@@ -113,21 +113,24 @@ The product makes four claims to the user. Exactly two mechanisms carry them.
 ### 3.1 The artifact frame — an opaque origin
 
 ```
-parent (React)                    frame (srcdoc)
+parent (React)                    frame (served document, D123)
 ─────────────────────             ─────────────────────────────
 MessageChannel                    window.__TAURI_INTERNALS__
-  port1 ─────────────────────────▶  ✗ unreachable — opaque origin
-  port2 ◀─────────────────────────  (about:srcdoc INHERITS the
-                                     parent origin; the `sandbox`
-validate event.origin              attribute is what forces opaque)
+  port1 ─────────────────────────▶  ✗ no command path — remote host (D124)
+  port2 ◀─────────────────────────  (same-origin with the shell on its own;
+                                     `sandbox` without `allow-same-origin` forces opaque,
+validate event.origin              the scheme forces remote)
 AND event.source ── every msg
   both directions (D6)
 ```
 
 **The single most important line in this document:** Tauri v2 gates commands by **capability and
-scope, not by caller origin**. Any path from the frame to `window.__TAURI_INTERNALS__` means a
-generated artifact can run every command the app can. Omitting `allow-same-origin` is the only
-thing standing between them — adding it back silently breaks this **and** breaks the `event.origin`
+scope, not by caller origin**. The frame owns an injected `__TAURI_INTERNALS__` object on
+Windows no matter what the document does (the runtime injects into every frame) — so the
+closure is host-side: a remote-by-construction document host plus zero remote capabilities
+(**D124**). Any *working* path from the frame to a command means a
+generated artifact can run every command the app can. Omitting `allow-same-origin` is still
+load-bearing — adding it back silently breaks the opaque origin **and** breaks the `event.origin`
 validation the same design depends on.
 
 The CSP is assembled in Rust, not written in the document, because it must agree with what the
@@ -136,9 +139,9 @@ compiler emits. `default-src 'none'` is the load-bearing line (**D83**): without
 `<script src>` or embed a remote `<iframe>` — and `sandbox` does **not** inherit into nested
 browsing contexts, so CSP is the only remaining control on that path.
 
-`script-src` carries `'unsafe-inline' 'unsafe-eval'` because Sucrase output is inlined and
-`eval`'d. That is safe **only because the origin is opaque**, which is why the two mechanisms are
-one decision, not two.
+`script-src` is nonce-only — no `unsafe-inline`, no `unsafe-eval` — because the envelope
+carries its policy from Rust per render (D123). That is safe **only because the origin is
+opaque**, which is why the two mechanisms are one decision, not two.
 
 ### 3.2 The tool host — side effects are host-owned
 

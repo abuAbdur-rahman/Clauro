@@ -12,6 +12,13 @@ docs/dev-host.md
 # Generated reports and research artefacts
 .agents/
 
+# Secrets. Never committed, never staged: keys live in the OS keychain at
+# runtime and in .env files on dev machines only. The keychain test asserts
+# no key material reaches any other sink; this line keeps the dev fallback
+# out of git even if someone runs `git add .` on autopilot.
+.env
+.env.*
+
 # Harness scratch
 .openchamber/
 

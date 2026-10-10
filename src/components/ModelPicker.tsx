@@ -1,13 +1,16 @@
 /**
- * Model picker on shadcn Select (Task 025, D112). Lists every catalogue model
- * grouped by provider with its limits. Selecting one writes thread-level state
- * only — the thread stays open. Unknown selections degrade to a typed notice,
- * never a crash.
+ * Model picker on shadcn Select (Task 025, D112). Lists only configured
+ * providers' stored models, grouped by provider, with limits where the
+ * enrichment knows them. Selecting one writes thread-level state only — the
+ * thread stays open. A model with unknown limits cannot be selected: the
+ * picker says so instead of zero-guessing (CONTRACTS.md §5).
  */
 import { Database, TriangleAlert } from "lucide-react";
-import { useState } from "react";
-import type { CatalogueModel, CataloguePayload } from "../features/catalogue/catalogue";
+import { useEffect, useState } from "react";
+import type { EnrichedModel } from "../features/providers/providers";
+import { providerList, providerModelsEnriched } from "../features/providers/providers";
 import { resolveLimits, switchWarnings, type ModelRef } from "../features/catalogue/models";
+import { useSettingsStore } from "../features/shell/settings";
 import { useThreadStore } from "../features/catalogue/thread";
 import {
   Select,
@@ -24,57 +27,103 @@ function formatTokens(n: number): string {
   return n >= 1000 ? `${k}k` : n.toString();
 }
 
-function optionText(model: CatalogueModel): string {
-  return `${formatTokens(model.context_window)} ctx · ${formatTokens(model.max_output)} out${model.reasoning ? " · thinking" : ""}`;
+interface Entry {
+  provider: string;
+  providerName: string;
+  model: EnrichedModel;
+  value: string;
 }
 
+/** Terminal picker value. Never a model id (no provider uses it); the
+ *  lookup would fail it as unknown, so interception must come first. */
+const ADD_PROVIDER_VALUE = "__add_provider__";
+
 export default function ModelPicker({
-  payload,
   threadId,
   compact = false,
 }: {
-  payload: CataloguePayload;
   threadId: string;
   /** Compact trigger for the composer footer; default is the full-width picker. */
   compact?: boolean;
 }): React.JSX.Element {
+  const [entries, setEntries] = useState<Entry[] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const selectModel = useThreadStore((s) => s.selectModel);
+  const openSettings = useSettingsStore((s) => s.openSettings);
   const current = useThreadStore((s) => s.threads[threadId]?.model ?? null);
 
-  if (payload.state === "absent") {
+  useEffect(() => {
+    // Read through a call (see App.tsx): property narrowing would otherwise
+    // conclude the flag never changes and flag every check as unnecessary.
+    const cancelled = { value: false };
+    const isCancelled = () => cancelled.value;
+    void (async () => {
+      try {
+        const providers = await providerList();
+        const all: Entry[] = [];
+        for (const p of providers) {
+          const models = await providerModelsEnriched(p.id);
+          for (const model of models) {
+            all.push({
+              provider: p.id,
+              providerName: p.display_name,
+              model,
+              value: `${p.id}/${model.id}`,
+            });
+          }
+        }
+        if (!isCancelled()) setEntries(all);
+      } catch (e) {
+        // One plain sentence, never a Zod dump: the harness caught a raw
+        // validation JSON rendering here 2026-10-07 (a float timestamp the
+        // real backend never sends, but the rule holds for every failure).
+        if (!isCancelled()) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setNotice(msg.length > 160 ? `${msg.slice(0, 160)}…` : msg);
+        }
+      }
+    })();
+    return () => {
+      cancelled.value = true;
+    };
+  }, []);
+
+  if (entries === null) {
     return (
-      <div className="rounded border border-neutral-800 p-4 text-sm text-neutral-400">
-        <p className="flex items-center gap-2">
-          <TriangleAlert size={16} /> No cached catalogue and offline.
-        </p>
-        <p className="mt-1 text-neutral-500">Connect once to fetch the model list.</p>
-      </div>
+      <p className="text-sm text-neutral-500">
+        {notice ?? "Loading models…"}
+      </p>
     );
   }
-  if (payload.state === "stale") {
-    return <p className="text-sm text-neutral-500">Catalogue stale. Refreshing…</p>;
-  }
 
-  const entries: { provider: string; model: CatalogueModel; value: string }[] = [];
-  for (const [provider, models] of Object.entries(payload.catalogue.providers)) {
-    for (const model of models) entries.push({ provider, model, value: `${provider}/${model.id}` });
-  }
-  const providers = Object.keys(payload.catalogue.providers);
-  const currentValue =
-    current === null ? undefined : `${current.provider}/${current.id}`;
+  const currentValue = current === null ? undefined : `${current.provider}/${current.id}`;
 
+  /** Terminal entry id. Intercepted before lookup: it opens Settings, never
+   *  a model (DESIGN §2.5 requires it; the picker must not dead-end). */
   function choose(value: string) {
-    const entry = entries.find((e) => e.value === value);
+    if (value === ADD_PROVIDER_VALUE) {
+      openSettings("providers");
+      return;
+    }
+    const entry = entries?.find((e) => e.value === value);
     if (entry === undefined) {
       setNotice(`Unknown model ${value} — picker still usable.`);
+      return;
+    }
+    if (!entry.model.limits_known) {
+      // Custom-endpoint models the enrichment never heard of: selectable once
+      // live turns carry per-model limits, not before. The notice names the
+      // reason instead of guessing.
+      setNotice(
+        `No limits known for ${value} — selection unlocks with live turns for custom endpoints.`,
+      );
       return;
     }
     const ref: ModelRef = { provider: entry.provider, id: entry.model.id };
     const resolved = resolveLimits(ref, {
       serverSnapshot: {
-        contextWindow: entry.model.context_window,
-        maxOutput: entry.model.max_output,
+        contextWindow: entry.model.context_window ?? undefined,
+        maxOutput: entry.model.max_output ?? undefined,
         reasoning: entry.model.reasoning,
         toolCall: entry.model.tool_call,
       },
@@ -83,7 +132,7 @@ export default function ModelPicker({
       setNotice(`Unknown model ${ref.provider}/${ref.id} — picker still usable.`);
       return;
     }
-    const next = { ...ref, name: entry.model.name, ...resolved.limits };
+    const next = { ...ref, name: entry.model.display_name, ...resolved.limits };
     if (current) {
       const warns = switchWarnings(current, next);
       setNotice(warns.length > 0 ? warns[0] : null);
@@ -93,21 +142,19 @@ export default function ModelPicker({
     selectModel(threadId, next);
   }
 
+  const groups = [...new Set(entries.map((e) => e.provider))];
+
   return (
     <div>
-      {payload.state === "cached" && (
-        <p className="mb-2 flex items-center gap-2 text-xs text-amber-400/90">
-          <Database size={14} /> Cached catalogue{payload.notice ? ` — ${payload.notice}` : ""}.{" "}
-          {payload.models} models.
-        </p>
-      )}
       {notice && (
         <p className="mb-2 flex items-center gap-2 text-xs text-amber-300">
           <TriangleAlert size={14} /> {notice}
         </p>
       )}
       {entries.length === 0 ? (
-        <p className="text-sm text-neutral-500">Catalogue empty — nothing to pick.</p>
+        <p className="flex items-center gap-2 text-sm text-neutral-400">
+          <Database size={14} /> No providers configured — the picker stays empty until then.
+        </p>
       ) : (
         <Select value={currentValue} onValueChange={choose}>
           <SelectTrigger
@@ -118,18 +165,24 @@ export default function ModelPicker({
             <SelectValue placeholder="Choose a model" />
           </SelectTrigger>
           <SelectContent>
-            {providers.map((provider) => (
+            {groups.map((provider) => (
               <SelectGroup key={provider}>
-                <SelectLabel>{provider}</SelectLabel>
+                <SelectLabel>
+                  {entries.find((e) => e.provider === provider)?.providerName ?? provider}
+                </SelectLabel>
                 {entries
                   .filter((e) => e.provider === provider)
                   .map(({ model, value }) => (
-                    <SelectItem key={value} value={value}>
-                      {model.name} · {optionText(model)}
+                    <SelectItem key={value} value={value} disabled={!model.limits_known}>
+                      {model.display_name} ·{" "}
+                      {model.limits_known && model.context_window && model.max_output
+                        ? `${formatTokens(model.context_window)} ctx · ${formatTokens(model.max_output)} out${model.reasoning ? " · thinking" : ""}`
+                        : "limits unknown"}
                     </SelectItem>
                   ))}
               </SelectGroup>
             ))}
+            <SelectItem value={ADD_PROVIDER_VALUE}>Add provider…</SelectItem>
           </SelectContent>
         </Select>
       )}

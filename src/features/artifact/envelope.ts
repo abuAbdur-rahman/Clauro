@@ -1,8 +1,8 @@
 /**
  * The artifact document (D2, D3, D110).
  *
- * The envelope is the only thing the host ever hands to `srcdoc`, and its job
- * is to be unweakenable from the inside:
+ * The envelope is the only document the host ever publishes (D123), and its
+ * job is to be unweakenable from the inside:
  *
  * - the CSP is a **value from Rust**, fetched per render, never written here —
  *   a policy in this repo's TypeScript would be a string the front end could

@@ -39,10 +39,22 @@ rather than by test. And "no prompt string matches reference wording" is a **dri
 references are not vendored (`AGENTS.md` §4). The prompt is plainly ours; see the memory-protocol
 criterion below.
 
-**Nothing drives the queue.** "Queued follow-ups dispatch once idle" is a **host obligation**: the
-loop exposes `drain_next` (`queue.rs:76-78`) and the tests drain by hand and call `run_turn` again.
-No driver observes idleness and starts the next turn. `src-tauri` registers seven commands and
-**none reaches the loop** — `clauro-loop` is not even a dependency of the shell crate.
+**Nothing drove the queue (superseded 2026-10-09 — see addendum below).** "Queued follow-ups
+dispatch once idle" was a **host obligation**: the loop exposed `drain_next` (`queue.rs:76-78`)
+and the tests drained by hand and called `run_turn` again. No driver observed idleness and
+started the next turn.
+
+**Addendum 2026-10-09 (idle drain lands — the host obligation is fully owned).**
+`TurnLoop::run_turn_drained` / `continue_turn_drained` compose the existing entries with a
+shared chain tail: after a clean `end_turn`, each drained item runs as its own turn, in order,
+never merged; reports accumulate (every dispatch, every assistant message); a stop between
+turns — or any non-`EndTurn` ending — ends the chain. `src-tauri/src/turn.rs` drives both
+entries, so queued follow-ups dispatch once idle in the running app, not just in tests.
+`crates/clauro-loop/tests/run.rs`: in-order separate turns, empty-queue single turn,
+failed-first-turn keeps input in history unconsumed-by-retry, resume-then-drain — all four
+failed first (no such methods). One deliberate semantic, documented in the tests: a drained
+item that *starts* a turn is consumed even if that turn fails — the input row is already
+history (D68), and re-queueing it would duplicate the row on retry.
 
 > Added by audit 4 finding 6. The loop that drives the registry, and the prompt every tool depends
 > on, had no owner. **Read this before `008`–`014`** — those tasks each implement a handler, and the
@@ -109,12 +121,13 @@ there is no general loop to bound, and the context trigger (`D82`) is the real c
 - [x] Stop mid-loop closes every dispatched call, cancelled included (`D65`) — `run.rs:259-305` halts
       open calls via `store.cancel_turn` plus a `tool_result` block with `Aborted`;
       `tests/run.rs:271-334` asserts `call-a: Ok` **and** `call-b: Aborted` with zero orphans
-- [ ] Queued follow-ups dispatch in order once idle; drain-or-discard offered on stop (`D98`) —
-      **split verdict. Offer: MET. Once-idle: PARTIAL.** Drain-or-discard fires exactly when the queue
-      is non-empty (`run.rs:156-159,311-313`, `queue.rs:98-105`; `tests/run.rs:523-531`,
-      `tests/queue.rs:53-59`), and in-order dispatch is real (`queue.rs:76-78`;
-      `tests/run.rs:476-521`). But **nothing observes idleness and starts the next turn** — the tests
-      drain by hand and call `run_turn` again. No driver exists. See Status
+- [x] Queued follow-ups dispatch in order once idle; drain-or-discard offered on stop (`D98`) —
+      DONE 2026-10-09. `run_turn_drained` / `continue_turn_drained` share one chain tail:
+      after a clean `end_turn`, each drained item runs as its own turn, in order, never merged;
+      reports accumulate; stops and non-`EndTurn` endings break the chain. `src-tauri/src/turn.rs`
+      drives both, so idleness is observed in the running app. `tests/run.rs`: in-order separate
+      turns, empty-queue single turn, failed-first-turn keeps input in history, resume-then-drain —
+      all four failed first (no such methods). Drain-or-discard offer unchanged (still MET).
 - [ ] Drain is in-order turns, never merged; chips remove/edit/send-now (`D105`) — **split verdict.
       Backend: MET. Chip rendering: UI-only.** Never-merged is proven — `tests/run.rs:515-520` asserts
       two separate user text rows. All three host operations exist and are tested

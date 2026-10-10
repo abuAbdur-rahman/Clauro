@@ -1299,6 +1299,130 @@ secondary, never blocks a Windows release) are untouched — Phase 7 is post-dep
 sequencing, not a scope cut. v1's definition of done (`SPEC.md` §6) reads "both floors" as
 the two Windows jobs until Phase 7 lands.
 
+**D116 — The picker shows only configured providers' models; model lists are per-provider with a 3-day TTL.**
+
+Decided 2026-10-07 (task 003/providers). The bulk models.dev fetch showed 200+ providers when
+zero keys existed — the overload was never the 5.3 MB, it was showing the whole world. The fix
+is gating, not a smaller catalogue: an unconfigured provider has no store row and cannot appear
+in the picker. Each configured provider fetches its own live `/models` (Anthropic's with the key
+header, OpenAI-compatible with bearer), stored in `provider_model`, refreshed on demand and
+stale-flagged past the TTL rather than blocking the picker. Keys live in the keyring under the
+provider id — the turn driver already read them that way, so this changes no convention. Picker
+gating is PORTED from OpenCode's connected-provider picker; per-endpoint discovery is behaviour
+MIRRORED from Open WebUI; keyring storage, the TTL, and lazy enrichment are ORIGINAL. **D103.**
+
+**D117 — models.dev is limits enrichment only, fetched lazily, never at boot.**
+
+Decided 2026-10-07 (task 003/providers). Provider `/models` endpoints report ids, not limits —
+Anthropic's returns no context window, OpenAI's returns almost nothing — and the token meter
+still needs honest numbers. So models.dev stays, but its role shrinks to enrichment: fetched on
+first enriched-models read (7-day TTL, file cache retained), joined per model, and a model it
+never heard of carries `limits_known: false` with selection refused rather than zero-guessed
+(CONTRACTS.md §5). Boot downloads nothing. Custom-endpoint models stay unselectable until the
+live-turn translator carries per-model limits — the request needs them anyway, so that slice
+owns them.
+
+**D118 — A sole valid question pauses the turn; the answer is the call's one result; refused questions never pause.**
+
+Decided 2026-10-09 (task 009). Before this, a `question` dispatch persisted an ordinary result and the loop re-sent with the card text echoed back as if answered — the user was never asked. Now the turn ends `AwaitingAnswer` with the `tool_use` plus a `question_card` row and deliberately no `tool_result` yet; answering validates through `resolve_answer` and persists the one result, and the driver resumes. The transiently unpaired `tool_use` is honest, not an I1 violation: I1 pairs exactly once answered, a second answer fails `AlreadyAnswered`, and the pause is visible in the transcript at the point of the question (DESIGN §2.3). Refusals (mixed, second, secret-shaped) keep refusal result rows and never pause — nothing to answer, nothing held. Re-sending an unanswered question is skipped at request build: it would be both malformed (Anthropic requires a result per use) and a lie.
+
+**D119 — The provider row decides the wire; tool results ride the following user message at assembly; the compat translator drops Anthropic-only controls instead of approximating them.**
+
+Decided 2026-10-09 (tasks 005/023 — the OpenAI request translator slice). Three facts, one seam: where a built request goes. (1) `turn_start`/`question_answer` read the provider row and choose the wire **before** any key is read or the thread slot is claimed: Anthropic rows post the body as built to the fixed endpoint; OpenAI-compatible rows post `clauro_transport::openai_request::translate_request`'s body to `{base}/chat/completions` with bearer auth; a compat row with no endpoint URL fails typed (`UnsupportedProvider`) — never a guessed host. (2) The store keeps `tool_result` in the assistant message that held the `tool_use` (D61 pairing is a storage property), but the Messages API takes results back only in a subsequent *user* message and chat-completions needs the same separation to map onto `role: "tool"` — so `assemble_messages` splits them out at assembly time; storage and the transcript never move. (3) The translator **drops** `thinking`, `context_management` and the beta headers rather than approximating them: faking a budget as `reasoning_effort` would be a plausible-looking wrong turn (D48), so the compat wire promises only what every chat-completions endpoint accepts — model, max_tokens, system as the first message, tools with `input_schema` as `parameters`, `tool_choice` as the bare string, `tool_use` as `tool_calls` with JSON-string arguments. Gemini's in-band thought marker (`extra_content.google.thought` over `<thought>` markup, recorded live in Tasks/005) is parsed response-side from the same fixture — reasoning reaches the thinking region on both adapters (D80), never the answer text.
+
+**D120 — The e2e mock is the compat wire's executable witness: it refuses every violation by field name, and the model id picks the script.**
+
+Decided 2026-10-09 (Phase 1–5 completion plan, slice 2; serves the Tasks/005/013/020/021 gates). The e2e must drive real turns without a live key (no test may use a key by rule), and a lenient mock would let a translator or routing regression masquerade as a model answer. So `scripts/mock-openai-server.mjs` — zero dependencies, loopback-only — validates every request against the translated wire (`stream: true`, system-first messages, `tool_calls` arguments parseable JSON *strings*, `function.parameters` never `input_schema`, bearer auth, and no Anthropic header or top-level field) and answers `400` naming the offending field otherwise. Scenario selection rides the model id (`mock-text` with reasoning deltas first, `mock-artifact` and `mock-question` issuing scripted tool calls whose arguments the shell must execute and answer), so the app needs no control channel: pick a model in the picker, get that script. The harness inspects the recorded request log (`/__requests`, authorization always redacted) to assert the translator's output end to end; `pnpm mock` starts it for a manual run, and `/__shutdown` exits the process so teardown never leaves a listener behind.
+
+**D121 — The drawer's producer listens where the shell already listens: turn events say "compiling", turn-done says "live", and the row is the record.**
+
+Decided 2026-10-09 (Phase 1–5 completion plan, slice 3a; the second half of D113 — "no production
+producer until a host drives turns" — that host exists now: the translator turns (D119) and the e2e
+mock drives them (D120)). Two signals and one read. (1) `block_start` on the `artifact` tool flips
+the drawer to compiling **with no id**: the model asked, the id does not exist until the loop
+generates it, and the drawer must never sit silent through that window — so `setCompiling` widens to
+`string | null` for exactly this frame. (2) turn-done reads `artifact_latest`, a new command
+returning the thread's newest row (`latest_artifact`: newest `created_at` wins, tie by version,
+never crosses threads) with its source resolved from the session root, and lands it: content into
+the shell's store, then `setLive(id, version)`. **No row clears the spinner** instead of letting it
+spin forever — a call that never committed must not leave a permanent "Compiling…" — and a failed
+read is a typed reason through the view's notice, never swallowed and never fatal (the `ChatView`
+transcript precedent). (3) The drawer prepares when the artifact is *known*, not when the state
+says compiling: the input is what changes the output, so the compiling→live flip of an unchanged
+artifact re-runs nothing while a refresh re-prepares exactly once. The producer runs inside
+`ChatView` — the conversation-scoped view that already owns this thread's listeners — which is the
+caller §7a demands; `phase3.e2e.test.tsx` keeps its test-local driver as the composition proof
+under test, now beside the production one rather than standing in for it.
+
+**D122 — The handshake's first contact is the frame's, and the host listens on its own window:
+cross-origin access is what the sandbox refuses, so the host never reaches in.**
+
+Decided 2026-10-09 (Phase 3 gate: the webview proofs). `hostSide` and the frame's boot responder
+existed as two halves that never met in the product: the host waited for a window-level
+`artifact.hello` **on the frame's window** — an opaque, cross-origin window, exactly what `D2`
+exists to refuse reaching into — and the frame waited for an `artifact.boot` that nothing sent.
+Both were unit-tested against each other by hand; neither was reachable by the app, so a webview
+proof of "a refused handshake leaves the frame inert" would have been unobservable theatre. The
+loop closes in the direction the sandbox permits: the frame posts its hello to `window.parent`
+(`"*"` — an opaque origin cannot name anyone, the same reason `bootChannel` uses it), and the
+host's listener rides the **shell's own window**, where `event.origin === "null"` and
+`event.source === frameWindow` are both observable without crossing the boundary.
+`ArtifactDrawer` attaches the host half when a live frame is on screen, re-attaching per document
+(the transferred port dies with the old one), exposes readiness as `data-artifact-channel`, and
+routes error-level reports into the drawer's existing failed presentation — a silent runtime
+error is the blank-frame bug again, which is the one thing that component exists to prevent. The
+proofs then observe the real chain end to end: hello → validated → boot + port → claimed → `ready`.
+
+**D123 — `srcdoc` can never run an artifact script, so the document is served from the app origin with a header policy.**
+
+Decided 2026-10-10 (Phase 3 gate: the webview proofs, slice 3c). A `srcdoc` document
+inherits the shell's *response-header* CSP through the policy container, and the shell's
+`script-src 'self'` never allows an inline script — so no artifact script could ever execute
+under `srcdoc`, whatever nonce the frame's own meta policy carried. Empirical, from the proof
+harness against the real build: frame meta nonce == script-tag nonce (`b536875…`, 9403 chars)
+yet the script never booted, and a clone probe drew three `script-src-elem` violations from the
+inherited policy. The transport is therefore a document served from the app origin: the shell
+preempts the `tauri` scheme's handler (`register_uri_scheme_protocol`, which Tauri's built-in
+only registers when the scheme is not already taken) and answers `/__clauro/doc/<nonce>` with
+`artifact_csp(nonce)` as a **header** — the one policy Rust assembles (D3), delivered before any
+content parses, with the nonce doubling as the path token so header and tags can never disagree.
+`sandbox="allow-scripts"` stays the sole boundary; `event.origin` stays `"null"`. This
+supersedes D2's transport clause (supersede, never renumber): `srcdoc` was the wrong vehicle,
+`sandbox` was always the boundary. Rejected: a `data:`-URL transport (same inheritance class
+of problem, worse debuggability) and dev/prod parity theatrics — dev mode was already blank
+under the shipping CSP, and that pre-existing gap stays honestly deferred, not papered over.
+
+**D124 — The artifact document lives on a remote-by-construction host, because the frame owns a `__TAURI_INTERNALS__` object on Windows and absence is unachievable.**
+
+Decided 2026-10-10 (Phase 3 gate: the webview proofs, slice 3c; found by the proofs, fixed in
+the same commit). Tauri marks every init script `for_main_frame_only: true`
+(tauri-2.12.1 `manager/webview.rs:161`), but wry 0.57.0's WebView2 backend ignores the flag
+(`webview2/mod.rs:507` adds every script via `AddScriptToExecuteOnNewDocumentAsync`, and its
+own docs admit scripts reach subframes regardless) — so the artifact frame owns a
+`__TAURI_INTERNALS__` object with a working-shaped `invoke`, exactly the D6 nightmare. Observed,
+not theorised: the proof surface-dump reads `{type: "object", keys: ["plugins"], invoke:
+"function", ipc: "object"}` (`invoke`/`ipc` are non-enumerable `defineProperty` installs, hence
+absent from `keys`). Deleting it from the frame is impossible — the installs are
+non-configurable — and page CSP cannot block host-injected scripts, so the literal "absent"
+property of Tasks/013 criterion 1 is unachievable on this floor. What closes the hole is the
+host half, in two layers that are each pinned by test: (1) the document is served from a
+dedicated `artifact` scheme (`http://artifact.localhost/…` on Windows,
+`artifact://localhost` elsewhere) registered at the wry level, never through Tauri's protocol
+map — so the URL matches none of `is_local_url`'s three branches (tauri-2.12.1
+`webview/mod.rs:1961`: not the `tauri` protocol URL, not the app URL, scheme unknown to the
+map) and every invoke from the frame arrives as `Origin::Remote`; (2) no capability grants a
+remote context (`src-tauri/capabilities/default.json` carries no `remote` key, pinned by
+`no_capability_grants_a_remote_context`) — so `on_message`'s ACL check (`webview/mod.rs:2080`,
+"remote content can never reach custom commands unless an explicit `remote` capability has
+been configured") rejects before any handler runs. The fetch path never leaves the frame at
+all (`connect-src 'none'`). Proven end to end: a frame-side `invoke('webview_status')` never
+resolves while the shell's identical invoke resolves — `scripts/webview-proofs.mjs` claim 1,
+8/8 green. What this does **not** prove is stated with it: frame-side a host rejection and a
+lost response both read as a hang, so the proof shows no *response* ever reaches the frame and
+the *dispatch* closure is the cited host code plus the two pinned premises — not an observed
+rejection. Any future `remote` capability must revisit this decision first; the test fails
+until it does.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
@@ -1308,9 +1432,9 @@ Clauro makes these claims and this is what backs them:
 | No telemetry, ever | D38 |
 | API keys in the OS keychain, never in SQLite | `keyring` crate |
 | Conversations never leave the machine except to your chosen provider | Direct provider calls, no proxy |
-| Artifacts cannot reach the app | D2 — opaque origin |
+| Artifacts cannot reach the app | D2 — opaque origin · D124 — the document host is remote to Tauri's IPC, so the frame's injected internals stay inert |
 | Artifacts cannot make network requests | D3 |
-| Artifacts cannot read your files | D2 + D31 — iframe has no Tauri internals, `fs` is host-mediated |
+| Artifacts cannot read your files | D124 + D31 — the frame's `invoke` fails closed at the host ACL, `fs` is host-mediated |
 | You approve every command before it runs | D66 — per-invocation, nothing persisted, no allowlist · D67 — opt in per project |
 | The model cannot ask you to paste a secret | D43 — the `question` card persists into the thread, so secret-shaped prompts are refused at the tool boundary |
 

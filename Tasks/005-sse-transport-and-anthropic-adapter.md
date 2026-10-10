@@ -97,14 +97,66 @@ key is needed to choose.** `D75`.
       builder carries `context_management` (`:83-86`), the compaction builder carries `compaction`
       (`:108`); `tests/builders.rs:53-72` asserts the other key is absent. Neither struct has a
       field that could set the other parameter, so the unrepresentability argument holds (`D21`)
-- [ ] 429/5xx retried with backoff; `Retry-After` honoured — **PARTIAL. Policy only; no retry.**
+- [x] 429/5xx retried with backoff; `Retry-After` honoured — DONE 2026-10-07.
       Status set `408|429|5xx` at `src/retry.rs:28`, `Retry-After` parsed at `:31-35` including
       HTTP-date form (`:45-97`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
-      `tests/retry.rs:11-63` covers all of it. **But `retry_delay` has no caller outside its own
-      test**, and no HTTP send loop exists (`src/lib.rs:10` defers it). See Status
+      `tests/retry.rs:11-63` covers all of it. `retry_delay` now has two real callers:
+      `stream_step` (`src/send.rs`, proven by `tests/send.rs`: 429 retried, 400 fails at once,
+      attempts capped, cap reports the status actually seen) and `LiveExchange::step`
+      (`src-tauri/src/turn.rs`, same policy, live path unverified by rule). The old "no
+      caller" note below is superseded.
 - [x] OpenAI-compatible adapter renders an unrecognised event as a visible notice — DONE
   2026-10-07 (see Status addendum below). `persist_step` routes `Ignored { raw_type }`
   to `insert_notice` (`run.rs:634-647`); proven by
   `wiring.rs:ignored_events_become_visible_notices`, which failed first (0 notices —
   the silent drop). Stale pointers corrected: the drop was at `run.rs:632-634`, and
   `insert_notice` lives at `run.rs:737`, not the numbers below.
+
+**Addendum 2026-10-07 (live smoke, Google Gemini key, Gemma 4).** The "assumption,
+not a test" risk above is now measured for one real provider — by a throwaway
+script outside the repo (TEMP, deleted after the run; key from a gitignored
+`.env`, never printed, never committed, never in a test). Verified live:
+
+- Endpoint `https://generativelanguage.googleapis.com/v1beta/openai`, Bearer
+  auth. `GET /models` returns 62 ids including `models/gemma-4-26b-a4b-it`
+  and `models/gemma-4-31b-it`. Model ids carry the `models/` prefix and the
+  chat endpoint accepts it verbatim.
+- `POST /chat/completions` returns the standard envelope (`choices[0]` with
+  `finish_reason`/`index`/`message{content,role}`; `usage` with
+  `prompt_tokens`/`completion_tokens`/`total_tokens`).
+- Streaming is bare `data:` lines plus terminal `data: [DONE]` — no `event:`
+  lines. Final chunk carries `finish_reason: "stop"`.
+- **Reasoning arrives in-band, and this is the load-bearing fact for the
+  translator:** thinking deltas are `<thought>…</thought>` blocks inside
+  `delta.content`, marked per-delta by
+  `extra_content.google.thought == true`; the closing chunk's content is
+  `</thought>4 5 6...` — thought-close and answer text share one delta. A
+  translator that splits thinking from text on anything but that marker
+  renders reasoning as answer: exactly the plausible-looking wrong transcript
+  D80 exists to prevent. Non-thinking deltas carry no `extra_content`.
+
+What this does NOT prove: tool-call framing on this endpoint (no `tools` were
+sent - one text turn only), and nothing inside the app (no key is stored on
+this host, and the in-app turn path is still unverified end to end).
+
+**2026-10-09 addendum — the translator landed (D119).** Request side:
+`crates/clauro-transport/src/openai_request.rs::translate_request` rewrites the loop's
+Anthropic body as chat-completions (system → the first message, `input_schema` →
+`function.parameters`, `tool_use` → `tool_calls` with JSON-string arguments, `tool_result` →
+`role: "tool"` messages directly after the call; `thinking`/`context_management`/beta headers
+**dropped, never approximated**) — pinned by `tests/openai_request.rs` (7 tests), and
+`assemble_messages` now sends `tool_result` in the following user message, the shape both APIs
+require (the latent 400 this task's body-shape notes implied). Routing:
+`src-tauri/src/turn.rs::wire_for` picks the wire from the provider row *before* any key is read
+or slot claimed; `LiveExchange::build_http` is pure and tested — as-built body with
+`x-api-key` on Anthropic, translated body with `Authorization: Bearer` on compat, beta headers
+forwarded only where their controls still exist. Response side: the `extra_content.google.thought`
+marker recorded above is now parsed — `tests/openai_thought_marker.sse` (synthesised from this
+recording, labelled as such, no key used) pins thought→thinking region,
+`</thought>`+answer in one delta → split, and markup never reaching either region. The wire now
+has an executable witness: `scripts/mock-openai-server.mjs` (`pnpm mock`) — a zero-dependency
+loopback server that refuses every request violating the translated shape by field name (D120)
+and streams the three e2e scripts (`mock-text` with reasoning deltas, `mock-artifact` and
+`mock-question` issuing real tool calls); pinned by `scripts/mock-openai-server.test.mjs`
+(8 tests). Still not proven live: tool-call framing on a real endpoint, and any in-app keyed
+turn (human-gated).

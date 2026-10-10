@@ -20,7 +20,9 @@ export interface DrawerEntry {
 
 interface DrawerStore {
   drawers: Record<string, DrawerEntry | undefined>;
-  setCompiling: (threadId: string, artifactId: string) => void;
+  /** `artifactId` is null at block start: the model asked, the id does not
+   * exist until the loop generates it (D121). */
+  setCompiling: (threadId: string, artifactId: string | null) => void;
   setLive: (threadId: string, artifactId: string, version: number) => void;
   setNotice: (threadId: string, notice: string) => void;
   clear: (threadId: string) => void;

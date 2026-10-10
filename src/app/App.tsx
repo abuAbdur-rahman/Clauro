@@ -3,18 +3,22 @@
  * explained before first paint — never a blank window, never a bare crash.
  */
 import { useEffect, useState } from "react";
-import { refreshCatalogue, shortError, webviewStatus, type CataloguePayload } from "../features/catalogue/catalogue";
-import ModelPicker from "../components/ModelPicker";
+import { shortError, webviewStatus } from "../features/catalogue/catalogue";
 import Composer from "../components/Composer";
 import { useThreadStore } from "../features/catalogue/thread";
+import { ProvidersView } from "../features/providers/ProvidersView";
+import { ChatView } from "../features/turn/ChatView";
 import { ArtifactDrawer } from "../components/ArtifactDrawer";
 import { ProjectsRail } from "../features/projects/ProjectsRail";
 import { ProjectsGrid } from "../features/projects/ProjectsGrid";
 import { ProjectDetail } from "../features/projects/ProjectDetail";
 import { HomeGreeting } from "../features/home/HomeGreeting";
 import { CommandPalette } from "../features/shell/CommandPalette";
-import { applyTheme } from "../features/shell/theme";
-import { useSummonHotkey } from "../features/shell/hotkey";
+import { useSettingsHotkey, useSummonHotkey } from "../features/shell/hotkey";
+import { useSettingsStore } from "../features/shell/settings";
+import { SettingsDialog } from "../features/settings/SettingsDialog";
+import { useArtifactContent } from "../features/artifact/live";
+import { useTheme } from "../features/shell/usetheme";
 
 const THREAD = "thread-001";
 
@@ -29,24 +33,35 @@ const DEMO_PROJECTS = [
 ];
 
 type Boot = { stage: "checking" } | { stage: "missing"; hint: string } | { stage: "ready" };
-type View = { name: "home" } | { name: "projects" } | { name: "project"; id: string } | { name: "chat" };
+type View =
+  | { name: "home" }
+  | { name: "projects" }
+  | { name: "project"; id: string }
+  | { name: "chat" }
+  | { name: "providers" };
 
 export default function App() {
   const [boot, setBoot] = useState<Boot>({ stage: "checking" });
-  const [payload, setPayload] = useState<CataloguePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const openThread = useThreadStore((s) => s.openThread);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
+  const openSettings = useSettingsStore((s) => s.openSettings);
+  const artifactContent = useArtifactContent((s) => s.threads[THREAD]);
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
-  const model = useThreadStore((s) => s.threads[THREAD]?.model ?? null);
-  const effort = useThreadStore((s) => s.threads[THREAD]?.effort ?? "medium");
+  useSettingsHotkey(() => {
+    openSettings("providers");
+  });
 
-  useEffect(() => {
-    applyTheme({ mode: "system", accent: "neutral", density: "comfortable" }, false);
-  }, []);
+
+  // Device theme, followed live and user-overridable (Appearance pane):
+  // white surfaces only exist in light mode. Previously a hardcoded `false`
+  // pinned the shell to light tokens on a dark OS — proven by the running
+  // app 2026-10-07. `useTheme` owns the subscription; `applyTheme` stays pure
+  // so its unit tests keep passing injected values.
+  useTheme();
 
   useEffect(() => {
     // Read through a call: property narrowing would otherwise conclude the
@@ -64,8 +79,6 @@ export default function App() {
         }
         setBoot({ stage: "ready" });
         openThread(THREAD);
-        const cat = await refreshCatalogue();
-        if (!isCancelled()) setPayload(cat);
       } catch (e) {
         if (!isCancelled()) setError(shortError(e));
       }
@@ -92,42 +105,53 @@ export default function App() {
   const project = view.name === "project" ? DEMO_PROJECTS.find((p) => p.id === view.id) : undefined;
 
   return (
-    <div className="min-h-screen bg-neutral-950 p-4 font-mono text-sm text-neutral-300">
+    <div className="h-dvh w-screen overflow-hidden bg-neutral-950 p-4 font-sans text-sm text-neutral-300">
       <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
-      <div className="flex gap-4">
-        <ProjectsRail
-          projects={DEMO_PROJECTS}
-          memoryOff={false}
-          threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
-          onSelectProject={(id) => {
-            setView({ name: "project", id });
-          }}
-          onSelectThread={() => {
-            setView({ name: "chat" });
-          }}
-        />
-        <div className="min-w-0 flex-1">
+      <SettingsDialog threadId={THREAD} />
+      <div className="flex h-full min-h-0 gap-4">
+        {/* Shrink-0 shell only: the rail sets its own width (260px open,
+            48px collapsed) from SidebarProvider state, so this wrapper must
+            size to content, never pin it. Pinning it was the bug that crushed
+            the center column to zero (proven in-browser 2026-10-07). */}
+        <div className="shrink-0 self-stretch overflow-hidden">
+          <ProjectsRail
+            projects={DEMO_PROJECTS}
+            memoryOff={false}
+            threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
+            onSelectProject={(id) => {
+              setView({ name: "project", id });
+            }}
+            onSelectThread={() => {
+              setView({ name: "chat" });
+            }}
+            onSearch={() => {
+              setPaletteOpen(true);
+            }}
+            onOpenProjects={() => {
+              setView({ name: "projects" });
+            }}
+            onOpenSettings={() => {
+              openSettings("providers");
+            }}
+          />
+        </div>
+        <div className="min-h-0 min-w-0 flex-1">
           {view.name === "home" && (
-            <div className="mx-auto mt-24 max-w-2xl">
+            <div className="mx-auto flex h-full w-full max-w-[720px] flex-col items-center justify-center">
               <HomeGreeting hour={new Date().getHours()} />
               <div className="mt-6">
-                {payload ? (
-                  <Composer
-                    threadId={THREAD}
-                    payload={payload}
-                    memoryOff={false}
-                    onSend={noop}
-                    onAttach={noop}
-                    onMemoryToggle={noop}
-                  />
-                ) : (
-                  <p className="text-neutral-500">Loading composer…</p>
-                )}
+                <Composer
+                  threadId={THREAD}
+                  memoryOff={false}
+                  onSend={noop}
+                  onAttach={noop}
+                  onMemoryToggle={noop}
+                />
                 <p className="mt-2 text-center text-xs text-neutral-500">
                   Clauro runs on your machine. Double-check important answers.
                 </p>
               </div>
-              <div className="mt-6 flex justify-center gap-2">
+              <div className="mt-6 flex justify-center gap-4">
                 <button
                   type="button"
                   className="text-xs text-neutral-400 hover:underline"
@@ -136,6 +160,15 @@ export default function App() {
                   }}
                 >
                   Browse projects
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-neutral-400 hover:underline"
+                  onClick={() => {
+                    setView({ name: "providers" });
+                  }}
+                >
+                  Providers
                 </button>
               </div>
             </div>
@@ -162,47 +195,38 @@ export default function App() {
           )}
           {view.name === "chat" && (
             <div>
-              <h1 className="text-base">Clauro — model catalogue (003)</h1>
-              <p className="mt-1 text-xs text-neutral-500">
-                thread {THREAD} · model {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
-              </p>
+              <h1 className="text-base">Clauro</h1>
               {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
-              <div className="mt-3 max-w-2xl">
-                {payload ? (
-                  <ModelPicker payload={payload} threadId={THREAD} />
-                ) : (
-                  <p className="text-neutral-500">Loading catalogue…</p>
-                )}
-              </div>
-              <div className="mt-4 max-w-2xl">
-                {payload ? (
-                  <Composer
-                    threadId={THREAD}
-                    payload={payload}
-                    memoryOff={false}
-                    onSend={noop}
-                    onAttach={noop}
-                    onMemoryToggle={noop}
-                  />
-                ) : (
-                  <p className="text-neutral-500">Loading composer…</p>
-                )}
-                <p className="mt-2 text-center text-xs text-neutral-500">
-                  Clauro runs on your machine. Double-check important answers.
-                </p>
+              <ChatView threadId={THREAD} />
+            </div>
+          )}
+          {view.name === "providers" && (
+            <div className="mx-auto mt-8 max-w-2xl">
+              <button
+                type="button"
+                className="text-xs text-neutral-400 hover:underline"
+                onClick={() => {
+                  setView({ name: "home" });
+                }}
+              >
+                ← Back
+              </button>
+              <div className="mt-4">
+                <ProvidersView />
               </div>
             </div>
           )}
         </div>
         {/* Engine gate is prop-driven: the shell passes the real verdict once
             the Tauri runtime check exists (021). Windows-verified is the dev
-            default per AGENTS.md §8a. */}
+            default per AGENTS.md §8a. The artifact content rides the
+            producer's store (D121); empty means nothing has been produced. */}
         <ArtifactDrawer
           threadId={THREAD}
           engine={{ platform: "windows", opaqueProven: true }}
-          source=""
-          mediaType="text/html"
-          title=""
+          source={artifactContent?.source ?? ""}
+          mediaType={artifactContent?.mediaType ?? "text/html"}
+          title={artifactContent?.title ?? ""}
         />
       </div>
     </div>

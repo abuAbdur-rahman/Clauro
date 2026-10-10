@@ -2,15 +2,19 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod artifact_doc;
 mod catalogue;
 mod csp;
 mod keyring_store;
 mod platform;
+mod providers;
+mod turn;
 
 use tauri::Manager;
 
 use catalogue::{
     is_fresh, read_cache, resolve, write_cache, Catalogue, CatalogueError, CATALOGUE_TTL_SECS,
+    MODELS_DEV_URL,
 };
 use keyring_store::KeyringError;
 use platform::WebviewStatus;
@@ -38,9 +42,6 @@ fn keyring_available() -> Result<(), KeyringError> {
 }
 
 // ── catalogue commands ─────────────────────────────────────────────────────
-
-/// `models.dev` source of truth (D23). Fetched at runtime, never bundled.
-const MODELS_DEV_URL: &str = "https://models.dev/api.json";
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -154,6 +155,19 @@ fn artifact_csp(nonce: String) -> String {
     csp::artifact_csp(&nonce)
 }
 
+/// Publish one render's artifact document (D123). The web app hands over the
+/// envelope and the nonce it was built with and gets back the absolute URL the
+/// frame navigates to; the response header is assembled from that same nonce,
+/// so the document's single policy and its tags can never disagree.
+#[tauri::command]
+fn artifact_publish(
+    registry: tauri::State<'_, artifact_doc::DocRegistry>,
+    nonce: String,
+    doc: String,
+) -> Result<String, artifact_doc::DocError> {
+    registry.publish(&nonce, &doc)
+}
+
 // ── platform commands ──────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -169,6 +183,32 @@ fn _catalogue_types() -> Option<(Catalogue, CatalogueError)> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // D123/D124: the artifact documents live on their own `artifact`
+        // scheme, registered here at the wry level — never through Tauri's
+        // protocol map, whose ignorance of the scheme is what keeps the
+        // documents remote to Tauri's IPC. The shell's own `tauri` scheme
+        // keeps its built-in handler untouched, including `csp_header`.
+        .register_uri_scheme_protocol(artifact_doc::SCHEME, |ctx, request| {
+            artifact_doc::handle_request(ctx.app_handle(), &request)
+        })
+        .setup(|app| {
+            // The turn driver owns its store under the app-data dir. Opening
+            // it here (not lazily in the first command) means a corrupt
+            // database fails at launch with the real error, not mid-turn.
+            let dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| turn::TurnError::Store {
+                    reason: format!("no app-data dir: {e}"),
+                })?;
+            let state =
+                turn::TurnState::open(&dir).map_err(|e| format!("cannot open turn store: {e}"))?;
+            app.manage(state);
+            // Published artifact documents live as long as the app does; the
+            // registry is bounded, and a re-render republishes (D123).
+            app.manage(artifact_doc::DocRegistry::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             keyring_store,
             keyring_retrieve,
@@ -177,7 +217,21 @@ pub fn run() {
             catalogue_status,
             catalogue_refresh,
             artifact_csp,
-            webview_status
+            artifact_publish,
+            webview_status,
+            turn::turn_start,
+            turn::turn_stop,
+            turn::transcript_read,
+            turn::artifact_latest,
+            turn::question_answer,
+            providers::provider_list,
+            providers::provider_add_builtin,
+            providers::provider_add_custom,
+            providers::provider_remove,
+            providers::provider_set_key,
+            providers::provider_models,
+            providers::provider_models_enriched,
+            providers::provider_refresh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

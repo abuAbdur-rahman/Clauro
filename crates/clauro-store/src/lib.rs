@@ -159,6 +159,47 @@ CREATE TABLE compaction_event (
   UNIQUE (thread_id, generation)
 );
 CREATE INDEX idx_compaction_thread ON compaction_event(thread_id, generation DESC);
+
+CREATE TABLE provider (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('anthropic','openai_compatible')),
+  display_name TEXT NOT NULL,
+  base_url    TEXT,
+  added_at    INTEGER NOT NULL,
+  models_fetched_at INTEGER,
+  models_ttl_secs INTEGER NOT NULL DEFAULT 259200
+);
+
+CREATE TABLE provider_model (
+  provider_id TEXT NOT NULL REFERENCES provider(id),
+  model_id    TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  PRIMARY KEY (provider_id, model_id)
+);
+CREATE INDEX idx_provider_model ON provider_model(provider_id, model_id);
+"#;
+
+/// Migration 1 → 2: providers (003). Fresh databases get the whole schema at
+/// version 2; a version-1 file gains exactly these two tables and nothing
+/// else — the transcript tables are untouched by the migration.
+const MIGRATION_1_TO_2_SQL: &str = r#"
+CREATE TABLE provider (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('anthropic','openai_compatible')),
+  display_name TEXT NOT NULL,
+  base_url    TEXT,
+  added_at    INTEGER NOT NULL,
+  models_fetched_at INTEGER,
+  models_ttl_secs INTEGER NOT NULL DEFAULT 259200
+);
+
+CREATE TABLE provider_model (
+  provider_id TEXT NOT NULL REFERENCES provider(id),
+  model_id    TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  PRIMARY KEY (provider_id, model_id)
+);
+CREATE INDEX idx_provider_model ON provider_model(provider_id, model_id);
 "#;
 
 // ── errors ───────────────────────────────────────────────────────────────────
@@ -263,6 +304,83 @@ pub struct ThreadRow {
     pub system_frozen: String,
     pub tools_frozen: String,
     pub memory_off: bool,
+}
+
+/// How a provider is spoken to. Two shapes, and the difference is the whole
+/// reason the table exists: Anthropic's API (key header + version header, own
+/// `/models` shape) versus everything OpenAI-compatible (bearer + base URL).
+/// A third shape is a new variant, never a stringly-typed column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKind {
+    Anthropic,
+    OpenAiCompatible,
+}
+
+impl ProviderKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAiCompatible => "openai_compatible",
+        }
+    }
+
+    /// Parse a stored kind. Unknown values are `None` — a newer binary's row
+    /// must not become this binary's silent default. Named `from_stored`
+    /// rather than `from_str` so it cannot be confused with the standard
+    /// `FromStr` trait method.
+    #[must_use]
+    pub fn from_stored(s: &str) -> Option<Self> {
+        match s {
+            "anthropic" => Some(Self::Anthropic),
+            "openai_compatible" => Some(Self::OpenAiCompatible),
+            _ => None,
+        }
+    }
+}
+
+/// One configured provider. Configuration, not transcript: `models_fetched_at`
+/// is stamped on every refresh, and the model list is replaced, so the write
+/// paths are documented alongside `project.name`, not hidden.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProvider {
+    pub id: String,
+    pub kind: ProviderKind,
+    pub display_name: String,
+    /// Endpoint root for `openai_compatible` (e.g. `https://api.openai.com/v1`).
+    /// `None` for Anthropic — its URL is fixed, not configured.
+    pub base_url: Option<String>,
+    pub added_at: i64,
+}
+
+/// One provider row, with its model-list freshness.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRow {
+    pub id: String,
+    pub kind: ProviderKind,
+    pub display_name: String,
+    pub base_url: Option<String>,
+    pub added_at: i64,
+    pub models_fetched_at: Option<i64>,
+    pub models_ttl_secs: i64,
+}
+
+/// One fetched model id. Limits live in the models.dev enrichment, not here —
+/// provider `/models` endpoints mostly do not report them, and a zero-guess
+/// would under-reserve the reply (CONTRACTS.md §5). Serializable: the
+/// settings surface renders stored models without re-fetching.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ProviderModel {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// One stored model row, with its owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredModel {
+    pub provider_id: String,
+    pub id: String,
+    pub display_name: String,
 }
 
 /// Append-only: insert + read. `seq` gaps are legal; a compaction removes a
@@ -380,6 +498,20 @@ pub struct NewArtifact {
     pub created_at: i64,
 }
 
+/// One stored artifact version, as `latest_artifact` returns it. The drawer's
+/// producer (D121) needs the row's own version and path — the source bytes
+/// live on disk, never in the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactRow {
+    pub id: String,
+    pub thread_id: String,
+    pub version: i64,
+    pub title: String,
+    pub media_type: String,
+    pub source_path: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockRow {
     pub id: String,
@@ -437,7 +569,10 @@ impl Store {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 0 {
             conn.execute_batch(SCHEMA_SQL)?;
-            conn.pragma_update(None, "user_version", 1)?;
+            conn.pragma_update(None, "user_version", 2)?;
+        } else if version == 1 {
+            conn.execute_batch(MIGRATION_1_TO_2_SQL)?;
+            conn.pragma_update(None, "user_version", 2)?;
         }
         Ok(Self { conn })
     }
@@ -469,7 +604,7 @@ impl Store {
             .unwrap_or(false)
     }
 
-    /// User tables (no `sqlite_%` internals), for the twelve-table assertion.
+    /// User tables (no `sqlite_%` internals), for the table-count assertion.
     pub fn table_names(&self) -> Vec<String> {
         let mut stmt = self
             .conn
@@ -548,6 +683,123 @@ impl Store {
                 },
             )
             .optional()?)
+    }
+
+    // ── providers: configuration, not transcript ──
+
+    /// Register a provider. A duplicate id fails at the constraint — the
+    /// caller maps it to a typed error, never a second row.
+    pub fn insert_provider(&self, p: NewProvider) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO provider (id, kind, display_name, base_url, added_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![p.id, p.kind.as_str(), p.display_name, p.base_url, p.added_at],
+        )?;
+        Ok(())
+    }
+
+    fn read_provider_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderRow> {
+        let kind_str: String = row.get(1)?;
+        let kind = ProviderKind::from_stored(&kind_str).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                format!("unknown provider kind: {kind_str}").into(),
+            )
+        })?;
+        Ok(ProviderRow {
+            id: row.get(0)?,
+            kind,
+            display_name: row.get(2)?,
+            base_url: row.get(3)?,
+            added_at: row.get(4)?,
+            models_fetched_at: row.get(5)?,
+            models_ttl_secs: row.get(6)?,
+        })
+    }
+
+    /// One provider by id. `None` is unconfigured, not an error — the picker
+    /// renders the empty state from it.
+    pub fn get_provider(&self, id: &str) -> Result<Option<ProviderRow>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, kind, display_name, base_url, added_at, models_fetched_at, models_ttl_secs FROM provider WHERE id = ?1",
+                [id],
+                Self::read_provider_row,
+            )
+            .optional()?)
+    }
+
+    /// Every provider in id order. The picker groups by this list — an
+    /// unconfigured provider cannot appear because it has no row.
+    pub fn list_providers(&self) -> Result<Vec<ProviderRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, display_name, base_url, added_at, models_fetched_at, models_ttl_secs FROM provider ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], Self::read_provider_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Replace the whole model list and stamp freshness, atomically. Refresh
+    /// replaces, never merges — a model the provider removed must disappear
+    /// from the picker rather than lingering as a dead entry.
+    pub fn replace_provider_models(
+        &self,
+        provider_id: &str,
+        models: &[ProviderModel],
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        if self.get_provider(provider_id)?.is_none() {
+            return Err(StoreError::NotFound(format!(
+                "no such provider: {provider_id}"
+            )));
+        }
+        self.conn.execute(
+            "DELETE FROM provider_model WHERE provider_id = ?1",
+            [provider_id],
+        )?;
+        for m in models {
+            self.conn.execute(
+                "INSERT INTO provider_model (provider_id, model_id, display_name) VALUES (?1, ?2, ?3)",
+                rusqlite::params![provider_id, m.id, m.display_name],
+            )?;
+        }
+        // The one mutating write path outside the transcript tables: this
+        // column is configuration freshness, documented in CONTRACTS.md §1
+        // and allowlisted in tests/append_only.rs.
+        self.conn.execute(
+            "UPDATE provider SET models_fetched_at = ?1 WHERE id = ?2",
+            rusqlite::params![fetched_at, provider_id],
+        )?;
+        Ok(())
+    }
+
+    /// One provider's models in id order.
+    pub fn list_provider_models(&self, provider_id: &str) -> Result<Vec<StoredModel>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT provider_id, model_id, display_name FROM provider_model WHERE provider_id = ?1 ORDER BY model_id",
+        )?;
+        let rows = stmt.query_map([provider_id], |row| {
+            Ok(StoredModel {
+                provider_id: row.get(0)?,
+                id: row.get(1)?,
+                display_name: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Remove a provider and its models. Returns whether a row existed —
+    /// removing twice is a no-op, not an error.
+    pub fn remove_provider(&self, id: &str) -> Result<bool, StoreError> {
+        self.conn
+            .execute("DELETE FROM provider_model WHERE provider_id = ?1", [id])?;
+        let removed = self
+            .conn
+            .execute("DELETE FROM provider WHERE id = ?1", [id])?;
+        Ok(removed > 0)
     }
 
     pub fn insert_message(&self, m: NewMessage) -> Result<(), StoreError> {
@@ -821,6 +1073,20 @@ impl Store {
         .expect("block read must run")
         .filter_map(Result::ok)
         .collect()
+    }
+
+    /// The owning message of one block. A read, not a write path: answering a
+    /// question appends the result block beside its `tool_use`, and the loop
+    /// needs the message id to place it.
+    pub fn message_id_for_block(&self, block_id: &str) -> Result<String, StoreError> {
+        self.conn
+            .query_row(
+                "SELECT message_id FROM block WHERE id = ?1",
+                [block_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(format!("no such block: {block_id}")))
     }
 
     // ── the single write path per mutable column (CONTRACTS.md §1) ──
@@ -1238,6 +1504,33 @@ impl Store {
             rusqlite::params![path, id],
         )?;
         self.must_touch(rows, id)
+    }
+
+    /// The newest artifact row of one thread, if any. Refresh bumps
+    /// (`insert_artifact_version`), so the drawer shows the highest version
+    /// of whichever artifact was written last — newest wins, tie broken by
+    /// version. Never crosses threads.
+    #[must_use]
+    pub fn latest_artifact(&self, thread_id: &str) -> Option<ArtifactRow> {
+        self.conn
+            .query_row(
+                "SELECT id, thread_id, version, title, media_type, source_path, created_at
+                 FROM artifact WHERE thread_id = ?1
+                 ORDER BY created_at DESC, version DESC LIMIT 1",
+                rusqlite::params![thread_id],
+                |row| {
+                    Ok(ArtifactRow {
+                        id: row.get(0)?,
+                        thread_id: row.get(1)?,
+                        version: row.get(2)?,
+                        title: row.get(3)?,
+                        media_type: row.get(4)?,
+                        source_path: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                },
+            )
+            .ok()
     }
 }
 

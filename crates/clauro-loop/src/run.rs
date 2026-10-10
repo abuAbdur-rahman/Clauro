@@ -18,12 +18,12 @@
 //! still open at that point close as `aborted` through `cancel_turn` (006).
 
 use crate::queue::{QueuedItem, StopOffer, ThreadQueue};
-use clauro_core::{Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
+use clauro_core::{unbroken_run_end, Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
 use clauro_store::transcript::OpenCall;
 use clauro_store::{MessageRole, NewBlock, NewMessage, NewToolResult, NewUsage, Store, StoreError};
 use clauro_tools::{
-    bound_output, resolve, ApprovalError, ApprovalQueue, IncomingCall, MaterializedTool,
-    QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
+    bound_output, resolve, resolve_answer, AnswerResolution, ApprovalError, ApprovalQueue,
+    IncomingCall, MaterializedTool, QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
 };
 use clauro_transport::{
     build_normal_request, BuiltRequest, InboundKind, NormalBuildInput, NormalisedEvent,
@@ -45,9 +45,27 @@ pub struct ExchangeFailure {
 }
 
 /// One model response per call. Test doubles script steps; the shell wires
-/// HTTP here in Phase 5.
+/// HTTP here.
+///
+/// `step` takes a **sink** and calls it once per event as the event is
+/// produced, then returns the whole step as well. Both halves are deliberate:
+///
+/// - The sink is what makes a turn *stream*. Returning the vector alone means
+///   nothing is observable until the provider has finished, which no renderer
+///   can draw from.
+/// - The returned vector is still what gets persisted, so persistence sees one
+///   complete step exactly as before. A caller that ignores the sink observes
+///   the old behaviour, unchanged.
+///
+/// An implementation must call the sink for every event it returns, in order.
+/// Returning an event without sinking it hides text from the view; sinking one
+/// it does not return would persist nothing. `tests/streaming.rs` pins both.
 pub trait Exchange {
-    fn step(&mut self, request: &BuiltRequest) -> Result<Vec<NormalisedEvent>, ExchangeFailure>;
+    fn step(
+        &mut self,
+        request: &BuiltRequest,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<Vec<NormalisedEvent>, ExchangeFailure>;
 }
 
 /// Everything the loop needs that is fixed per thread.
@@ -73,6 +91,10 @@ pub enum TurnEnd {
     /// An ask-effect call was held for approval. Nothing dispatched for it;
     /// the driver approves and the next turn resumes with it.
     AwaitingApproval,
+    /// A sole, valid `question` call was asked and persisted as a card. The
+    /// turn pauses here — re-sending would echo the card back as if answered.
+    /// The driver answers via `answer_question` and resumes the turn.
+    AwaitingAnswer,
 }
 
 /// What a turn did.
@@ -84,7 +106,69 @@ pub struct TurnReport {
     pub stop_offer: Option<StopOffer>,
     /// Held call ids awaiting approval, in hold order.
     pub pending_approvals: Vec<String>,
+    /// The question call id awaiting an answer, if `end` is `AwaitingAnswer`.
+    pub pending_question: Option<String>,
 }
+
+/// Why an answer was refused. Every variant is user-visible; the model never
+/// sees these — by answer time the model is paused, not listening.
+///
+/// The resume half (provider, key, slot) mirrors `TurnError` deliberately:
+/// one command, one matchable error type for the view.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AnswerError {
+    /// Blank thread, call, or provider id.
+    BadInput { reason: String },
+    /// Another turn holds this thread; stop it before answering into one.
+    Busy { thread_id: String },
+    /// The provider id has no row: never configured, or removed since.
+    NoProvider { provider: String },
+    /// A row this build cannot route (same rule as
+    /// `TurnError::UnsupportedProvider`: a compat provider with no endpoint
+    /// URL). Both wires ship (D48); there is no third to fall back to.
+    UnsupportedProvider { provider: String },
+    /// No stored key for the provider.
+    NoKey { provider: String },
+    /// No unanswered card with this call id on this thread.
+    NoSuchCard(String),
+    /// The card already has its one result. I1 pairs exactly once.
+    AlreadyAnswered(String),
+    /// The answer fails the card's own rules (unknown option, blank, closed
+    /// card with free text off).
+    Invalid(clauro_tools::QuestionError),
+    /// Storage or lock failure, with the message. A string rather than the
+    /// store error: `StoreError` wraps the engine and is neither cloneable
+    /// nor serializable, and this type crosses the Tauri boundary.
+    Store { reason: String },
+}
+
+impl std::fmt::Display for AnswerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadInput { reason } => write!(f, "bad answer input: {reason}"),
+            Self::Busy { thread_id } => write!(f, "a turn is already running on {thread_id}"),
+            Self::NoProvider { provider } => write!(
+                f,
+                "provider {provider} is not configured; add it before answering"
+            ),
+            Self::UnsupportedProvider { provider } => write!(
+                f,
+                "provider {provider} has no endpoint URL configured; set one before answering"
+            ),
+            Self::NoKey { provider } => write!(
+                f,
+                "no API key for {provider} in the keychain; add one before answering"
+            ),
+            Self::NoSuchCard(id) => write!(f, "no unanswered question {id}"),
+            Self::AlreadyAnswered(id) => write!(f, "question {id} already answered"),
+            Self::Invalid(e) => write!(f, "answer not accepted: {e}"),
+            Self::Store { reason } => write!(f, "store error: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for AnswerError {}
 
 /// Why a turn refused to run.
 #[derive(Debug)]
@@ -132,6 +216,17 @@ pub struct TurnLoop {
     stops: HashMap<String, Arc<AtomicBool>>,
     approvals: HashMap<String, ApprovalQueue>,
     gates: HashMap<String, QuestionGate>,
+}
+
+/// One string field out of a stored JSON payload. `None` covers corrupt
+/// payloads and missing fields alike: callers treat both as "no such row",
+/// never as a reason to invent one.
+fn payload_field(payload: &str, key: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()?
+        .get(key)?
+        .as_str()
+        .map(str::to_string)
 }
 
 impl TurnLoop {
@@ -215,6 +310,92 @@ impl TurnLoop {
     pub fn approve_call(&mut self, thread_id: &str, id: &str) -> Result<(), ApprovalError> {
         self.approvals_for(thread_id).approve(id)?;
         Ok(())
+    }
+
+    /// Answer an awaiting question card (009, D42). Validates through    /// `resolve_answer` — the card's own rules, so an option outside the card
+    /// or a blank answer fails here, loudly — then persists the answer as the
+    /// call's one `tool_result` row plus its block. I1 pairs exactly once:
+    /// a second answer finds the sibling result and fails `AlreadyAnswered`.
+    /// The driver resumes the turn afterwards (usually `continue_turn`); this
+    /// method only records the answer, never drives.
+    pub fn answer_question(
+        &self,
+        store: &Store,
+        thread_id: &str,
+        tool_call_id: &str,
+        answer: &str,
+    ) -> Result<AnswerResolution, AnswerError> {
+        let blocks = store.blocks_for_thread(thread_id);
+        let card = blocks
+            .iter()
+            .find(|b| {
+                b.kind == "question_card"
+                    && payload_field(&b.payload, "id") == Some(tool_call_id.to_string())
+            })
+            .ok_or_else(|| AnswerError::NoSuchCard(tool_call_id.to_string()))?;
+        if blocks.iter().any(|b| {
+            b.kind == "tool_result"
+                && payload_field(&b.payload, "tool_use_id") == Some(tool_call_id.to_string())
+        }) {
+            return Err(AnswerError::AlreadyAnswered(tool_call_id.to_string()));
+        }
+        let card_value: Value = serde_json::from_str(&card.payload)
+            .map_err(|_| AnswerError::NoSuchCard(tool_call_id.to_string()))?;
+        let resolution = resolve_answer(&card_value, answer).map_err(AnswerError::Invalid)?;
+        let use_block = blocks.iter().find(|b| {
+            b.kind == "tool_use"
+                && payload_field(&b.payload, "id") == Some(tool_call_id.to_string())
+        });
+        let msg_id = match use_block {
+            Some(b) => store
+                .message_id_for_block(&b.id)
+                .map_err(|e| AnswerError::Store {
+                    reason: e.to_string(),
+                })?,
+            None => {
+                return Err(AnswerError::NoSuchCard(tool_call_id.to_string()));
+            }
+        };
+        store
+            .insert_tool_result(NewToolResult {
+                id: Store::new_id("tr"),
+                thread_id: thread_id.to_string(),
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: "question".to_string(),
+                status: ToolStatus::Ok,
+                preview: resolution.resolved.clone(),
+                preview_path: None,
+                full_path: None,
+                output_bytes: resolution.resolved.len() as i64,
+                created_at: now_ms(),
+            })
+            .map_err(|e| AnswerError::Store {
+                reason: e.to_string(),
+            })?;
+        self.insert_tool_block(
+            store,
+            &msg_id,
+            &PendingTool {
+                index: 0,
+                id: tool_call_id.to_string(),
+                name: "question".to_string(),
+                input: String::new(),
+            },
+            &ToolOutcome::Ok {
+                preview: resolution.resolved.clone(),
+                preview_path: None,
+                full_path: None,
+            },
+        )
+        .map_err(|e| match e {
+            LoopError::Store(s) => AnswerError::Store {
+                reason: s.to_string(),
+            },
+            _ => AnswerError::Store {
+                reason: "answer block write failed".to_string(),
+            },
+        })?;
+        Ok(resolution)
     }
 
     /// Reject a held call: a typed `error` result row, loop continues, the
@@ -310,13 +491,150 @@ impl TurnLoop {
         Some(item)
     }
 
+    /// Run one turn, then keep going while the thread's queue holds unsent
+    /// input (D98, D105): each drained item becomes its own turn, in order,
+    /// never merged into one prompt. A stop between turns — or any ending
+    /// other than `end_turn` — ends the chain. Reports accumulate across the
+    /// chain; `end` and the pending/offer fields describe the last turn.
+    /// This is the driver entry: anything that starts turns from the host
+    /// starts them here, so queued follow-ups dispatch once idle (023).
+    pub fn run_turn_drained(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        plan: TurnPlan<'_>,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        let TurnPlan {
+            thread_id,
+            user_text,
+            prepared,
+            workspace_dir,
+        } = plan;
+        let report = self.run_turn(
+            store,
+            registry,
+            exchange,
+            TurnPlan {
+                thread_id,
+                user_text,
+                prepared,
+                workspace_dir,
+            },
+            sink,
+        )?;
+        self.drain_chain(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            report,
+            sink,
+        )
+    }
+
+    /// Continue a truncated turn, then drain exactly like `run_turn_drained`.
+    /// The resume itself carries no user message (D106); drained items do.
+    // Eight parameters because a resumed drive needs the full context and
+    // Rust has no partial application; bundling would rename, not shrink.
+    #[allow(clippy::too_many_arguments)]
+    pub fn continue_turn_drained(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        let report = self.continue_turn(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            sink,
+        )?;
+        self.drain_chain(
+            store,
+            registry,
+            exchange,
+            thread_id,
+            prepared,
+            workspace_dir,
+            report,
+            sink,
+        )
+    }
+
+    /// The shared chain tail: while the last turn ended cleanly and the
+    /// queue holds input, run the next item as its own turn. Reports
+    /// accumulate across the chain (every dispatched call, every assistant
+    /// message); `end` and the pending/offer fields describe the last turn.
+    // Nine parameters for the same reason as above; private, two callers.
+    #[allow(clippy::too_many_arguments)]
+    fn drain_chain(
+        &mut self,
+        store: &Store,
+        registry: &mut Registry,
+        exchange: &mut impl Exchange,
+        thread_id: &str,
+        prepared: &PreparedThread,
+        workspace_dir: &Path,
+        mut acc: TurnReport,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<TurnReport, LoopError> {
+        loop {
+            if acc.end != TurnEnd::EndTurn {
+                return Ok(acc);
+            }
+            if self.stopped(thread_id) {
+                // A stop landing exactly between turns: halt without
+                // draining. Same shape as a mid-turn stop, minus the
+                // aborted calls (there are none open).
+                acc.end = TurnEnd::Stopped;
+                acc.stop_offer = self.queues.get(thread_id).and_then(ThreadQueue::stop_offer);
+                return Ok(acc);
+            }
+            let Some(next) = self.drain_next(thread_id) else {
+                return Ok(acc);
+            };
+            let report = self.run_turn(
+                store,
+                registry,
+                exchange,
+                TurnPlan {
+                    thread_id,
+                    user_text: &next.text,
+                    prepared,
+                    workspace_dir,
+                },
+                sink,
+            )?;
+            acc.dispatched.extend(report.dispatched);
+            acc.assistant_messages += report.assistant_messages;
+            acc.end = report.end;
+            acc.stop_offer = report.stop_offer;
+            acc.pending_approvals = report.pending_approvals;
+            acc.pending_question = report.pending_question;
+        }
+    }
     /// Run one turn to `end_turn`, stop, or transport failure.
+    ///
+    /// `sink` receives every provider event as it arrives; pass `&mut |_| {}`
+    /// to discard it and get a non-streaming turn.
     pub fn run_turn(
         &mut self,
         store: &Store,
         registry: &mut Registry,
         exchange: &mut impl Exchange,
         plan: TurnPlan<'_>,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, plan.thread_id, plan.prepared)?;
         // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
@@ -343,12 +661,14 @@ impl TurnLoop {
             plan.workspace_dir,
             &turn_id,
             seq,
+            sink,
         )
     }
 
     /// Continue a truncated turn (D106): same checks as `run_turn`, but no new
     /// user message — the assistant rows append to the open turn instead of a
     /// regenerated one.
+    #[allow(clippy::too_many_arguments)]
     pub fn continue_turn(
         &mut self,
         store: &Store,
@@ -357,6 +677,7 @@ impl TurnLoop {
         thread_id: &str,
         prepared: &PreparedThread,
         workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, thread_id, prepared)?;
         self.stop_flag(thread_id).store(false, Ordering::SeqCst);
@@ -372,12 +693,14 @@ impl TurnLoop {
             workspace_dir,
             &turn_id,
             seq,
+            sink,
         )
     }
 
     /// Regenerate the last answer (D99): re-reads the latest user text and
     /// runs it as a new turn. New rows only — history is never rewritten, and
     /// a thread with no user text fails typed instead of inventing one.
+    #[allow(clippy::too_many_arguments)]
     pub fn regenerate_last(
         &mut self,
         store: &Store,
@@ -386,6 +709,7 @@ impl TurnLoop {
         thread_id: &str,
         prepared: &PreparedThread,
         workspace_dir: &Path,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         let text = last_user_text(store, thread_id)?;
         self.run_turn(
@@ -398,6 +722,7 @@ impl TurnLoop {
                 prepared,
                 workspace_dir,
             },
+            sink,
         )
     }
 
@@ -434,6 +759,7 @@ impl TurnLoop {
         workspace_dir: &Path,
         turn_id: &str,
         mut seq: i64,
+        sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         let material = registry.materialize();
         let ctx = ToolContext {
@@ -447,6 +773,7 @@ impl TurnLoop {
             assistant_messages: 0,
             stop_offer: None,
             pending_approvals: Vec::new(),
+            pending_question: None,
         };
 
         // Approved held calls dispatch first, in hold order, before any new
@@ -483,8 +810,8 @@ impl TurnLoop {
             }
             // One assistant message, one gate window (D42, D101).
             self.gate_for(thread_id).reset();
-            let request = self.build_request(store, thread_id, prepared);
-            let events = match exchange.step(&request) {
+            let (request, gap) = self.build_request(store, thread_id, prepared);
+            let events = match exchange.step(&request, sink) {
                 Ok(events) => events,
                 Err(failure) => {
                     let msg_id = self.insert_assistant(store, thread_id, seq)?;
@@ -497,6 +824,26 @@ impl TurnLoop {
             let msg_id = self.insert_assistant(store, thread_id, seq)?;
             seq += 1;
             report.assistant_messages += 1;
+            // A thinking gap is a property of history, not of this turn, so
+            // it is noticed once per gap — never per-turn spam. The marker
+            // scan below is the dedup: an identical notice already on the
+            // thread means an earlier turn already said it.
+            if let Some(g) = gap {
+                if g.withheld > 0 && !thread_has_gap_notice(store, thread_id) {
+                    let seq0 = self.next_block_seq(store, &msg_id);
+                    self.insert_notice(
+                        store,
+                        &msg_id,
+                        seq0,
+                        &format!(
+                            "{}: {} later reasoning block{} withheld, not re-sent",
+                            THINKING_GAP_MARKER,
+                            g.withheld,
+                            if g.withheld == 1 { "" } else { "s" }
+                        ),
+                    )?;
+                }
+            }
             let pendings = self.persist_step(store, thread_id, turn_id, &msg_id, &events)?;
 
             // D101 at the loop: a question beside any other call — or a second
@@ -562,12 +909,48 @@ impl TurnLoop {
                             workspace_dir,
                             pending,
                         );
+                        // A sole, valid question pauses the turn instead of
+                        // persisting a result: re-sending would echo the card
+                        // text back as if the user had answered (009, D42).
+                        // Refusals (mixed/second/secret) are Errors and flow
+                        // through the ordinary result path below.
+                        if pending.name == "question" && matches!(outcome, ToolOutcome::Ok { .. }) {
+                            match self.insert_question_card(store, &msg_id, pending) {
+                                Ok(()) => {
+                                    dispatched_here.push(pending.id.clone());
+                                    report.pending_question = Some(pending.id.clone());
+                                    report.end = TurnEnd::AwaitingAnswer;
+                                    break;
+                                }
+                                // No prompt to show is a malformed card, not
+                                // a pause: persist the refusal-shaped error.
+                                Err(_) => {
+                                    self.persist_result(
+                                        store,
+                                        thread_id,
+                                        &msg_id,
+                                        pending,
+                                        &ToolOutcome::Error {
+                                            message: QUESTION_REFUSAL.to_string(),
+                                        },
+                                    )?;
+                                    dispatched_here.push(pending.id.clone());
+                                    continue;
+                                }
+                            }
+                        }
                         self.persist_result(store, thread_id, &msg_id, pending, &outcome)?;
                         dispatched_here.push(pending.id.clone());
                     }
                 }
             }
             report.dispatched.extend(dispatched_here.iter().cloned());
+            if report.end == TurnEnd::AwaitingAnswer {
+                // The question is asked and persisted; re-sending now would
+                // echo the card back as an answer. The driver answers via
+                // `answer_question` and resumes the turn.
+                break;
+            }
             if held {
                 // The turn pauses for a decision; nothing dispatched for the
                 // held call, so nothing to close. Approved calls resume on a
@@ -812,6 +1195,54 @@ impl TurnLoop {
             .map_err(LoopError::Store)
     }
 
+    /// Persist a question card for a sole, valid `question` call. The tool_use
+    /// block already exists (written at `BlockStop`); the card carries what
+    /// the view needs to ask: prompt, options, free-text allowance. Returns
+    /// `Err(())` when the input has no prompt — a card with nothing to ask is
+    /// malformed, and the caller falls back to a refusal result instead of
+    /// pausing the turn on nothing.
+    fn insert_question_card(
+        &self,
+        store: &Store,
+        msg_id: &str,
+        pending: &PendingTool,
+    ) -> Result<(), ()> {
+        let input: Value = serde_json::from_str(&pending.input).map_err(|_| ())?;
+        let prompt = input
+            .get("prompt")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or(())?;
+        let options = input.get("options").cloned().unwrap_or(Value::Null);
+        let allow_free = input
+            .get("allowFreeText")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let seq = self.next_block_seq(store, msg_id);
+        store
+            .insert_block(NewBlock {
+                id: Store::new_id("b"),
+                message_id: msg_id.to_string(),
+                seq,
+                kind: "question_card".to_string(),
+                payload: json!({
+                    "id": pending.id,
+                    "prompt": prompt,
+                    "options": options,
+                    "allowFreeText": allow_free,
+                    "resolved": Value::Null,
+                })
+                .to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .map_err(|_| ())?;
+        Ok(())
+    }
+
     fn insert_tool_block(
         &self,
         store: &Store,
@@ -915,7 +1346,7 @@ impl TurnLoop {
         store: &Store,
         thread_id: &str,
         prepared: &PreparedThread,
-    ) -> BuiltRequest {
+    ) -> (BuiltRequest, Option<ThinkingGap>) {
         let tools: Vec<Value> = prepared
             .tools
             .iter()
@@ -932,11 +1363,12 @@ impl TurnLoop {
                 v
             })
             .collect();
+        let (messages, gap) = assemble_messages(store, thread_id);
         let mut request = build_normal_request(NormalBuildInput {
             model: prepared.model.clone(),
             max_tokens: prepared.max_tokens,
             system: prepared.system_text.clone(),
-            messages: assemble_messages(store, thread_id),
+            messages,
             tools,
             thinking: ThinkingConfig {
                 budget_tokens: prepared.thinking_budget,
@@ -952,8 +1384,32 @@ impl TurnLoop {
                 value.push_str(INLINE_TOOLS_BETA);
             }
         }
-        request
+        (request, gap)
     }
+}
+
+/// A thinking-history gap found while rebuilding the request: later
+/// reasoning blocks withheld this turn, not re-sent into a verification that
+/// must fail (D72). Surfaced as one transcript notice, deduplicated by the
+/// caller — the gap is a property of history, not of the turn.
+pub struct ThinkingGap {
+    pub withheld: usize,
+}
+
+/// Marker prefix for gap notices. The driver scans for it to deduplicate:
+/// one gap, one notice, never per-turn spam.
+pub const THINKING_GAP_MARKER: &str = "thinking history has a gap";
+
+/// Whether this thread already carries a gap notice. The scan is over stored
+/// rows, not memory: a restart must not re-notice a gap it already named.
+fn thread_has_gap_notice(store: &Store, thread_id: &str) -> bool {
+    store.blocks_for_thread(thread_id).iter().any(|b| {
+        b.kind == "notice"
+            && serde_json::from_str::<Value>(&b.payload)
+                .ok()
+                .and_then(|v| v.get("text").and_then(Value::as_str).map(str::to_string))
+                .is_some_and(|t| t.contains(THINKING_GAP_MARKER))
+    })
 }
 
 /// Rebuild the input value a held call was dispatched with.
@@ -1037,8 +1493,8 @@ fn insert_text_message(
 /// Stored rows for one message: block seq, kind, payload, signature.
 type BlockRows = Vec<(i64, String, String, Option<String>)>;
 
-fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
-    use std::collections::BTreeMap;
+fn assemble_messages(store: &Store, thread_id: &str) -> (Vec<Value>, Option<ThinkingGap>) {
+    use std::collections::{BTreeMap, HashSet};
     let mut by_message: BTreeMap<(i64, String), BlockRows> = BTreeMap::new();
     for b in store.blocks_for_thread(thread_id) {
         by_message
@@ -1046,7 +1502,57 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
             .or_default()
             .push((b.seq, b.kind, b.payload, b.signature));
     }
+    // Calls with answers, thread-wide: a `question` tool_use without its
+    // result is awaiting the user, not model history. Re-sending it would be
+    // a malformed request (Anthropic requires a result per use) and would
+    // echo the card as if answered — the exact failure 009 exists to prevent.
+    // Only `question` can be unpaired (every other dispatch persists its
+    // result synchronously), so only it is skipped.
+    let mut answered: HashSet<String> = HashSet::new();
+    for ((_, _), blocks) in by_message.iter() {
+        for (_, kind, payload, _) in blocks {
+            if kind == "tool_result" {
+                if let Some(id) = serde_json::from_str::<Value>(payload).ok().and_then(|v| {
+                    v.get("tool_use_id")
+                        .and_then(|t| t.as_str())
+                        .map(str::to_string)
+                }) {
+                    answered.insert(id);
+                }
+            }
+        }
+    }
     let mut messages = Vec::new();
+    // Thinking presence in surface order, over the same ordered walk the
+    // message loop below performs. A block counts as present when it carries
+    // a signature (the `dropped` column exists for compaction to mark
+    // removals; nothing sets it today, so signature presence is the whole
+    // signal — documented, not assumed). `end` is the unbroken prefix; every
+    // present block at or past it is withheld, never replayed.
+    let mut presence: Vec<bool> = Vec::new();
+    for ((_, role), blocks) in by_message.iter() {
+        // Same filter as the main loop below: only assistant thinking
+        // replays, so only it participates in the run. Counting any other
+        // role would shift every ordinal past it.
+        if role != "assistant" {
+            continue;
+        }
+        let mut ordered = blocks.clone();
+        ordered.sort_by_key(|(seq, _, _, _)| *seq);
+        for (_, kind, _, signature) in &ordered {
+            if kind == "thinking" {
+                presence.push(signature.as_ref().is_some_and(|s| !s.is_empty()));
+            }
+        }
+    }
+    let end = unbroken_run_end(&presence);
+    let withheld = presence.iter().skip(end).filter(|p| **p).count();
+    let gap = if withheld > 0 {
+        Some(ThinkingGap { withheld })
+    } else {
+        None
+    };
+    let mut think_ord: usize = 0;
     for ((_, role), mut blocks) in by_message {
         blocks.sort_by_key(|(seq, _, _, _)| *seq);
         if role == "user" {
@@ -1063,6 +1569,14 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
             messages.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
         } else if role == "assistant" {
             let mut content = Vec::new();
+            // Results never ride the assistant message on the wire: the
+            // Anthropic Messages API takes a `tool_result` back in a
+            // *subsequent user message* (platform.claude.com/docs/en/api/
+            // messages), and the OpenAI-compatible adapter needs the same
+            // separation to map onto `role: "tool"`. The store keeps the pair
+            // in one message (D61 pairing is a storage property); the split
+            // happens here, at assembly, in block order.
+            let mut results = Vec::new();
             for (_, kind, payload, signature) in &blocks {
                 let v: Value = serde_json::from_str(payload).unwrap_or(Value::Null);
                 match kind.as_str() {
@@ -1070,6 +1584,15 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
                         json!({"type": "text", "text": v.get("text").and_then(|t| t.as_str()).unwrap_or("")}),
                     ),
                     "thinking" => {
+                        let ord = think_ord;
+                        think_ord += 1;
+                        // Withhold everything past the unbroken prefix: a
+                        // later block replayed without its run fails
+                        // verification server-side (D72), so it never goes
+                        // on the wire. The transcript notice names the count.
+                        if ord >= end {
+                            continue;
+                        }
                         let mut block = json!({
                             "type": "thinking",
                             "thinking": v.get("text").and_then(|t| t.as_str()).unwrap_or(""),
@@ -1081,13 +1604,23 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
                         }
                         content.push(block);
                     }
-                    "tool_use" => content.push(json!({
-                        "type": "tool_use",
-                        "id": v.get("id"),
-                        "name": v.get("name"),
-                        "input": v.get("input").and_then(|i| i.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Object(Default::default())),
-                    })),
-                    "tool_result" => content.push(json!({
+                    "tool_use" => {
+                        let id = v.get("id").and_then(|t| t.as_str()).unwrap_or("");
+                        let name = v.get("name").and_then(|t| t.as_str()).unwrap_or("");
+                        // Skip an unanswered question: it is awaiting the
+                        // user, and re-sending it is both malformed and a
+                        // lie about having been answered (see above).
+                        if name == "question" && !answered.contains(id) {
+                            continue;
+                        }
+                        content.push(json!({
+                            "type": "tool_use",
+                            "id": v.get("id"),
+                            "name": v.get("name"),
+                            "input": v.get("input").and_then(|i| i.as_str()).and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or(Value::Object(Default::default())),
+                        }))
+                    }
+                    "tool_result" => results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": v.get("tool_use_id"),
                         "content": v.get("preview").and_then(|t| t.as_str()).unwrap_or(""),
@@ -1097,6 +1630,9 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
             }
             if !content.is_empty() {
                 messages.push(json!({"role": "assistant", "content": content}));
+            }
+            if !results.is_empty() {
+                messages.push(json!({"role": "user", "content": results}));
             }
         } else {
             // System rows (tool-change records and friends) re-send as text.
@@ -1114,7 +1650,7 @@ fn assemble_messages(store: &Store, thread_id: &str) -> Vec<Value> {
             }
         }
     }
-    messages
+    (messages, gap)
 }
 
 fn now_ms() -> i64 {

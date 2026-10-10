@@ -5,12 +5,12 @@ import { transformJsx } from "./compile.transform";
 import { wrapModule } from "./wrap";
 
 /**
- * The frame runtime is emitted as source text into a `srcdoc` document, where
- * no module system exists. That makes it the one piece of behaviour that cannot
- * be tested by importing it — so it is evaluated here, in a real document,
- * against the same wrapper the shipped document carries. No `eval` inside the
- * frame itself: the compiled code arrives as a nonce'd `<script>` tag, and the
- * test host has no CSP to stop it.
+ * The frame runtime is emitted as source text into the published artifact
+ * document (D123), where no module system exists. That makes it the one piece
+ * of behaviour that cannot be tested by importing it — so it is evaluated here,
+ * in a real document, against the same wrapper the shipped document carries. No
+ * `eval` inside the frame itself: the compiled code arrives as a nonce'd
+ * `<script>` tag, and the test host has no CSP to stop it.
  */
 
 interface FrameApi {
@@ -115,7 +115,7 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("the runtime is shippable into a srcdoc document", () => {
+describe("the runtime is shippable into the published document", () => {
   it("is self-contained: no imports, no requires, no network calls", () => {
     expect(FRAME_RUNTIME).not.toMatch(/^\s*import\s/m);
     expect(FRAME_RUNTIME).not.toMatch(/\brequire\s*\(/);
@@ -289,5 +289,27 @@ describe("in-frame navigation is contained (D102)", () => {
     expect(event.defaultPrevented).toBe(true);
     await until(() => inbound.some((m) => /form submission/.test(m.text ?? "")));
     expect(inbound.map((m) => m.text ?? "").join(" ")).toMatch(/form submission/);
+  });
+});
+
+describe("handshake start (D122)", () => {
+  it("says hello to its parent on start", () => {
+    // The first contact is the frame's: the host has no reason to speak
+    // until asked, and the frame has no port until it asks. Spying on the
+    // parent's postMessage pins the direction — the host's listener sits on
+    // the SHELL's window (an opaque frame's window is cross-origin, and
+    // reaching in there is what the sandbox refuses), so the hello must go
+    // to the parent, not to the frame's own window.
+    const posted: unknown[] = [];
+    const original = window.postMessage.bind(window);
+    window.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    try {
+      boot();
+    } finally {
+      window.postMessage = original;
+    }
+    expect(posted).toEqual([{ type: "artifact.hello" }]);
   });
 });

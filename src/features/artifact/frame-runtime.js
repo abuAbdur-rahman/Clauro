@@ -1,8 +1,8 @@
 /*
- * The artifact frame's runtime. Emitted as source text into a srcdoc document,
- * where there is no module system, no bundler, and no import of anything -
- * including the Tauri API, which must stay unreachable from inside the frame
- * (D6). Every line here runs inside the sandbox.
+ * The artifact frame's runtime. Emitted as source text into the published
+ * artifact document (D123), where there is no module system, no bundler, and
+ * no import of anything - including the Tauri API, which must stay unreachable
+ * from inside the frame (D6). Every line here runs inside the sandbox.
  *
  * It provides, in order:
  *   - h() / Fragment: build DOM nodes directly. No React, no runtime library,
@@ -251,6 +251,12 @@
     pending = [];
     post(FRAME_TO_HOST.hello, {});
   });
+
+  // The first contact is the frame's, and it goes to the shell: the host has
+  // no reason to speak until asked, and this frame has no port until it asks.
+  // "*" is the only value available — an opaque origin cannot name anyone,
+  // which is the same reason the host's boot reply uses it (D122).
+  window.parent.postMessage({ type: FRAME_TO_HOST.hello }, "*");
 
   window.onerror = function (message) {
     post(FRAME_TO_HOST.error, { text: String(message) });

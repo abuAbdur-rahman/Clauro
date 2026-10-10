@@ -68,9 +68,17 @@ struct Script {
 }
 
 impl Exchange for Script {
-    fn step(&mut self, request: &BuiltRequest) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
+    fn step(
+        &mut self,
+        request: &BuiltRequest,
+        sink: &mut dyn FnMut(NormalisedEvent),
+    ) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
         self.bodies.push(request.body.clone());
-        Ok(self.steps.pop_front().expect("script exhausted"))
+        let events = self.steps.pop_front().expect("script exhausted");
+        for event in &events {
+            sink(event.clone());
+        }
+        Ok(events)
     }
 }
 
@@ -207,6 +215,7 @@ fn denied_tool_never_dispatches_and_gets_typed_error() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
@@ -247,6 +256,7 @@ fn ask_holds_then_dispatches_after_approve() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::AwaitingApproval, "{report:?}");
@@ -278,6 +288,7 @@ fn ask_holds_then_dispatches_after_approve() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
@@ -331,6 +342,7 @@ fn mixed_question_call_refused_others_dispatch() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
@@ -377,6 +389,7 @@ fn big_previews_store_paths_and_stay_bounded() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     let full = t
@@ -427,6 +440,7 @@ fn ignored_events_become_visible_notices() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
@@ -471,6 +485,7 @@ fn compact_absent_from_request_schema() {
                 prepared: &prepared,
                 workspace_dir: &t.session,
             },
+            &mut |_| {},
         )
         .expect("turn runs");
     for body in &exchange.bodies {

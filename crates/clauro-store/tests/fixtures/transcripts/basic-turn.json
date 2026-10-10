@@ -1,0 +1,7 @@
+[
+  { "role": "user", "kind": "text", "payload": {"text": "read the file"}, "generation": 0 },
+  { "role": "assistant", "kind": "thinking", "payload": {"text": "start with the lexer", "display": "full"}, "signature": "sig-a", "generation": 0 },
+  { "role": "assistant", "kind": "text", "payload": {"text": "I will start by reading the lexer."}, "generation": 0 },
+  { "role": "assistant", "kind": "tool_use", "payload": {"id": "call-1", "name": "fs", "input": "{}"}, "generation": 0 },
+  { "role": "assistant", "kind": "tool_result", "payload": {"tool_use_id": "call-1", "status": "ok", "preview": "read 2 lines"}, "generation": 0 }
+]

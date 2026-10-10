@@ -263,7 +263,7 @@ its own task, and each still needs a `TECH_STACK.md` row before it is installed.
 | Text diff | `similar` 3.2.0 | MIT/Apache | Adopt for `fs` diff rendering. Do not hand-roll a diff. |
 | Filesystem watching | `notify` 8.2.0 | CC0/MIT | Adopt for the workspace tree. |
 | Virtualised transcript | `@tanstack/react-virtual` 3.14 | MIT | Likely — a long thread is a flat append-only list that must not render every block. |
-| Markdown in transcript | `react-markdown` 10.1 | MIT | Likely. Sanitisation is ours to get right; not a default-export decision. |
+| Markdown in transcript | `marked` 18.1 | MIT | **Adopted 2026-10-07** (task 006, D100). Alternative considered: `react-markdown` 10.1, previously the recorded pick. Rejected because it renders to React elements, which would make sanitisation *structural* rather than a step — a genuinely stronger property — but it pulls a large remark/rehype tree into a transcript that renders a few hundred blocks a turn, and D100 asks for purification at a boundary we can point at and test. `marked` gives an HTML string, which `renderMarkdown` purifies before returning, so no caller can obtain unsanitised output. Its own escaping is **not** treated as the boundary. |
 | Syntax highlight | `shiki` 4.5 | MIT | Likely. TextMate grammars, no eval. |
 | Command palette | `cmdk` 1.1.1 | MIT | **Superseded for the shell by D112** — shadcn `Dialog` covers the palette states; `cmdk` stays recorded until `Tasks/020` decides. |
 | Hotkeys | `react-hotkeys-hook` 5.3 | MIT | Likely for **D66**. |

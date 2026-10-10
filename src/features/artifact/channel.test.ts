@@ -57,9 +57,10 @@ describe("window-level gate (D6)", () => {
   });
 
   it("refuses any non-null origin, including the app's own", () => {
-    // A srcdoc frame that kept a real origin is not the sandbox we promised
-    // (D2): that is exactly what `srcdoc` does on its own, which is why the
-    // `sandbox` attribute is the boundary.
+    // A frame that kept a real origin is not the sandbox we promised (D2):
+    // the document is served from the app's own origin (D123), so it would
+    // report exactly that without the `sandbox` attribute — which is why the
+    // attribute, not the transport, is the boundary.
     for (const origin of ["", "https://tauri.localhost", "http://localhost:1420", "null "]) {
       expect(validHandshake({ origin, source: window }, window)).toBe(false);
     }
@@ -215,5 +216,36 @@ describe("host side wiring", () => {
     await tick();
     expect(created).toHaveBeenCalledOnce();
     host.dispose();
+  });
+
+  it("the listener rides the shell's window, never the frame's (D122)", async () => {
+    // An opaque frame's window is cross-origin from the shell: attaching the
+    // host listener there is precisely the access the sandbox refuses (D2).
+    // The frame speaks to `parent`, so the hello arrives on the shell's own
+    // window with origin "null" and `source === frameWindow` — the two things
+    // `validHandshake` compares. jsdom has no opaque origins, so the origin
+    // is forced the way every other test in this file forces it.
+    const el = document.createElement("iframe");
+    document.body.appendChild(el);
+    const frameWindow = el.contentWindow;
+    if (!frameWindow) throw new Error("no frame window");
+    const boots: unknown[] = [];
+    // The boot is posted TO the frame's window, so the observer sits there.
+    frameWindow.addEventListener("message", (e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "artifact.boot") boots.push(data);
+    });
+    const channel = new MessageChannel();
+    const host = hostSide({
+      frameWindow,
+      createChannel: () => channel,
+      onLog: () => undefined,
+    });
+
+    window.dispatchEvent(helloFrom("null", frameWindow));
+    await untilSettled(() => boots.length === 1, "boot delivered into the frame window");
+    expect(boots).toEqual([{ type: "artifact.boot" }]);
+    host.dispose();
+    el.remove();
   });
 });

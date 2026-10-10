@@ -6,15 +6,17 @@
  * reason). The fourth exists because a blank frame is indistinguishable from a
  * broken app, and this task exists so it never happens silently.
  *
- * The frame is `srcdoc` transport with `sandbox="allow-scripts"` and **never**
- * `allow-same-origin` — the opaque origin comes from the attribute (D2), and
- * `srcdoc` on its own would inherit ours. The document it receives is built by
- * `prepareArtifact`, which takes the CSP from Rust (D3) and compiles JSX in a
- * Worker (D4). No Tauri API is reachable from inside; that is verified under a
- * real webview in 021, not here.
+ * The frame navigates to a document Rust serves (D123) under `sandbox=
+ * "allow-scripts"` and **never** `allow-same-origin` — the opaque origin comes
+ * from the attribute (D2), and without it the served document would report the
+ * app's own. The bytes it receives are built by `prepareArtifact`, which takes
+ * the CSP from Rust (D3), publishes them back through `artifact_publish`
+ * (D123), and compiles JSX in a Worker (D4). No Tauri API is reachable from
+ * inside; that is verified under a real webview in 021, not here.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useDrawerStore, sandboxAttr, artifactGate, type EngineGate } from "../features/artifact/store";
+import { hostSide } from "../features/artifact/channel";
 import {
   prepareArtifact,
   type PrepareInput,
@@ -32,6 +34,8 @@ interface ArtifactDrawerProps {
    * A seam, not a control: nothing here can weaken the sandbox (D108). */
   fetchPolicy?: PrepareInput["fetchPolicy"];
   createWorker?: PrepareInput["createWorker"];
+  /** Injected in tests; production publishes through `artifact_publish` (D123). */
+  publishDoc?: PrepareInput["publishDoc"];
 }
 
 export function ArtifactDrawer({
@@ -42,6 +46,7 @@ export function ArtifactDrawer({
   title,
   fetchPolicy,
   createWorker,
+  publishDoc,
 }: ArtifactDrawerProps) {
   const entry = useDrawerStore((s) => s.drawers[threadId]);
   const [result, setResult] = useState<PrepareResult | null>(null);
@@ -51,11 +56,18 @@ export function ArtifactDrawer({
   const state = entry?.state ?? "empty";
 
   useEffect(() => {
-    if (state !== "compiling" || artifactId === null) return undefined;
+    // Prepare when the artifact is *known* (D121): during compiling the
+    // drawer says so, and the turn-done path lands straight in `live` — the
+    // input is what changes the output, so the state is not a gate. With
+    // `artifactId` and `source` in deps, the compiling→live flip of an
+    // unchanged artifact re-runs nothing, while a refresh (new bytes)
+    // re-prepares exactly once.
+    if (artifactId === null) return undefined;
     let live = true;
-    // Preparing is where the policy request, the Worker and the sanitiser all
-    // happen, so the spinner covers exactly that window and nothing more.
-    prepareArtifact({ source, mediaType, fetchPolicy, createWorker })
+    // Preparing is where the policy request, the Worker, the sanitiser and
+    // the publish all happen, so the spinner covers exactly that window and
+    // nothing more.
+    prepareArtifact({ source, mediaType, fetchPolicy, createWorker, publishDoc })
       .then((out) => {
         if (live) setResult(out);
       })
@@ -73,7 +85,36 @@ export function ArtifactDrawer({
     return () => {
       live = false;
     };
-  }, [state, artifactId, source, mediaType, fetchPolicy, createWorker]);
+  }, [artifactId, source, mediaType, fetchPolicy, createWorker, publishDoc]);
+
+  // The channel's host half (D6/D122): attach when a live frame is on
+  // screen, and re-attach on every new document — the transferred port dies
+  // with the old document, so the handshake must run again for the new one.
+  // `onReady` is the frame having claimed its port; an error-level report is
+  // a reason, surfaced through the same failed presentation a prepare
+  // failure gets, because a silent runtime error is the blank-frame bug
+  // again.
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [channelReady, setChannelReady] = useState(false);
+  useEffect(() => {
+    if (result?.kind !== "live") return undefined;
+    const frameWindow = frameRef.current?.contentWindow;
+    if (!frameWindow) return undefined;
+    setChannelReady(false);
+    const host = hostSide({
+      frameWindow,
+      onLog: (report) => {
+        if (report.level === "error") setResult({ kind: "failed", reason: report.text });
+      },
+      onReady: () => {
+        setChannelReady(true);
+      },
+    });
+    return () => {
+      host.dispose();
+      setChannelReady(false);
+    };
+  }, [result]);
 
   const gate = artifactGate(engine);
 
@@ -115,10 +156,15 @@ export function ArtifactDrawer({
       <h2 className="font-mono text-xs text-neutral-200">{title}</h2>
       <p className="font-mono text-[11px] text-neutral-500">v{version}</p>
       <iframe
+        ref={frameRef}
         title="artifact-frame"
         sandbox={sandboxAttr()}
-        srcDoc={result.doc}
+        // D123: the host owns the bytes, the frame navigates to its URL. The
+        // sandbox attribute above is still the only boundary — the origin is
+        // opaque because of it, not because of how the document arrives.
+        src={result.url}
         className="mt-2 h-96 w-full bg-white"
+        data-artifact-channel={channelReady ? "ready" : "pending"}
       />
     </aside>
   );

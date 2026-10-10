@@ -3,8 +3,8 @@
 **Phase** 3 · **Depends** `013` · **Decisions** D4, D5, D6, D12, D78, D102, **D110, D111**
 **Contracts** §3
 
-**Status: verified 2026-10-05 (Windows host), 70 frontend + 6 Rust tests green; webview criteria
-NOT RUN.** `src/artifact/` — 64 tests across `compile`, `channel`, `envelope`, `sanitize`,
+**Status: verified 2026-10-05 (Windows host), 70 frontend + 6 Rust tests green; engine
+criteria RUN 2026-10-10, 8/8 proofs green (see addendum).** `src/artifact/` — 64 tests across `compile`, `channel`, `envelope`, `sanitize`,
 `prepare` and `frame-runtime`, plus 6 in `ArtifactDrawer.test.tsx` and 6 in `src-tauri/src/csp.rs`.
 Every criterion below that needs a real engine is marked **NOT RUN** and stays open until `021`;
 the rest cite the test that discharges them. Two decisions were written before the code because
@@ -72,8 +72,46 @@ disable only the named directives, never the boolean form (`D78`), which switche
 
 ## Not verified here, and why
 
-- **No webview.** `connect-src 'none'` is asserted as an assembled string, and `event.origin`/`event.source` as a validated predicate. Neither has been observed *in* an engine. The `001` spike observed the same properties in a throwaway app on WebView2; the product frame is unobserved until `021` brings `tauri-driver`. Every webview-dependent `013` criterion stays open for the same reason.
+- **Engine observation, closed 2026-10-10 (D123, D124):** `connect-src 'none'` failing a
+  real fetch, the real `event.origin`/`event.source` handshake, and the render are now observed
+  *in* the engine (`pnpm proofs`, 8/8 green) — superseding the caveat below for everything but
+  Tailwind-in-the-frame (022) and the Linux floor (021/D45). The `001` spike's shape still
+  stands; the product frame is now observed on Windows.
 - **The real Worker thread.** jsdom has no `Worker`, so the tests drive the same message contract with an injected factory that runs the same `transformJsx`. The `Worker` construction in `prepare.ts:29` is therefore untested code — it is three lines and it is the only untested line in the pipeline, but it is untested.
 - **No Tailwind in the frame.** `D111`: the stylesheet slot is wired and deliberately empty. Artifacts render unstyled until `022` vendors the build. The prompt tells the model to use predefined utility classes, so this is a visible gap, not a silent one.
-- **Nothing calls the drawer yet.** `setCompiling`/`setLive` have no producer, because no tool-result handler exists — `src/` is still the Phase-0 shell, which `PHASES.md` already records as why the Phase 2 gate cannot pass. Checked rather than assumed:
-  `Select-String -Path src\*.ts* -Pattern "setCompiling|setLive"`.
+- ~~**Nothing calls the drawer yet.**~~ **Closed 2026-10-09 (D121):** the production producer
+  lives in `src/features/artifact/live.ts`, called by `ChatView` — turn events flip the drawer,
+  turn-done fetches `artifact_latest`. (Was: no tool-result handler existed and `src/` was the
+  Phase-0 shell; the check that proved it then was
+  `Select-String -Path src\*.ts* -Pattern "setCompiling|setLive"`.)
+
+## Addendum 2026-10-10 — the engine half of 014's criteria ran (D123, D124)
+
+The "no webview" caveat above is closed on Windows for everything except Tailwind-in-the-frame
+(022) and the Linux floor (021/D45): `pnpm proofs` (8/8 green, report at
+`target/webdriver/proofs-report.json`) observes the assembled `connect-src 'none'` failing a
+real fetch, the real `event.origin`/`event.source` handshake completing, and the compiled
+pipeline rendering seeded bytes — through the production producer (D121), envelope, publish
+seam and served document, with no test hooks. Two transport findings landed in the same
+commit and are recorded as decisions, not asides: D123 (the document is served with a header
+policy — `srcdoc` inherits the shell's header CSP and can never run a script) and D124 (the
+document host is a dedicated `artifact` scheme, remote to Tauri's IPC — the shell's own host
+read as local, and the frame owns an injected `__TAURI_INTERNALS__` on Windows).
+
+## Addendum 2026-10-09 — the handshake's production wiring (D122)
+
+**Finding:** `hostSide` and the frame's boot responder were two halves that never met in the
+product — the host listened on the *frame's* window (cross-origin, unreachable by design) and the
+frame never posted a window-level hello. Both were unit-tested; neither was reachable. The
+webview proof of "a refused handshake leaves the frame inert" could not have observed a real
+handshake, so the loop closed first, in the direction the sandbox permits (D122):
+
+- **Frame half:** `frame-runtime.js` posts `artifact.hello` to `window.parent` on start —
+  `frame-runtime.test.ts` "says hello to its parent on start" pins the direction by spying on the
+  parent's `postMessage`.
+- **Host half:** `channel.ts::hostSide` attaches to the shell's own window —
+  `channel.test.ts` "the listener rides the shell's window, never the frame's (D122)" dispatches
+  the hello on the shell with `source === frameWindow` and observes the boot *inside* the frame.
+- **Caller:** `ArtifactDrawer.tsx` attaches per live document and disposes with it;
+  `onReady` → `data-artifact-channel="ready"`; error-level reports → the failed presentation
+  (test: `ArtifactDrawer.test.tsx` "attaches the channel host half to the live frame (D6, D122)").
