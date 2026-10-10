@@ -6,7 +6,13 @@
  * 48px icon rail; labels hide, tooltips take over.
  *
  * No hand-rolled collapse: open state lives in SidebarProvider (cookie),
- * and the wrapper width follows it (260px open, 48px collapsed).
+ * and the wrapper width follows it (260px open, 56px collapsed).
+ *
+ * Thread status indicator (Task 029): each thread row carries
+ * `data-testid="thread-row-{id}"` + `data-status="working|done|not-viewed|idle"`.
+ * `working` pulses (spinner role); `done` accent dot + semibold; `not-viewed`
+ * hollow dot; idle none. `onSelectThread` marks viewed-on-open (caller owns
+ * `lastReadAt`; the click is the signal).
  */
 import { Brain, FolderKanban, MessageSquare, PanelLeft, Plus, Search, Settings } from "lucide-react";
 import {
@@ -27,6 +33,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import type { Project } from "./projects";
+import type { ThreadStatus } from "@/mock/seed";
 
 export interface RailThread {
   id: string;
@@ -39,6 +46,8 @@ interface ProjectsRailProps {
   threadsByProject?: Readonly<Record<string, readonly RailThread[]>>;
   activeProjectId?: string | null;
   activeThreadId?: string | null;
+  /** Task 029 indicator: thread id → working|done|not-viewed|idle. Absent = idle. */
+  statusByThread?: Readonly<Record<string, ThreadStatus>>;
   onSelectProject?: (id: string) => void;
   onSelectThread?: (id: string) => void;
   onNewChat?: () => void;
@@ -55,6 +64,25 @@ export function ProjectsRail(props: ProjectsRailProps): React.JSX.Element {
   );
 }
 
+function StatusDot({ status }: { status: ThreadStatus }): React.JSX.Element | null {
+  if (status === "idle") return null;
+  if (status === "working") {
+    return (
+      <span
+        role="status"
+        aria-label="thread working"
+        className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary"
+      />
+    );
+  }
+  if (status === "done") {
+    return <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-primary" />;
+  }
+  return (
+    <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full border border-muted-foreground" />
+  );
+}
+
 function RailBody(props: ProjectsRailProps): React.JSX.Element {
   const {
     projects,
@@ -62,6 +90,7 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
     threadsByProject = {},
     activeProjectId = null,
     activeThreadId = null,
+    statusByThread = {},
     onSelectProject = () => {},
     onSelectThread = () => {},
     onNewChat = () => {},
@@ -81,7 +110,7 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
   return (
     <div
       data-testid="projects-rail"
-      className={`${collapsed ? "w-12" : "w-[260px]"} h-full shrink-0 overflow-hidden transition-[width] duration-200`}
+      className={`${collapsed ? "w-14" : "w-[260px]"} h-full min-h-0 shrink-0 self-stretch overflow-hidden transition-[width] duration-200`}
     >
       <Sidebar collapsible="none" className="h-full w-full">
         <SidebarHeader>
@@ -162,11 +191,14 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
                         {(threadsByProject[p.id] ?? []).map((t) => (
                           <SidebarMenuSubItem key={t.id}>
                             <SidebarMenuSubButton
+                              data-testid={`thread-sub-${t.id}`}
+                              data-status={statusByThread[t.id] ?? "idle"}
                               isActive={t.id === activeThreadId}
                               onClick={() => {
                                 onSelectThread(t.id);
                               }}
                             >
+                              <StatusDot status={statusByThread[t.id] ?? "idle"} />
                               <span className="truncate">{t.title}</span>
                             </SidebarMenuSubButton>
                           </SidebarMenuSubItem>
@@ -186,6 +218,8 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
                   {recent.map(({ thread: t }) => (
                     <SidebarMenuItem key={t.id}>
                       <SidebarMenuButton
+                        data-testid={`thread-row-${t.id}`}
+                        data-status={statusByThread[t.id] ?? "idle"}
                         tooltip={t.title}
                         aria-label={collapsed ? t.title : undefined}
                         isActive={t.id === activeThreadId}
@@ -194,7 +228,12 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
                         }}
                       >
                         <MessageSquare size={16} strokeWidth={1.75} />
-                        {!collapsed && <span className="truncate">{t.title}</span>}
+                        {!collapsed && (
+                          <span className={`truncate ${(statusByThread[t.id] ?? "idle") === "done" ? "font-semibold" : ""}`}>
+                            {t.title}
+                          </span>
+                        )}
+                        {!collapsed && <StatusDot status={statusByThread[t.id] ?? "idle"} />}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   ))}

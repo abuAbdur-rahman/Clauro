@@ -1,72 +1,151 @@
 /**
- * Browser harness mocks (UI-GUIDE, AGENT-PROMPT Step 1). When Vite runs with
- * `--mode browser` (`pnpm dev:web`), the Tauri API modules resolve to this
- * file instead of `@tauri-apps/api/*`, so the exact same `<App />` renders
- * without a Tauri runtime. Production builds and `tauri dev` never see it:
- * the alias lives only in the browser-mode branch of `vite.config.ts`.
+ * Browser harness mocks (UI-GUIDE, AGENT-PROMPT Step 1; Task 029 mock mode).
+ * When Vite runs with `--mode browser` (`pnpm dev:web`) or `--mode mock`
+ * (`pnpm dev:mock`), the Tauri API modules resolve to this file instead of
+ * `@tauri-apps/api/*`, so the exact same `<App />` renders without a Tauri
+ * runtime. Production builds and `tauri dev` never see it: the alias lives
+ * only in the browser/mock branch of `vite.config.ts`.
  *
- * Mock data follows UI-GUIDE: no providers by default; `?providers=1` seeds
- * one keyed provider with two models. Every unknown command throws — a
- * missing mock must fail loudly in the console, never render as fake data.
+ * Seed policy (Task 029 slice 2): seed is ALWAYS on in mock mode —
+ * deterministic for agents. The old `?providers` param is REPLACED (removed):
+ * `provider_list`, `provider_models_enriched`, `provider_models`,
+ * `transcript_read` serve `@/mock/seed.ts` verbatim. `?seed=0` resolves empty
+ * for every seed command (bare shell for empty-state testing);
+ * `?seed=anything-else-or-absent` serves the full seed.
+ *
+ * Determinism: no `Date.now()` in seed paths — `models_fetched_at` is
+ * `SEED_NOW/1000` (fixed). Unknown thread ids resolve honest empty, never
+ * fake rows (blockers B18 rule). Every unknown command throws — a missing
+ * mock must fail loudly, never render as fake data.
  */
+import { SEED_CHATS, SEED_MODEL_META, SEED_NOW, SEED_PROVIDERS } from "@/mock/seed";
+
+const SEED_FETCHED_AT: number = Math.floor(SEED_NOW / 1000);
+
+function seedDisabled(): boolean {
+  return new URLSearchParams(window.location.search).get("seed") === "0";
+}
+
+function threadIdOf(args: Record<string, unknown> | undefined, fallback: string): string {
+  const raw = args?.["threadId"] ?? args?.["thread_id"];
+  return typeof raw === "string" && raw.length > 0 ? raw : fallback;
+}
+
+function toEnriched(modelId: string): {
+  id: string;
+  display_name: string;
+  limits_known: boolean;
+  context_window: number | null;
+  max_output: number | null;
+  reasoning: boolean;
+  tool_call: boolean;
+} {
+  const meta: { ctx: number; tags: string[] } | undefined = (
+    SEED_MODEL_META as Record<string, { ctx: number; tags: string[] } | undefined>
+  )[modelId];
+  if (meta === undefined) {
+    return {
+      id: modelId,
+      display_name: modelId,
+      limits_known: false,
+      context_window: null,
+      max_output: null,
+      reasoning: false,
+      tool_call: false,
+    };
+  }
+  return {
+    id: modelId,
+    display_name: modelId,
+    limits_known: true,
+    context_window: meta.ctx,
+    max_output: null,
+    reasoning: meta.tags.includes("reasoning"),
+    tool_call: true,
+  };
+}
+
+function enrichedFor(providerId: string | undefined): Array<ReturnType<typeof toEnriched>> {
+  if (typeof providerId === "string" && providerId.length > 0) {
+    const found = SEED_PROVIDERS.find((p) => p.id === providerId);
+    if (found === undefined) return [];
+    if (!found.enabled) return [];
+    return found.models.map(toEnriched);
+  }
+  return SEED_PROVIDERS.filter((p) => p.enabled).flatMap((p) => p.models.map(toEnriched));
+}
+
 export function invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
-  const withProviders = new URLSearchParams(window.location.search).has("providers");
+  const bare = seedDisabled();
   switch (cmd) {
     case "webview_status":
       return Promise.resolve({ kind: "present", version: "browser-harness" });
     case "provider_list":
+      if (bare) return Promise.resolve([]);
       return Promise.resolve(
-        withProviders
-          ? [
-              {
-                id: "anthropic",
-                display_name: "Anthropic",
-                kind: "anthropic",
-                base_url: null,
-                model_count: 2,
-                models_fetched_at: Math.floor(Date.now() / 1000),
-                stale: false,
-                has_key: true,
-              },
-            ]
-          : [],
+        SEED_PROVIDERS.map((p) => ({
+          id: p.id,
+          display_name: p.name,
+          kind: p.type,
+          base_url: p.baseUrl,
+          model_count: p.models.length,
+          models_fetched_at: SEED_FETCHED_AT,
+          stale: false,
+          has_key: p.key.length > 0,
+        })),
       );
-    case "provider_models_enriched":
-      return Promise.resolve(
-        withProviders
-          ? [
-              {
-                id: "claude-haiku-4-5",
-                display_name: "Haiku",
-                limits_known: true,
-                context_window: 200000,
-                max_output: 8192,
-                reasoning: false,
-                tool_call: true,
-              },
-              {
-                id: "mystery-1",
-                display_name: "Mystery 1",
-                limits_known: false,
-                context_window: null,
-                max_output: null,
-                reasoning: false,
-                tool_call: false,
-              },
-            ]
-          : [],
-      );
-    case "provider_models":
+    case "provider_models_enriched": {
+      if (bare) return Promise.resolve([]);
+      const rawId: unknown = args?.["id"];
+      const id = typeof rawId === "string" ? rawId : undefined;
+      return Promise.resolve(enrichedFor(id));
+    }
+    case "provider_models": {
+      const rawId: unknown = args?.["id"];
+      const id = typeof rawId === "string" ? rawId : "";
+      if (bare) {
+        return Promise.resolve({
+          provider_id: id,
+          models: [],
+          models_fetched_at: null,
+          stale: true,
+        });
+      }
+      const found = SEED_PROVIDERS.find((p) => p.id === id);
+      if (found === undefined || !found.enabled) {
+        return Promise.resolve({
+          provider_id: id,
+          models: [],
+          models_fetched_at: null,
+          stale: true,
+        });
+      }
       return Promise.resolve({
-        provider_id: "anthropic",
-        models: [],
-        models_fetched_at: null,
-        stale: true,
+        provider_id: id,
+        models: found.models.map((m) => ({ id: m, display_name: m })),
+        models_fetched_at: SEED_FETCHED_AT,
+        stale: false,
       });
-    case "transcript_read":
-      return Promise.resolve([]);
+    }
+    case "transcript_read": {
+      if (bare) return Promise.resolve([]);
+      const tid = threadIdOf(args, "");
+      if (tid === "") return Promise.resolve([]);
+      const chat = SEED_CHATS.find((c) => c.id === tid);
+      if (chat === undefined) return Promise.resolve([]);
+      return Promise.resolve(
+        chat.messages.map((m, i) => ({
+          block: { kind: "text", text: m.text },
+          role: m.role,
+          id: `${chat.id}-${String(i)}`,
+          seq: i,
+          generation: 0,
+        })),
+      );
+    }
     case "turn_start":
-      return Promise.resolve({ thread_id: "thread-001" });
+      // Bare shell still needs a thread id to open a chat; echo request.
+      return Promise.resolve({ thread_id: threadIdOf(args, "c1") });
     case "turn_stop":
       return Promise.resolve(true);
     case "artifact_csp":

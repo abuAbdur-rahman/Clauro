@@ -2,10 +2,10 @@
  * Boot gate (Task 003, D53). A missing WebView2 runtime is detected and
  * explained before first paint — never a blank window, never a bare crash.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { shortError, webviewStatus } from "../features/catalogue/catalogue";
 import Composer from "../components/Composer";
-import { useThreadStore } from "../features/catalogue/thread";
+import { useThreadStore, type ThreadStatus } from "../features/catalogue/thread";
 import { ProvidersView } from "../features/providers/ProvidersView";
 import { ChatView } from "../features/turn/ChatView";
 import { ArtifactDrawer } from "../components/ArtifactDrawer";
@@ -19,8 +19,18 @@ import { useSettingsStore } from "../features/shell/settings";
 import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { useArtifactContent } from "../features/artifact/live";
 import { useTheme } from "../features/shell/usetheme";
+import { TitleBar } from "./TitleBar";
 
 const THREAD = "thread-001";
+
+/** Threads rendered by the rail (Task 029 indicator wiring reads these ids). */
+const THREADS_BY_PROJECT: Readonly<Record<string, readonly { id: string; title: string }[]>> = {
+  default: [{ id: THREAD, title: "First thread" }],
+};
+
+const THREAD_IDS: readonly string[] = Object.values(THREADS_BY_PROJECT).flatMap((ts) =>
+  ts.map((t) => t.id),
+);
 
 /** Intent collection only; dispatch belongs to the turn loop (023). */
 function noop(): void {
@@ -44,6 +54,22 @@ export default function App() {
   const [boot, setBoot] = useState<Boot>({ stage: "checking" });
   const [error, setError] = useState<string | null>(null);
   const openThread = useThreadStore((s) => s.openThread);
+  const markRead = useThreadStore((s) => s.markRead);
+  // Indicator state for every rendered thread id (Task 029 B11) via the
+  // store's `statusOf`. `statusOf` itself is a stable reference, so reactivity
+  // comes from the `running`/`threads` slices; the map is memoized so the
+  // selector identity stays stable (a fresh object per snapshot loops React).
+  const statusOf = useThreadStore((s) => s.statusOf);
+  const running = useThreadStore((s) => s.running);
+  const threadStates = useThreadStore((s) => s.threads);
+  const statusByThread = useMemo<Record<string, ThreadStatus>>(() => {
+    const out: Record<string, ThreadStatus> = {};
+    for (const id of THREAD_IDS) out[id] = statusOf(id);
+    return out;
+    // Reactive inputs are the `running` + `threads` slices subscribed above:
+    // `statusOf` reads them from the store snapshot, so listing them here
+    // invalidates the map exactly when indicator state can change.
+  }, [statusOf, running, threadStates]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
   const openSettings = useSettingsStore((s) => s.openSettings);
@@ -103,12 +129,23 @@ export default function App() {
   }
 
   const project = view.name === "project" ? DEMO_PROJECTS.find((p) => p.id === view.id) : undefined;
+  const title =
+    view.name === "chat"
+      ? "First thread"
+      : view.name === "project"
+        ? (project?.name ?? "Project")
+        : view.name === "projects"
+          ? "Projects"
+          : view.name === "providers"
+            ? "Providers"
+            : undefined;
 
   return (
-    <div className="h-dvh w-screen overflow-hidden bg-neutral-950 p-4 font-sans text-sm text-neutral-300">
+    <div className="flex h-dvh w-screen flex-col overflow-hidden font-sans text-sm text-neutral-300">
+      <TitleBar title={title} />
       <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
       <SettingsDialog threadId={THREAD} />
-      <div className="flex h-full min-h-0 gap-4">
+      <div className="flex min-h-0 flex-1 items-stretch gap-0">
         {/* Shrink-0 shell only: the rail sets its own width (260px open,
             48px collapsed) from SidebarProvider state, so this wrapper must
             size to content, never pin it. Pinning it was the bug that crushed
@@ -117,12 +154,18 @@ export default function App() {
           <ProjectsRail
             projects={DEMO_PROJECTS}
             memoryOff={false}
-            threadsByProject={{ default: [{ id: THREAD, title: "First thread" }] }}
+            threadsByProject={THREADS_BY_PROJECT}
+            statusByThread={statusByThread}
             onSelectProject={(id) => {
               setView({ name: "project", id });
             }}
-            onSelectThread={() => {
+            onSelectThread={(id) => {
               setView({ name: "chat" });
+              // Viewed-on-open (Task 029 B11): the click is the signal.
+              // Guard on existence — markRead throws for unknown ids.
+              if (useThreadStore.getState().threads[id] !== undefined) {
+                markRead(id, Date.now());
+              }
             }}
             onSearch={() => {
               setPaletteOpen(true);
@@ -135,7 +178,7 @@ export default function App() {
             }}
           />
         </div>
-        <div className="min-h-0 min-w-0 flex-1">
+        <div className="min-h-0 min-w-0 flex-1 p-4">
           {view.name === "home" && (
             <div className="mx-auto flex h-full w-full max-w-[720px] flex-col items-center justify-center">
               <HomeGreeting hour={new Date().getHours()} />

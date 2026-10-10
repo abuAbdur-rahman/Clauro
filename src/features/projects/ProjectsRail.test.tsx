@@ -25,6 +25,8 @@ function matchMedia(query: string) {
 beforeEach(() => {
   cleanup();
   window.matchMedia = matchMedia;
+  // Sidebar collapse persists via localStorage (B04) — isolate tests.
+  window.localStorage.clear();
 });
 
 describe("ProjectsRail", () => {
@@ -119,7 +121,7 @@ describe("ProjectsRail", () => {
     const rail = screen.getByTestId("projects-rail");
     expect(rail.className).toContain("w-[260px]");
     await user.click(screen.getByRole("button", { name: /collapse sidebar/i }));
-    expect(rail.className).toContain("w-12");
+    expect(rail.className).toContain("w-14");
   });
 
   it("collapsed icon buttons keep accessible names", async () => {
