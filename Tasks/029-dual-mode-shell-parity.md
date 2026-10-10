@@ -70,5 +70,5 @@ smoke list in this file on close).
 - [x] Titlebar B01 (TitleBar.tsx + test, decorations:false) + App wiring (statusByThread, viewed-on-open)
 - [x] Mock seed bootstrap: rail/grid/detail mirror html SEED in mock mode only (seedToRail, mockDetailProps, parseSeedSize; dynamic import keeps real bundle + source mock-free)
 - [x] Interaction-heavy tests get explicit 30s timeouts (parallel-load flakes, green in isolation)
-- [ ] E2E pass on dev:mock via browser smoke list — in progress
+- [x] E2E pass on mock via browser (home/rail/detail/grid live-captured; providers modal + settings shots via slice agents; panel snapshot/capture flakiness documented — capture works, snapshot wedges on HMR pages)
 - [ ] Remaining blockers per docs/blockers.md
