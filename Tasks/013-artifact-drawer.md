@@ -16,11 +16,11 @@ criteria below are **NOT RUN ON THIS HOST** — no tauri-driver until 021; the
 
 ## Failing tests first
 
-- [ ] The iframe's `contentWindow` has **no reachable path** to `window.__TAURI_INTERNALS__` — **NOT RUN.** Needs a real webview (021). The frame carries no Tauri API import by construction (no `api` import in the drawer tree).
-- [ ] `parent.document` access from inside the frame is refused — **NOT RUN**, same reason
-- [ ] `event.origin` from the frame is `"null"` — **NOT RUN**, same reason
-- [ ] A `fetch` from inside the frame to any host **fails** — **NOT RUN**, same reason (CSP assembly is 014's)
-- [ ] A refused `MessageChannel` handshake leaves the frame inert, not broken — **NOT RUN**, same reason (channel is 014's)
+- [x] The iframe's `contentWindow` has **no reachable command path** to `window.__TAURI_INTERNALS__` — **RUN 2026-10-10 (D124).** Literal absence is unachievable on Windows (wry injects init scripts into every frame); the proven property is inertness: remote-by-construction document host (`src-tauri/src/artifact_doc.rs:421` pins `http://artifact.localhost/__clauro/doc/`, `no_capability_grants_a_remote_context` pins zero remote grants) plus the engine proof — frame-side `invoke('webview_status')` never resolves while the shell's resolves (`scripts/webview-proofs.mjs` claim 1, 8/8 green, report at `target/webdriver/proofs-report.json`). The frame carries no Tauri API import by construction (no `api` import in the drawer tree).
+- [x] `parent.document` access from inside the frame is refused — **RUN 2026-10-10**, same proof run (claim 2: `refused:SecurityError`)
+- [x] `event.origin` from the frame is `"null"` — **RUN 2026-10-10**, same proof run (claim 3)
+- [x] A `fetch` from inside the frame to any host **fails** — **RUN 2026-10-10**, same proof run (claim 4: `failed:TypeError`; CSP assembly is 014's)
+- [x] A refused `MessageChannel` handshake leaves the frame inert, not broken — **RUN 2026-10-10**, same proof run (claim 5: `boots=0, alive="PROOF-OK", channel=ready`; channel is 014's)
 - [x] On a Linux build where the gate fires: artifacts are absent **and** the notice explains why — `src/artifact.test.ts:66`, `src/ArtifactDrawer.test.tsx:44` (gate matrix + notice render; engine proof itself pending 021)
 
 ## Do
@@ -28,15 +28,20 @@ criteria below are **NOT RUN ON THIS HOST** — no tauri-driver until 021; the
 **We define the tool schema** (`D1`). The model returns structured JSON. **There is no fence to
 detect and no first-party format to verify.** This deleted the single largest unknown in the project.
 
-**The sandbox, precisely** (`D2`):
+**The sandbox, precisely** (`D2`, transport `D123`, host `D124`):
 ```
-srcdoc  +  sandbox="allow-scripts"   and NOT allow-same-origin
+served document  +  sandbox="allow-scripts"   and NOT allow-same-origin
+http://artifact.localhost/__clauro/doc/<nonce>   (remote to Tauri's IPC)
 ```
-
-> `srcdoc` is a **transport** choice. `sandbox` is the **security boundary**. `about:srcdoc`
-> inherits the parent origin on its own — the opaque origin comes from the attribute. Adding
-> `allow-same-origin` back silently breaks this **and** breaks the `event.origin` validation the same
-> rule requires.
+> The document is a **transport** choice. `sandbox` is the **security boundary**. The
+> served document would be same-origin with the shell on its own — the opaque origin comes
+> from the attribute, and the IPC remoteness comes from the dedicated scheme. Adding
+> `allow-same-origin` back silently breaks both **and** breaks the `event.origin` validation
+> the same rule requires.
+>
+> History: `srcdoc` was the first transport and could never run a script (the shell's
+> header CSP inherits into `about:srcdoc`, D123); the shell's own host was the second and
+> read as local to Tauri's IPC (D124). Both supersedes are recorded, never renumbered.
 
 **No network egress** (`D3`): `connect-src 'none'`, `img-src data: blob:`, `form-action 'none'`. The
 first-party product allowlists five public CDNs; we vendor what we need and render fully offline.
@@ -59,9 +64,9 @@ nothing to do with artifacts.
 
 ## Acceptance criteria
 
-- [ ] No reachable path to Tauri internals — **NOT RUN ON THIS HOST** (needs webview, 021)
-- [ ] `parent.document` refused; `event.origin` is `"null"` — **NOT RUN ON THIS HOST**, same
-- [ ] Outbound request from inside the frame fails — **NOT RUN ON THIS HOST**, same (CSP: 014)
+- [x] No reachable command path to Tauri internals — **RUN 2026-10-10 (D124):** present-but-inert, engine proof 8/8 (`scripts/webview-proofs.mjs`, report at `target/webdriver/proofs-report.json`)
+- [x] `parent.document` refused; `event.origin` is `"null"` — **RUN 2026-10-10**, same proof run
+- [x] Outbound request from inside the frame fails — **RUN 2026-10-10**, same proof run (CSP: 014)
 - [x] No user-facing control weakens sandbox tokens or CSP — flags are host-fixed (**D108**) — `src/artifact.test.ts:44-49` (`allow-scripts` exact, `allow-same-origin` throws); no settings UI for flags exists
 - [x] Windows and Linux both render — or Linux disables with a notice — gate matrix + notice render (see above); engine proof pending 021
 - [x] Artifact tool schema is ours, documented — `crates/clauro-tools/src/registry.rs` artifact block (`title`, `mediaType`, `source`, optional `artifactId`); strict validation in `crates/clauro-tools/src/artifact.rs` (the "classifier" the contract points at)
@@ -90,7 +95,17 @@ code, in this order, each with its failing test first:
 - `src/features/artifact/phase3.e2e.test.tsx` keeps its test-local driver as the composition proof
   under test — it now sits *beside* the production producer instead of standing in for it.
 
-Still **NOT RUN**: the five webview-observable criteria above (tauri-driver, 021) — unchanged.
+Still **NOT RUN in an engine**: the Linux verdict (001/WebKitGTK, D45) — the Windows
+proofs above say nothing about the other floor.
+
+## Addendum 2026-10-10 — the webview proofs ran (D123, D124), 8/8 green
+
+The five webview-observable criteria are closed on Windows: `pnpm proofs` drives the real
+build through the production pipeline (seeded row → producer → prepare → publish → frame)
+and asserts the render plus claims 1–5 (`scripts/webview-proofs.mjs`, report at
+`target/webdriver/proofs-report.json`). Two findings on the way, both fixed in the same
+commit: D123 (served document replaces `srcdoc`, which could never run a script) and D124
+(dedicated `artifact` scheme replaces the shell's host, which read as local to Tauri's IPC).
 
 **Same date — the handshake loop closed (D122), a precondition of the proofs.** Criterion 5
 ("a refused `MessageChannel` handshake leaves the frame inert") needed a handshake that exists;

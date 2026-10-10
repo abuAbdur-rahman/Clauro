@@ -2,11 +2,14 @@
  * Turning one artifact tool call into a document the frame can render.
  *
  * This is the seam between the parts: policy from Rust, markup from the tool,
- * compile in a Worker, sanitise for SVG, envelope out. Every failure is a typed
- * outcome the drawer renders — the drawer's three states are empty,
- * compiling, live, and a fourth case (`failed`) that shows the reason instead
- * of an empty frame. A blank artifact is the bug this module exists to prevent,
- * so it never returns a partially-built document.
+ * compile in a Worker, sanitise for SVG, envelope out, then publish the
+ * finished document to the host and navigate the frame to the URL it answers
+ * with (D123). Every failure is a typed outcome the drawer renders — the
+ * drawer's three states are empty, compiling, live, and a fourth case
+ * (`failed`) that shows the reason instead of an empty frame. A blank artifact
+ * is the bug this module exists to prevent, so it never returns a
+ * partially-built document and never reports `live` without a URL Rust
+ * accepted.
  */
 import { invoke } from "@tauri-apps/api/core";
 import { compileBlocks, extractJsxBlocks, type WorkerLike } from "./compile";
@@ -14,7 +17,7 @@ import { buildEnvelope } from "./envelope";
 import { sanitizeSvg } from "./sanitize";
 
 export type PrepareResult =
-  | { kind: "live"; doc: string; nonce: string }
+  | { kind: "live"; url: string; nonce: string }
   | { kind: "failed"; reason: string };
 
 export interface PrepareInput {
@@ -22,6 +25,8 @@ export interface PrepareInput {
   mediaType: string;
   /** Injected in tests; the shell calls `artifact_csp` in Rust. */
   fetchPolicy?: (nonce: string) => Promise<string>;
+  /** Injected in tests; the shell calls `artifact_publish` in Rust (D123). */
+  publishDoc?: (nonce: string, doc: string) => Promise<string>;
   createWorker?: () => WorkerLike;
 }
 
@@ -47,8 +52,22 @@ async function defaultPolicy(nonce: string): Promise<string> {
   return raw;
 }
 
+/**
+ * Rust stores the bytes and answers with the URL the frame navigates to
+ * (D123). The type check is here because `invoke` is `unknown` on the way
+ * back: a non-string is a broken contract, not a document.
+ */
+async function defaultPublish(nonce: string, doc: string): Promise<string> {
+  const raw: unknown = await invoke("artifact_publish", { nonce, doc });
+  if (typeof raw !== "string") {
+    throw new Error("the host returned a non-text artifact document URL");
+  }
+  return raw;
+}
+
 export async function prepareArtifact(input: PrepareInput): Promise<PrepareResult> {
   const fetchPolicy = input.fetchPolicy ?? defaultPolicy;
+  const publishDoc = input.publishDoc ?? defaultPublish;
   const nonce = newNonce();
   let csp: string;
   try {
@@ -94,8 +113,9 @@ export async function prepareArtifact(input: PrepareInput): Promise<PrepareResul
     code = compiled.blocks.join("\n");
   }
 
+  let doc: string;
   try {
-    const doc = buildEnvelope({
+    doc = buildEnvelope({
       csp,
       nonce,
       title: "",
@@ -104,11 +124,30 @@ export async function prepareArtifact(input: PrepareInput): Promise<PrepareResul
       // Empty until `022` vendors the full Tailwind build (D111).
       css: "",
     });
-    return { kind: "live", doc, nonce };
   } catch (e) {
     return {
       kind: "failed",
       reason: e instanceof Error ? e.message : String(e),
     };
   }
+
+  // Publish last: the host has the bytes only once the document is whole, so
+  // a prepare that failed earlier never leaves Rust serving a partial frame
+  // (D123). A refusal — bad token, empty doc, a registry that threw — is a
+  // stated reason, never a `live` result pointing at a URL that will 404.
+  let url: string;
+  try {
+    url = await publishDoc(nonce, doc);
+  } catch (e) {
+    return {
+      kind: "failed",
+      reason: `could not publish the artifact document: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
+  }
+  if (url.trim() === "") {
+    return { kind: "failed", reason: "the host returned no artifact document URL" };
+  }
+  return { kind: "live", url, nonce };
 }

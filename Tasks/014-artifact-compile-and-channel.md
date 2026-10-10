@@ -3,8 +3,8 @@
 **Phase** 3 · **Depends** `013` · **Decisions** D4, D5, D6, D12, D78, D102, **D110, D111**
 **Contracts** §3
 
-**Status: verified 2026-10-05 (Windows host), 70 frontend + 6 Rust tests green; webview criteria
-NOT RUN.** `src/artifact/` — 64 tests across `compile`, `channel`, `envelope`, `sanitize`,
+**Status: verified 2026-10-05 (Windows host), 70 frontend + 6 Rust tests green; engine
+criteria RUN 2026-10-10, 8/8 proofs green (see addendum).** `src/artifact/` — 64 tests across `compile`, `channel`, `envelope`, `sanitize`,
 `prepare` and `frame-runtime`, plus 6 in `ArtifactDrawer.test.tsx` and 6 in `src-tauri/src/csp.rs`.
 Every criterion below that needs a real engine is marked **NOT RUN** and stays open until `021`;
 the rest cite the test that discharges them. Two decisions were written before the code because
@@ -72,7 +72,11 @@ disable only the named directives, never the boolean form (`D78`), which switche
 
 ## Not verified here, and why
 
-- **No webview.** `connect-src 'none'` is asserted as an assembled string, and `event.origin`/`event.source` as a validated predicate. Neither has been observed *in* an engine. The `001` spike observed the same properties in a throwaway app on WebView2; the product frame is unobserved until `021` brings `tauri-driver`. Every webview-dependent `013` criterion stays open for the same reason.
+- **Engine observation, closed 2026-10-10 (D123, D124):** `connect-src 'none'` failing a
+  real fetch, the real `event.origin`/`event.source` handshake, and the render are now observed
+  *in* the engine (`pnpm proofs`, 8/8 green) — superseding the caveat below for everything but
+  Tailwind-in-the-frame (022) and the Linux floor (021/D45). The `001` spike's shape still
+  stands; the product frame is now observed on Windows.
 - **The real Worker thread.** jsdom has no `Worker`, so the tests drive the same message contract with an injected factory that runs the same `transformJsx`. The `Worker` construction in `prepare.ts:29` is therefore untested code — it is three lines and it is the only untested line in the pipeline, but it is untested.
 - **No Tailwind in the frame.** `D111`: the stylesheet slot is wired and deliberately empty. Artifacts render unstyled until `022` vendors the build. The prompt tells the model to use predefined utility classes, so this is a visible gap, not a silent one.
 - ~~**Nothing calls the drawer yet.**~~ **Closed 2026-10-09 (D121):** the production producer
@@ -80,6 +84,19 @@ disable only the named directives, never the boolean form (`D78`), which switche
   turn-done fetches `artifact_latest`. (Was: no tool-result handler existed and `src/` was the
   Phase-0 shell; the check that proved it then was
   `Select-String -Path src\*.ts* -Pattern "setCompiling|setLive"`.)
+
+## Addendum 2026-10-10 — the engine half of 014's criteria ran (D123, D124)
+
+The "no webview" caveat above is closed on Windows for everything except Tailwind-in-the-frame
+(022) and the Linux floor (021/D45): `pnpm proofs` (8/8 green, report at
+`target/webdriver/proofs-report.json`) observes the assembled `connect-src 'none'` failing a
+real fetch, the real `event.origin`/`event.source` handshake completing, and the compiled
+pipeline rendering seeded bytes — through the production producer (D121), envelope, publish
+seam and served document, with no test hooks. Two transport findings landed in the same
+commit and are recorded as decisions, not asides: D123 (the document is served with a header
+policy — `srcdoc` inherits the shell's header CSP and can never run a script) and D124 (the
+document host is a dedicated `artifact` scheme, remote to Tauri's IPC — the shell's own host
+read as local, and the frame owns an injected `__TAURI_INTERNALS__` on Windows).
 
 ## Addendum 2026-10-09 — the handshake's production wiring (D122)
 

@@ -22,7 +22,7 @@ report should target:
 
 | Claim | Decision |
 |---|---|
-| The artifact frame is an **opaque origin** with no reachable path to app internals | **D2**, **D6** |
+| The artifact frame is an **opaque origin** with no reachable command path to app internals | **D2**, **D6**, **D124** |
 | **No network egress from an artifact** — `connect-src 'none'`, no CDN allowlist | **D3**, **D90** |
 | A **denied tool is removed from the request**, not filtered from results, so it cannot be socially engineered | **D26** |
 | Path handling cannot be walked out of, and Windows reserved device names are rejected | **D34**, **D79** |
@@ -43,7 +43,7 @@ Documented rather than hidden. Read [`MISSION.md`](MISSION.md) §5 and
   and `dns-prefetch` leaks the host name. This is why the network claim is
   stated as what CSP proves (**D90**).
 - **`freezePrototype` is not artifact hardening.** It runs as a Tauri *webview*
-  init script; a `srcdoc` iframe is not a webview (**D77**).
+  init script; an artifact iframe is not a webview (**D77**).
 - **`frame-ancestors` is ignored in a `<meta>` CSP** and is therefore absent
   (**D93**).
 - **`MessagePort` messages have an empty origin and a null source.** The

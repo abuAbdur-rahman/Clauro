@@ -15,7 +15,8 @@
 //!
 //! **`dangerousDisableAssetCspModification` is never set (D78).** It exists in
 //! the Tauri config for projects that serve content over the asset protocol;
-//! artifacts are `srcdoc`, so there is nothing to disable, and the boolean form
+//! artifact documents are served from a dedicated custom scheme with their own
+//! header policy, so there is nothing to disable, and the boolean form
 //! of the flag would switch off nonce injection app-wide. If a future change
 //! needs it, pass the *named directives* as a list.
 
@@ -52,8 +53,10 @@ pub fn app_csp() -> String {
         "connect-src 'self' ipc: http://ipc.localhost",
         "img-src 'self' data: blob: asset: http://asset.localhost",
         "font-src 'self' data:",
-        // The artifact frame is a srcdoc document: same scheme, opaque origin.
-        "frame-src 'self' about:",
+        // The artifact frame is a served document on its own scheme (D123/D124):
+        // same sandbox, opaque origin — but a distinct host, named here so the
+        // frame is allowed to load. `about:` stays for the initial blank frame.
+        "frame-src 'self' about: http://artifact.localhost artifact:",
         "object-src 'none'",
         "base-uri 'self'",
         "form-action 'self'",
@@ -145,10 +148,12 @@ mod tests {
     }
 
     #[test]
-    fn app_policy_still_allows_tauri_ipc_and_the_srcdoc_frame() {
+    fn app_policy_still_allows_tauri_ipc_and_the_served_frame() {
         let policy = app_csp();
         assert!(policy.contains("connect-src 'self' ipc:"));
         assert!(policy.contains("frame-src 'self' about:"));
+        // The frame's own host, or the sandbox would have nothing to load.
+        assert!(policy.contains("http://artifact.localhost"), "{policy}");
         // The shell is not the artifact: it must not inherit `connect-src 'none'`.
         assert!(!policy.contains("connect-src 'none'"));
     }

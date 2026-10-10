@@ -57,9 +57,10 @@ describe("window-level gate (D6)", () => {
   });
 
   it("refuses any non-null origin, including the app's own", () => {
-    // A srcdoc frame that kept a real origin is not the sandbox we promised
-    // (D2): that is exactly what `srcdoc` does on its own, which is why the
-    // `sandbox` attribute is the boundary.
+    // A frame that kept a real origin is not the sandbox we promised (D2):
+    // the document is served from the app's own origin (D123), so it would
+    // report exactly that without the `sandbox` attribute — which is why the
+    // attribute, not the transport, is the boundary.
     for (const origin of ["", "https://tauri.localhost", "http://localhost:1420", "null "]) {
       expect(validHandshake({ origin, source: window }, window)).toBe(false);
     }

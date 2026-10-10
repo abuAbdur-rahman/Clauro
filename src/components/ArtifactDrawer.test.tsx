@@ -15,11 +15,15 @@ import type { HostSide, HostSideOptions } from "../features/artifact/channel";
 
 type PrepareArgs = Parameters<typeof prepareArtifact>[0];
 
-const prepare = vi.hoisted(() => ({
-  fn: vi.fn<(args: PrepareArgs) => Promise<PrepareResult>>(() =>
-    Promise.resolve({ kind: "live", doc: "<!doctype html><p>doc</p>", nonce: "n1" }),
-  ),
-}));
+const prepare = vi.hoisted(() => {
+  const url = "http://artifact.localhost/__clauro/doc/n1";
+  return {
+    url,
+    fn: vi.fn<(args: PrepareArgs) => Promise<PrepareResult>>(() =>
+      Promise.resolve({ kind: "live", url, nonce: "n1" }),
+    ),
+  };
+});
 
 vi.mock("../features/artifact/prepare", () => ({
   prepareArtifact: prepare.fn,
@@ -37,7 +41,7 @@ vi.mock("../features/artifact/channel", () => ({
 beforeEach(() => {
   cleanup();
   prepare.fn.mockClear();
-  prepare.fn.mockResolvedValue({ kind: "live", doc: "<!doctype html><p>doc</p>", nonce: "n1" });
+  prepare.fn.mockResolvedValue({ kind: "live", url: prepare.url, nonce: "n1" });
   host.hostSide.mockClear();
   useDrawerStore.getState().reset();
 });
@@ -88,8 +92,24 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     const frame = await screen.findByTitle("artifact-frame");
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame.getAttribute("sandbox")).not.toContain("allow-same-origin");
-    expect(frame.getAttribute("srcdoc")).toBe("<!doctype html><p>doc</p>");
+    // D123: the frame navigates to the host's URL; the bytes are Rust's to
+    // serve, so there is no inline document left to assert on.
+    expect(frame.getAttribute("src")).toBe(prepare.url);
+    expect(frame.hasAttribute("srcdoc")).toBe(false);
     expect(screen.getByText("Demo")).not.toBeNull();
+  });
+
+  it("hands the publisher seam through to prepare (D123)", async () => {
+    // The drawer owns the seam like `fetchPolicy`: production calls
+    // `artifact_publish` through the default, and a caller that injects one
+    // must reach prepare untouched.
+    const publishDoc = vi.fn(() => Promise.resolve("http://artifact.localhost/__clauro/doc/x"));
+    useDrawerStore.getState().setCompiling("t1", "a1");
+    draw({ title: "Demo", publishDoc });
+    await waitFor(() => {
+      expect(prepare.fn).toHaveBeenCalledOnce();
+    });
+    expect(prepare.fn.mock.calls[0]?.[0]).toMatchObject({ publishDoc });
   });
 
   it("a failed prepare shows the reason instead of an empty frame", async () => {

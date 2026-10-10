@@ -96,22 +96,24 @@ from the *middle* invalidates every later one. **D72.**
 
 ## 3. Security rules — non-negotiable, and the reason the product exists
 
-**The artifact iframe is an opaque origin.** `srcdoc` with `sandbox="allow-scripts"` and **no
-`allow-same-origin`**. **D2.** Note precisely why: `srcdoc` is a *transport* choice, `sandbox` is the
-*security boundary*. `about:srcdoc` inherits the parent origin on its own — the opaque origin comes
+**The artifact iframe is an opaque origin.** A served document with `sandbox="allow-scripts"` and **no
+`allow-same-origin`**. **D2** (transport **D123**, host **D124**). Note precisely why: the document location is a *transport* choice, `sandbox` is the
+*security boundary*. The served document would be same-origin with the shell on its own — the opaque origin comes
 from the attribute. Adding `allow-same-origin` back silently breaks this **and** breaks the
 `event.origin` validation the same rule requires.
 
 **No artifact network egress.** `connect-src 'none'`, `img-src data: blob:`, `form-action 'none'`.
 Vendor what artifacts need. Do not add a CDN allowlist. **D3.**
 
-**`freezePrototype` does not help.** It runs as an init script on every Tauri *webview*; a `srcdoc`
+**`freezePrototype` does not help.** It runs as an init script on every Tauri *webview*; an artifact
 iframe is not a webview. Do not count it toward artifact hardening. **D77.**
 
-**Tauri gates commands by capability and scope, not by caller origin.** Any path from an artifact to
-`window.__TAURI_INTERNALS__` means that artifact can run every command the app can. Never expose
+**Tauri gates commands by capability and scope, not by caller origin.** A *working* path from an artifact to
+`window.__TAURI_INTERNALS__` means that artifact can run every command the app can — and on Windows the object is
+present in the frame regardless (the runtime injects into every frame), so the closure is host-side: a document host
+remote to IPC plus zero remote capabilities. Never expose
 `invoke` to the frame. Use a `MessageChannel` handshake and validate `event.origin` **and**
-`event.source` on every message in both directions. **D6, D2.**
+`event.source` on every message in both directions. **D6, D2, D124.**
 
 **Path safety order is load-bearing.** Canonicalise, resolve symlinks and junctions, **then** check
 traversal — checking first is bypassable. Windows reserved device names are rejected

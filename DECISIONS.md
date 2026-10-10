@@ -1373,6 +1373,56 @@ routes error-level reports into the drawer's existing failed presentation — a 
 error is the blank-frame bug again, which is the one thing that component exists to prevent. The
 proofs then observe the real chain end to end: hello → validated → boot + port → claimed → `ready`.
 
+**D123 — `srcdoc` can never run an artifact script, so the document is served from the app origin with a header policy.**
+
+Decided 2026-10-10 (Phase 3 gate: the webview proofs, slice 3c). A `srcdoc` document
+inherits the shell's *response-header* CSP through the policy container, and the shell's
+`script-src 'self'` never allows an inline script — so no artifact script could ever execute
+under `srcdoc`, whatever nonce the frame's own meta policy carried. Empirical, from the proof
+harness against the real build: frame meta nonce == script-tag nonce (`b536875…`, 9403 chars)
+yet the script never booted, and a clone probe drew three `script-src-elem` violations from the
+inherited policy. The transport is therefore a document served from the app origin: the shell
+preempts the `tauri` scheme's handler (`register_uri_scheme_protocol`, which Tauri's built-in
+only registers when the scheme is not already taken) and answers `/__clauro/doc/<nonce>` with
+`artifact_csp(nonce)` as a **header** — the one policy Rust assembles (D3), delivered before any
+content parses, with the nonce doubling as the path token so header and tags can never disagree.
+`sandbox="allow-scripts"` stays the sole boundary; `event.origin` stays `"null"`. This
+supersedes D2's transport clause (supersede, never renumber): `srcdoc` was the wrong vehicle,
+`sandbox` was always the boundary. Rejected: a `data:`-URL transport (same inheritance class
+of problem, worse debuggability) and dev/prod parity theatrics — dev mode was already blank
+under the shipping CSP, and that pre-existing gap stays honestly deferred, not papered over.
+
+**D124 — The artifact document lives on a remote-by-construction host, because the frame owns a `__TAURI_INTERNALS__` object on Windows and absence is unachievable.**
+
+Decided 2026-10-10 (Phase 3 gate: the webview proofs, slice 3c; found by the proofs, fixed in
+the same commit). Tauri marks every init script `for_main_frame_only: true`
+(tauri-2.12.1 `manager/webview.rs:161`), but wry 0.57.0's WebView2 backend ignores the flag
+(`webview2/mod.rs:507` adds every script via `AddScriptToExecuteOnNewDocumentAsync`, and its
+own docs admit scripts reach subframes regardless) — so the artifact frame owns a
+`__TAURI_INTERNALS__` object with a working-shaped `invoke`, exactly the D6 nightmare. Observed,
+not theorised: the proof surface-dump reads `{type: "object", keys: ["plugins"], invoke:
+"function", ipc: "object"}` (`invoke`/`ipc` are non-enumerable `defineProperty` installs, hence
+absent from `keys`). Deleting it from the frame is impossible — the installs are
+non-configurable — and page CSP cannot block host-injected scripts, so the literal "absent"
+property of Tasks/013 criterion 1 is unachievable on this floor. What closes the hole is the
+host half, in two layers that are each pinned by test: (1) the document is served from a
+dedicated `artifact` scheme (`http://artifact.localhost/…` on Windows,
+`artifact://localhost` elsewhere) registered at the wry level, never through Tauri's protocol
+map — so the URL matches none of `is_local_url`'s three branches (tauri-2.12.1
+`webview/mod.rs:1961`: not the `tauri` protocol URL, not the app URL, scheme unknown to the
+map) and every invoke from the frame arrives as `Origin::Remote`; (2) no capability grants a
+remote context (`src-tauri/capabilities/default.json` carries no `remote` key, pinned by
+`no_capability_grants_a_remote_context`) — so `on_message`'s ACL check (`webview/mod.rs:2080`,
+"remote content can never reach custom commands unless an explicit `remote` capability has
+been configured") rejects before any handler runs. The fetch path never leaves the frame at
+all (`connect-src 'none'`). Proven end to end: a frame-side `invoke('webview_status')` never
+resolves while the shell's identical invoke resolves — `scripts/webview-proofs.mjs` claim 1,
+8/8 green. What this does **not** prove is stated with it: frame-side a host rejection and a
+lost response both read as a hang, so the proof shows no *response* ever reaches the frame and
+the *dispatch* closure is the cited host code plus the two pinned premises — not an observed
+rejection. Any future `remote` capability must revisit this decision first; the test fails
+until it does.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
@@ -1382,9 +1432,9 @@ Clauro makes these claims and this is what backs them:
 | No telemetry, ever | D38 |
 | API keys in the OS keychain, never in SQLite | `keyring` crate |
 | Conversations never leave the machine except to your chosen provider | Direct provider calls, no proxy |
-| Artifacts cannot reach the app | D2 — opaque origin |
+| Artifacts cannot reach the app | D2 — opaque origin · D124 — the document host is remote to Tauri's IPC, so the frame's injected internals stay inert |
 | Artifacts cannot make network requests | D3 |
-| Artifacts cannot read your files | D2 + D31 — iframe has no Tauri internals, `fs` is host-mediated |
+| Artifacts cannot read your files | D124 + D31 — the frame's `invoke` fails closed at the host ACL, `fs` is host-mediated |
 | You approve every command before it runs | D66 — per-invocation, nothing persisted, no allowlist · D67 — opt in per project |
 | The model cannot ask you to paste a secret | D43 — the `question` card persists into the thread, so secret-shaped prompts are refused at the tool boundary |
 

@@ -52,8 +52,8 @@ export function validHandshake(
 ): boolean {
   // A sandboxed frame reports the opaque origin as the string "null".
   // Anything else means it is not the frame we sandboxed (D2) — including the
-  // app's own origin, which is exactly what `srcdoc` would hand us if the
-  // `sandbox` attribute were ever dropped.
+  // app's own origin, which is exactly what the served document (D123) would
+  // report if the `sandbox` attribute were ever dropped.
   if (event.origin !== "null") return false;
   // Origin alone is not enough: every opaque-origin window also reports
   // "null", so only identity proves which frame spoke.

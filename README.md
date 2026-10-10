@@ -46,7 +46,7 @@ aspirational.
 
 | Claim | Why it is hard |
 |---|---|
-| Artifacts run in an **opaque origin** with no reachable path to app internals | A `<meta>` CSP is not a sandbox. `srcdoc` inherits the parent origin unless `sandbox` says otherwise. |
+| Artifacts run in an **opaque origin** with no reachable command path to app internals | A `<meta>` CSP is not a sandbox. The document is served, sandboxed, and remote to IPC by construction. |
 | **No artifact network egress** | CSP is the only enforcement point, and WebKitGTK/WebView2 differ on which directives they honour. Probed, not assumed. |
 | **Nothing throws across the tool boundary** | A non-zero exit is `ok` with output attached, not an exception. Model-visible failure modes are a product surface. |
 | **History is append-only** | The prefix guarantee only holds if history is never rewritten. Exactly four columns are mutable. |

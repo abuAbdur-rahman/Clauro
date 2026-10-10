@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
-    "mock": "node scripts/mock-openai-server.mjs 8787"
+    "mock": "node scripts/mock-openai-server.mjs 8787",
+    "proofs": "node scripts/webview-proofs.mjs"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.2.6",
