@@ -18,8 +18,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
-const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
+const SIDEBAR_STORAGE_KEY = "clauro.sidebar";
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
@@ -36,6 +35,25 @@ type SidebarContextProps = {
 };
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null);
+
+function readStoredSidebar(defaultOpen: boolean): boolean {
+  try {
+    const v = window.localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch {
+    // Private mode / blocked storage: fall through to the default.
+  }
+  return defaultOpen;
+}
+
+function storeSidebar(open: boolean): void {
+  try {
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // Private mode / blocked storage: collapse still works, just not persisted.
+  }
+}
 
 function useSidebar(): SidebarContextProps {
   const context = React.useContext(SidebarContext);
@@ -63,7 +81,7 @@ function SidebarProvider({
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen);
+  const [_open, _setOpen] = React.useState(() => readStoredSidebar(defaultOpen));
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -74,8 +92,8 @@ function SidebarProvider({
         _setOpen(openState);
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${String(openState)}; path=/; max-age=${String(SIDEBAR_COOKIE_MAX_AGE)}`;
+      // Persist collapse across reloads (B04: localStorage, never cookies).
+      storeSidebar(openState);
     },
     [setOpenProp, open],
   );
@@ -89,10 +107,10 @@ function SidebarProvider({
     }
   }, [isMobile, setOpen, setOpenMobile]);
 
-  // Adds a keyboard shortcut to toggle the sidebar.
+  // Adds a keyboard shortcut to toggle the sidebar (Ctrl-only, B05).
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && (event.metaKey || event.ctrlKey)) {
+      if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && event.ctrlKey) {
         event.preventDefault();
         toggleSidebar();
       }

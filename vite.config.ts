@@ -9,12 +9,12 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  // Browser harness (UI-GUIDE): `vite --mode browser` resolves the Tauri API
-  // modules to `src/dev/mock-tauri.ts`, so the same <App/> renders without a
-  // runtime. Production builds, `tauri dev`, and vitest (mode "test") never
-  // see the alias.
+  // Browser harness (UI-GUIDE) + mock mode (Task 029): `vite --mode browser`
+  // and `vite --mode mock` resolve the Tauri API modules to
+  // `src/dev/mock-tauri.ts`, so the same <App/> renders without a runtime.
+  // Production builds, `tauri dev`, and vitest (mode "test") never see the alias.
   const browserMocks =
-    mode === "browser"
+    mode === "browser" || mode === "mock"
       ? {
           "@tauri-apps/api/core": fileURLToPath(
             new URL("./src/dev/mock-tauri.ts", import.meta.url),
