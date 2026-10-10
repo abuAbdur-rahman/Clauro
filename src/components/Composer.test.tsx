@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Composer from "./Composer";
 import { useThreadStore } from "../features/catalogue/thread";
@@ -51,7 +51,10 @@ describe("Composer", () => {
     await user.click(send);
     expect(onSend).toHaveBeenCalledWith("refactor the tokenizer");
     expect(screen.getByLabelText(/message/i).textContent || "").toBe("");
-  });
+  },
+  // Interaction-heavy: user-event keystroke delays exceed the 5s default
+  // under full-suite parallel load (passes in isolation in ~1s).
+  30000);
 
   it("attach button calls onAttach, memory toggle calls onMemoryToggle", async () => {
     const user = userEvent.setup();
@@ -100,4 +103,118 @@ describe("Composer", () => {
     await user.click(screen.getByRole("button", { name: /send/i }));
     expect(onSend).toHaveBeenCalledTimes(1);
   });
+
+  it("shows a live honest token estimate next to send", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    expect(screen.getByTestId("token-hint").textContent).toMatch(/0 tokens.*estimate/i);
+    await user.type(screen.getByLabelText(/message/i), "12345678");
+    expect(screen.getByTestId("token-hint").textContent).toMatch(/2 tokens.*estimate/i);
+  });
+
+  it("caps textarea growth with a max height and scroll", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = screen.getByLabelText(/message/i);
+    expect(box.className).toMatch(/max-h-/);
+    expect(box.className).toMatch(/overflow-y-auto/);
+  });
+
+  it("shift+enter makes a newline in enter mode, ctrl+enter sends in ctrl mode", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = screen.getByLabelText(/message/i);
+    await user.type(box, "a");
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("a");
+
+    cleanup();
+    const onCtrlSend = vi.fn();
+    render(<Composer threadId={THREAD} sendWith="ctrl" onSend={onCtrlSend} />);
+    const box2 = screen.getByLabelText(/message/i);
+    await user.type(box2, "b");
+    fireEvent.keyDown(box2, { key: "Enter" });
+    expect(onCtrlSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(box2, { key: "Enter", ctrlKey: true });
+    expect(onCtrlSend).toHaveBeenCalledWith("b");
+  });
+
+  it("ime composition guards enter-to-send", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = screen.getByLabelText(/message/i);
+    await user.type(box, "x");
+    fireEvent.compositionStart(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.compositionEnd(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("x");
+  });
+
+  it("swaps send for stop in place while running, keeps typing enabled", async () => {
+    const user = userEvent.setup();
+    const onStop = vi.fn();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} running onStop={onStop} />);
+    expect(screen.getByRole("button", { name: /stop/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^send$/i })).toBeNull();
+    expect(screen.getByLabelText(/message/i).hasAttribute("disabled")).toBe(false);
+    await user.click(screen.getByRole("button", { name: /stop/i }));
+    expect(onStop).toHaveBeenCalledOnce();
+  });
+
+  it("slash menu filters, arrows wrap, enter runs /compact, esc closes", async () => {
+    const user = userEvent.setup();
+    const onCompact = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        threadId={THREAD}
+        onSend={vi.fn()}
+        onCompact={onCompact}
+        onSlashCommand={onSlashCommand}
+      />,
+    );
+    const box = screen.getByLabelText(/message/i);
+    await user.type(box, "/");
+    expect(screen.getByRole("listbox", { name: /commands/i })).toBeTruthy();
+    expect(screen.getAllByRole("option")).toHaveLength(6);
+    await user.type(box, "comp");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onCompact).toHaveBeenCalledOnce();
+    expect(onSlashCommand).toHaveBeenCalledWith("compact");
+    expect(box instanceof HTMLTextAreaElement ? box.value : null).toBe("");
+
+    await user.type(box, "/");
+    expect(screen.getAllByRole("option")).toHaveLength(6);
+    fireEvent.keyDown(box, { key: "ArrowUp" });
+    const options = screen.getAllByRole("option");
+    expect(options[options.length - 1].getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: /commands/i })).toBeNull();
+    expect(box instanceof HTMLTextAreaElement ? box.value : null).toBe("/");
+  });
+
+  it("ctrl+b/i/e and ctrl+shift+k wrap the selection", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const el = screen.getByLabelText(/message/i);
+    if (!(el instanceof HTMLTextAreaElement)) throw new Error("expected textarea");
+    const box: HTMLTextAreaElement = el;
+    await user.type(box, "hello");
+    box.setSelectionRange(0, 5);
+    fireEvent.keyDown(box, { key: "b", ctrlKey: true });
+    expect(box.value).toBe("**hello**");
+    box.setSelectionRange(2, 7);
+    fireEvent.keyDown(box, { key: "i", ctrlKey: true });
+    expect(box.value).toBe("***hello***");
+    box.setSelectionRange(0, 11);
+    fireEvent.keyDown(box, { key: "e", ctrlKey: true });
+    expect(box.value).toBe("`***hello***`");
+  });
+
 });

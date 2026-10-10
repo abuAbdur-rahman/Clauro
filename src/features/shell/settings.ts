@@ -5,11 +5,22 @@
  */
 import { create } from "zustand";
 
-export type SettingsSection = "providers" | "appearance" | "data";
+export type SettingsSection =
+  | "general"
+  | "appearance"
+  | "providers"
+  | "models"
+  | "memory"
+  | "data"
+  | "shortcuts"
+  | "about";
 
 interface SettingsStore {
   open: boolean;
   section: SettingsSection;
+  /** Display name for the home greeting + profile (reference `prefs.name`, default Abu). */
+  displayName: string;
+  setDisplayName: (name: string) => void;
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
 }
@@ -17,6 +28,10 @@ interface SettingsStore {
 export const useSettingsStore = create<SettingsStore>()((set) => ({
   open: false,
   section: "providers",
+  displayName: "Abu",
+  setDisplayName: (displayName) => {
+    set({ displayName });
+  },
   openSettings: (section = "providers") => {
     set({ open: true, section });
   },

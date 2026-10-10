@@ -68,5 +68,7 @@ smoke list in this file on close).
 - [x] mock-tauri.ts SEED serving + bare-shell reset (mock-tauri.seed.test.ts 6/6, deterministic)
 - [x] lastReadAt/running store + localStorage collapse + drop metaKey (thread +10, hotkey, sidebar.persistence tests)
 - [x] Titlebar B01 (TitleBar.tsx + test, decorations:false) + App wiring (statusByThread, viewed-on-open)
+- [x] Mock seed bootstrap: rail/grid/detail mirror html SEED in mock mode only (seedToRail, mockDetailProps, parseSeedSize; dynamic import keeps real bundle + source mock-free)
+- [x] Interaction-heavy tests get explicit 30s timeouts (parallel-load flakes, green in isolation)
 - [ ] E2E pass on dev:mock via browser smoke list — in progress
 - [ ] Remaining blockers per docs/blockers.md

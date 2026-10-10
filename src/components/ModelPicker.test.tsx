@@ -161,4 +161,19 @@ describe("ModelPicker on Select", () => {
     expect(await screen.findByText(/no providers configured/i)).toBeTruthy();
     expect(screen.queryByRole("combobox")).toBeNull();
   });
+
+  it("filters options through the search input without losing grouping", async () => {
+    const user = userEvent.setup();
+    vi.mocked(providerModelsEnriched).mockResolvedValue([
+      known("claude-haiku-4-5", "Haiku"),
+      known("claude-opus-4-5", "Opus"),
+    ]);
+    render(<ModelPicker threadId={THREAD} />);
+    await user.click(await screen.findByRole("combobox"));
+    await screen.findByRole("listbox");
+    await user.type(screen.getByLabelText(/search models/i), "opus");
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).getByRole("option", { name: /opus/i })).not.toBeNull();
+    expect(within(listbox).queryByRole("option", { name: /haiku/i })).toBeNull();
+  });
 });
