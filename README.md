@@ -72,7 +72,7 @@ one without a new D-number.
 | **Start here** | [`AGENTS.md`](AGENTS.md) — the document set and the rules that exist because we got them wrong |
 | What this is, and what it is not | [`MISSION.md`](MISSION.md) |
 | What must exist in v1 | [`SPEC.md`](SPEC.md) |
-| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D115**) |
+| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D124**) |
 | The shapes tests assert against | [`CONTRACTS.md`](CONTRACTS.md) |
 | How it fits together | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | How it feels | [`DESIGN.md`](DESIGN.md) |
