@@ -64,7 +64,7 @@ function ViewSkeleton({ label }: { label: string }): React.JSX.Element {
  * rail, greeting block — instead of a bare text line, so first paint already
  * looks like the app while the runtime check + seed preload run behind it.
  */
-function BootSkeleton(): React.JSX.Element {
+function BootSkeleton({ error }: { error: string | null }): React.JSX.Element {
   return (
     <div data-testid="boot-skeleton" className="flex h-dvh w-screen min-w-[900px] flex-col bg-background">
       <span className="sr-only">Starting Clauro…</span>
@@ -81,6 +81,11 @@ function BootSkeleton(): React.JSX.Element {
           <Skeleton className="h-8 w-64" />
           <Skeleton className="h-4 w-48" />
           <Skeleton className="h-28 w-full max-w-[720px]" />
+          {error !== null && (
+            <p role="alert" className="max-w-[720px] text-center text-xs text-destructive">
+              Boot error: {error}
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -98,9 +103,11 @@ const THREAD_IDS: readonly string[] = Object.values(THREADS_BY_PROJECT).flatMap(
   ts.map((t) => t.id),
 );
 
-/** Intent collection only; dispatch belongs to the turn loop (023). */
+/** Attach only (Task 032 U3 owns it: file picker or disabled-with-reason).
+ *  Every other App-level button is wired to a real handler or is a child-owned
+ *  disabled-with-reason control — grep onClick/noop before adding callers. */
 function noop(): void {
-  // Wired to real handlers by their owning tasks.
+  // Wired to a real handler by its owning task.
 }
 
 /**
@@ -282,9 +289,22 @@ export default function App() {
   // Mock-mode seed state (null on the real path). Declared before the
   // indicator memo below because the memo reads `railChats`.
   const [mockSeed, setMockSeed] = useState<{ rail: SeedRail; now: number } | null>(null);
+  // Task 032 U2: App-owned UI state so every App-level button acts. Memory
+  // rides here (Composer + rail read it, the toggle flips it); the new-project
+  // dialog opens from the grid button and creates into `customProjects`
+  // (real path only — the mock seed owns its projects). Declared before the
+  // rail derivations + indicator memo below because both read them.
+  const [memoryOff, setMemoryOff] = useState(false);
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [customProjects, setCustomProjects] = useState<
+    readonly { id: string; name: string; desc?: string; updatedAt?: string }[]
+  >([]);
+  // The thread on screen (Task 031 T8): home/new-chat targets THREAD, rail
+  // selection targets the clicked id — the old code always rendered THREAD.
+  const [activeThreadId, setActiveThreadId] = useState<string>(THREAD);
   const railChats: readonly RailThread[] | undefined = mockSeed?.rail.chats;
   const railProjects: readonly { id: string; name: string; desc?: string; updatedAt?: string }[] =
-    mockSeed?.rail.projects ?? DEMO_PROJECTS;
+    mockSeed?.rail.projects ?? [...DEMO_PROJECTS, ...customProjects];
   const railThreadsByProject: Readonly<Record<string, readonly { id: string; title: string }[]>> =
     mockSeed?.rail.threadsByProject ?? THREADS_BY_PROJECT;
   // Indicator state for every rendered thread id (Task 029 B11) via the
@@ -297,19 +317,19 @@ export default function App() {
   const statusByThread = useMemo<Record<string, ThreadStatus>>(() => {
     const out: Record<string, ThreadStatus> = {};
     const ids = railChats === undefined ? THREAD_IDS : railChats.map((c) => c.id);
-    for (const id of ids) out[id] = statusOf(id);
+    // The active thread may be a fresh new-chat id absent from the rail
+    // lists — it still gets an indicator entry (unknown reads idle anyway).
+    for (const id of new Set([...ids, activeThreadId])) out[id] = statusOf(id);
     return out;
     // Reactive inputs are the `running` + `threads` slices subscribed above:
     // `statusOf` reads them from the store snapshot, so listing them here
     // invalidates the map exactly when indicator state can change.
     // `railChats` flips once when the mock seed lands (never on real).
-  }, [statusOf, running, threadStates, railChats]);
+    // `activeThreadId` covers fresh new-chat ids absent from the rail lists.
+  }, [statusOf, running, threadStates, railChats, activeThreadId]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
   const [providersOpen, setProvidersOpen] = useState(false);
-  // The thread on screen (Task 031 T8): home/new-chat targets THREAD, rail
-  // selection targets the clicked id — the old code always rendered THREAD.
-  const [activeThreadId, setActiveThreadId] = useState<string>(THREAD);
   const openSettings = useSettingsStore((s) => s.openSettings);
   const displayName = useSettingsStore((s) => s.displayName);
   const artifactContent = useArtifactContent((s) => s.threads[activeThreadId]);
@@ -320,9 +340,10 @@ export default function App() {
     openSettings("providers");
   });
   // Task 031 T6: every hotkey hook in hotkey.ts fires from the shell.
-  // New chat opens the thread-owned chat view (same path as home send).
+  // New chat creates a thread + opens the chat view (032 U2, same as the
+  // rail New chat button) — never a baked-in id.
   useNewChatHotkey(() => {
-    goChat();
+    goNewChat();
   });
   // usePanelHotkey stays unwired on purpose: the artifact store has no drawer
   // open-state to toggle (empty/compiling/live per thread; empty renders
@@ -405,7 +426,7 @@ export default function App() {
   }, [openThread]);
 
   if (boot.stage === "checking") {
-    return <BootSkeleton />;
+    return <BootSkeleton error={error} />;
   }
 
   if (boot.stage === "missing") {
@@ -448,6 +469,20 @@ export default function App() {
     setActiveThreadId(THREAD);
     if (isMockMode()) {
       useThreadStore.getState().markUpdated(THREAD, Date.now());
+    }
+    setView({ name: "chat" });
+  }
+
+  // New chat (Task 032 U2): creation IS openThread with a fresh id — the
+  // store has no separate createThread semantics, and openThread always
+  // materialises the row. Title resolves to "New chat" via the threadTitle
+  // fallback until the turn loop (023) owns titles.
+  function goNewChat(): void {
+    const id = crypto.randomUUID();
+    openThread(id);
+    setActiveThreadId(id);
+    if (isMockMode()) {
+      useThreadStore.getState().markUpdated(id, Date.now());
     }
     setView({ name: "chat" });
   }
@@ -506,7 +541,7 @@ export default function App() {
         <div className="shrink-0 self-stretch overflow-hidden">
           <ProjectsRail
             projects={railProjects}
-            memoryOff={false}
+            memoryOff={memoryOff}
             threadsByProject={railThreadsByProject}
             chats={railChats}
             now={mockSeed?.now}
@@ -517,6 +552,9 @@ export default function App() {
             }}
             onSelectThread={(id) => {
               openThreadView(id);
+            }}
+            onNewChat={() => {
+              goNewChat();
             }}
             onSearch={() => {
               setPaletteOpen(true);
@@ -543,10 +581,12 @@ export default function App() {
                 <div className="mt-6 w-full">
                   <Composer
                     threadId={THREAD}
-                    memoryOff={false}
+                    memoryOff={memoryOff}
                     onSend={handleHomeSend}
                     onAttach={noop}
-                    onMemoryToggle={noop}
+                    onMemoryToggle={() => {
+                      setMemoryOff((v) => !v);
+                    }}
                   />
                   <p className="mt-2 text-center text-xs text-muted-foreground">
                     Clauro runs on your machine. Double-check important answers.
@@ -594,9 +634,23 @@ export default function App() {
               <ProjectsGrid
                 projects={railProjects}
                 chatCountByProject={mockSeed?.rail.chatCountByProject}
-                onNew={noop}
+                onNew={() => {
+                  setProjectDialogOpen(true);
+                }}
                 onOpen={(id) => {
                   setView({ name: "project", id });
+                }}
+                dialogOpen={projectDialogOpen}
+                onDialogChange={setProjectDialogOpen}
+                onCreate={(input) => {
+                  setCustomProjects((prev) => [
+                    ...prev,
+                    {
+                      id: crypto.randomUUID(),
+                      name: input.name,
+                      ...(input.desc === "" ? {} : { desc: input.desc }),
+                    },
+                  ]);
                 }}
               />
             </Suspense>
@@ -610,10 +664,19 @@ export default function App() {
                 contextUsed="0%"
                 chats={detail.chats}
                 files={detail.files}
-                onOpenChat={() => {
-                  setView({ name: "chat" });
+                onOpenChat={(id) => {
+                  openThreadView(id);
                 }}
-                onStartChat={() => {
+                onStartChat={(message) => {
+                  // The detail composer unmounts on navigation — stage its
+                  // text like home send does, on a fresh thread (032 U2).
+                  const id = crypto.randomUUID();
+                  openThread(id);
+                  useThreadStore.getState().setDraft(id, message);
+                  setActiveThreadId(id);
+                  if (isMockMode()) {
+                    useThreadStore.getState().markUpdated(id, Date.now());
+                  }
                   setView({ name: "chat" });
                 }}
                 onBack={() => {
@@ -623,9 +686,7 @@ export default function App() {
             </Suspense>
           )}
           {view.name === "chat" && (
-            <div>
-              <h1 className="text-base">Clauro</h1>
-              {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
+            <div data-testid="chat-pane" className="flex h-full min-h-0 flex-col">
               <Suspense fallback={<ViewSkeleton label="Loading chat" />}>
                 <ChatView threadId={activeThreadId} />
               </Suspense>

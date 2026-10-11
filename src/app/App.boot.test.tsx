@@ -40,5 +40,8 @@ describe("App boot skeleton", () => {
     resolveBoot?.({ kind: "present", version: "test" });
     expect(await screen.findByTestId("home-header")).toBeDefined();
     expect(screen.queryByTestId("boot-skeleton")).toBeNull();
-  });
+  },
+  // Lazy view chunks resolve post-render: exceeds the 5s default under
+  // full-suite parallel load (passes in isolation in ~18s).
+  30000);
 });
