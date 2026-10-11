@@ -86,6 +86,10 @@ describe("mock-tauri seed serving (029 slice 2)", () => {
     await expect(invoke("no_such_command_xyz")).rejects.toThrow(/has no mock for invoke/);
   });
 
+  it("artifact_latest resolves honest null (no producer in harness)", async () => {
+    await expect(invoke("artifact_latest", { threadId: "c1" })).resolves.toBeNull();
+  });
+
   it("turn_start streams a scripted reply: thinking, word deltas, then done", async () => {
     vi.useFakeTimers();
     try {

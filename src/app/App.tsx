@@ -307,9 +307,12 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
   const [providersOpen, setProvidersOpen] = useState(false);
+  // The thread on screen (Task 031 T8): home/new-chat targets THREAD, rail
+  // selection targets the clicked id — the old code always rendered THREAD.
+  const [activeThreadId, setActiveThreadId] = useState<string>(THREAD);
   const openSettings = useSettingsStore((s) => s.openSettings);
   const displayName = useSettingsStore((s) => s.displayName);
-  const artifactContent = useArtifactContent((s) => s.threads[THREAD]);
+  const artifactContent = useArtifactContent((s) => s.threads[activeThreadId]);
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
@@ -420,25 +423,51 @@ export default function App() {
     view.name === "project" && project ? mockDetailProps(mockSeed?.rail ?? null, project.id) : null;
   const title =
     view.name === "chat"
-      ? "First thread"
+      ? (threadTitle(activeThreadId) ?? "New chat")
       : view.name === "project"
         ? (project?.name ?? "Project")
         : view.name === "projects"
           ? "Projects"
           : undefined;
 
+  function threadTitle(id: string): string | undefined {
+    const flat = railChats?.find((t) => t.id === id)?.title;
+    if (flat !== undefined) return flat;
+    for (const ts of Object.values(railThreadsByProject)) {
+      const hit = ts.find((t) => t.id === id)?.title;
+      if (hit !== undefined) return hit;
+    }
+    return undefined;
+  }
+
   // Home send routes through the thread store (it owns threads) into the
   // chat view. The turn loop (023) owns dispatch from there; the old `noop`
   // dead-end is gone. Ctrl+N rides the same path (useNewChatHotkey above).
   function goChat(): void {
     openThread(THREAD);
+    setActiveThreadId(THREAD);
     if (isMockMode()) {
       useThreadStore.getState().markUpdated(THREAD, Date.now());
     }
     setView({ name: "chat" });
   }
 
-  function handleHomeSend(): void {
+  function openThreadView(id: string): void {
+    openThread(id);
+    setActiveThreadId(id);
+    // Viewed-on-open (Task 029 B11): the click is the signal. openThread
+    // above guarantees existence, so markRead cannot throw here.
+    markRead(id, Date.now());
+    setView({ name: "chat" });
+  }
+
+  function handleHomeSend(text: string): void {
+    // The home composer unmounts on navigation — stage its text so the chat
+    // view sends it once on mount instead of dropping it (Task 031 T8).
+    if (text.trim() !== "") {
+      openThread(THREAD);
+      useThreadStore.getState().setDraft(THREAD, text);
+    }
     goChat();
   }
 
@@ -449,7 +478,7 @@ export default function App() {
         <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
       </Suspense>
       <Suspense fallback={null}>
-        <SettingsDialog threadId={THREAD} />
+        <SettingsDialog threadId={activeThreadId} />
       </Suspense>
       <Dialog
         open={providersOpen}
@@ -482,16 +511,12 @@ export default function App() {
             chats={railChats}
             now={mockSeed?.now}
             statusByThread={statusByThread}
+            activeThreadId={activeThreadId}
             onSelectProject={(id) => {
               setView({ name: "project", id });
             }}
             onSelectThread={(id) => {
-              setView({ name: "chat" });
-              // Viewed-on-open (Task 029 B11): the click is the signal.
-              // Guard on existence — markRead throws for unknown ids.
-              if (useThreadStore.getState().threads[id] !== undefined) {
-                markRead(id, Date.now());
-              }
+              openThreadView(id);
             }}
             onSearch={() => {
               setPaletteOpen(true);
@@ -602,7 +627,7 @@ export default function App() {
               <h1 className="text-base">Clauro</h1>
               {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
               <Suspense fallback={<ViewSkeleton label="Loading chat" />}>
-                <ChatView threadId={THREAD} />
+                <ChatView threadId={activeThreadId} />
               </Suspense>
             </div>
           )}
@@ -613,7 +638,7 @@ export default function App() {
             producer's store (D121); empty means nothing has been produced. */}
         <Suspense fallback={null}>
           <ArtifactDrawer
-            threadId={THREAD}
+            threadId={activeThreadId}
             engine={{ platform: "windows", opaqueProven: true }}
             source={artifactContent?.source ?? ""}
             mediaType={artifactContent?.mediaType ?? "text/html"}

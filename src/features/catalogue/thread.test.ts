@@ -147,3 +147,27 @@ describe("thread read-state (Task 029 slice 3)", () => {
     }
   });
 });
+
+describe("thread staged drafts (Task 031 T8)", () => {
+  it("setDraft stores trimmed text; blank is refused, never stored", () => {
+    const s = useThreadStore.getState();
+    s.setDraft("t1", "  hello home  ");
+    expect(useThreadStore.getState().consumeDraft("t1")).toBe("hello home");
+    expect(() => {
+      useThreadStore.getState().setDraft("t1", "   ");
+    }).toThrow(/blank draft/);
+    expect(useThreadStore.getState().consumeDraft("t1")).toBeNull();
+  });
+
+  it("consumeDraft takes once: second take is null", () => {
+    useThreadStore.getState().setDraft("t1", "once");
+    expect(useThreadStore.getState().consumeDraft("t1")).toBe("once");
+    expect(useThreadStore.getState().consumeDraft("t1")).toBeNull();
+  });
+
+  it("reset clears staged drafts with everything else", () => {
+    useThreadStore.getState().setDraft("t1", "staged");
+    useThreadStore.getState().reset();
+    expect(useThreadStore.getState().consumeDraft("t1")).toBeNull();
+  });
+});

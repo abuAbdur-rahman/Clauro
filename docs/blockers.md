@@ -20,7 +20,7 @@
 - [ ] B09 No inline rename; no move-to-project submenu.
 - [ ] B10 No active-row 3px accent bar.
 - [x] B11 Thread status indicator — DONE Task 029 (rail UI + `thread.ts` `statusOf/markRead/markUpdated/setRunning` + `App.tsx` wiring `statusByThread`/viewed-on-open; `thread.test.ts` +10, indicator 2/2).
-- [ ] B12 New chat `noop` (`App.tsx:115`); Ctrl+N missing; home `onSend={noop}` (`App.tsx:144`) dead-ends.
+- [x] B12 Send dead-ends — DONE Task 031 T8 (home text stages via store drafts + auto-sends on chat mount; rail selection opens the clicked thread id; `artifact_latest` honest null in mock; Ctrl+N wired).
 
 ## P2 — chat/transcript/composer
 
