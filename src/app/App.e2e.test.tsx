@@ -5,6 +5,14 @@ import { render, screen, cleanup, within } from "@testing-library/react";
 import App from "./App";
 import { useThreadStore } from "../features/catalogue/thread";
 
+// Radix positioning needs this in jsdom (same stub as the rail/composer suites).
+class MockResizeObserver {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
 vi.mock("../features/catalogue/catalogue", () => ({
   refreshCatalogue: () =>
     Promise.resolve({ state: "live", models: 1, catalogue: { providers: {} } }),
@@ -117,7 +125,23 @@ describe("App dual-mode shell e2e", () => {
     await user.click(screen.getByRole("button", { name: /send/i }));
     expect(await screen.findByTestId("transcript-empty")).toBeDefined();
     expect(useThreadStore.getState().threads["thread-001"]?.open).toBe(true);
-  });
+    // The home text is staged for the chat view, not dropped on navigation.
+    expect(useThreadStore.getState().drafts["thread-001"]).toBe("hello clauro");
+  },
+  // Full-App render + type + click: exceeds the 5s default under full-suite
+  // parallel load (passes in isolation in ~10s).
+  30000);
+
+  it("rail selection opens that thread, not a hardcoded one", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    render(<App />);
+    await user.click(await screen.findByTestId("thread-row-thread-001"));
+    expect(await screen.findByTestId("transcript-empty")).toBeDefined();
+    expect(screen.getByTestId("app-titlebar").textContent).toContain("First thread");
+  },
+  // Full-App render + click: exceeds the 5s default under full-suite
+  // parallel load.
+  30000);
 
   it("providers opens as a modal, never an inline page", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();

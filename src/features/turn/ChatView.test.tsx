@@ -114,8 +114,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("send with a model starts a turn with the thread's parameters", async () => {
-    const user = userEvent.setup();
+  it("send with a model starts a turn with the thread's parameters", async () => {    const user = userEvent.setup();
     selectModel();
     vi.mocked(transcriptRead).mockResolvedValue([]);
     vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
@@ -132,6 +131,31 @@ describe("ChatView", () => {
         }),
       );
     });
+  });
+
+  it("sends a staged home-composer draft once on mount", async () => {
+    selectModel();
+    useThreadStore.getState().setDraft(THREAD, "hello from home");
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalledWith(
+        expect.objectContaining({ threadId: THREAD, text: "hello from home" }),
+      );
+    });
+    expect(useThreadStore.getState().consumeDraft(THREAD)).toBeNull();
+  });
+
+  it("parks a staged draft until a model is present (never lost to a notice)", async () => {
+    useThreadStore.getState().setDraft(THREAD, "parked text");
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+    });
+    expect(turnStart).not.toHaveBeenCalled();
+    expect(useThreadStore.getState().consumeDraft(THREAD)).toBe("parked text");
   });
 
   it("streams text deltas into a live row while the turn runs", async () => {

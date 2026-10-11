@@ -74,6 +74,19 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
     };
   }, [threadId]);
 
+  // Task 031 T8: staged home-composer text sends once a model is present.
+  // Consuming only when `model != null` keeps the draft parked (never lost
+  // to a "select a model" notice) until the turn can actually start. The
+  // effect re-runs only when the thread or its model changes; after the first
+  // pickup consumeDraft returns null, so later model switches are no-ops.
+  useEffect(() => {
+    if (model === null || runningRef.current) return;
+    const staged = useThreadStore.getState().consumeDraft(threadId);
+    if (staged !== null) {
+      void send(staged);
+    }
+  }, [threadId, model]);
+
   useEffect(() => {
     runningRef.current = false;
     setRunning(false);

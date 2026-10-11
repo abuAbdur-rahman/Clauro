@@ -152,6 +152,11 @@ export function invoke(cmd: string, args?: Record<string, unknown>): Promise<unk
       return Promise.resolve(scheduleMockTurn(threadIdOf(args, "c1"), mockUserText(args), bare));
     case "turn_stop":
       return Promise.resolve(true);
+    case "artifact_latest":
+      // No artifact producer in the harness: honest null (turn.ts maps null
+      // to "no artifact", never an error). Seeded artifact *replies* still
+      // arrive as chat text with artifact cards via the turn stream.
+      return Promise.resolve(null);
     case "artifact_csp":
       return Promise.resolve("default-src 'none'; script-src 'nonce-browser-harness'");
     // D123: there is no Rust registry in the browser harness, so the document

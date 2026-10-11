@@ -46,9 +46,17 @@ interface ThreadStore {
   threads: Record<string, ThreadState | undefined>;
   /** Ids of threads currently streaming/compacting. */
   running: string[];
+  /** Unsent home-composer text per thread (Task 031 T8): home send navigates
+      away, unmounting the composer — the text rides here, and the chat view
+      sends it once on mount, then forgets it. */
+  drafts: Record<string, string | undefined>;
   openThread: (id: string) => void;
   selectModel: (id: string, model: ModelWithLimits) => void;
   setEffort: (id: string, effort: Effort) => void;
+  /** Stage home-composer text for pickup by the chat view. Blank is refused. */
+  setDraft: (id: string, text: string) => void;
+  /** Take + clear a staged draft. Null when none was staged. */
+  consumeDraft: (id: string) => string | null;
   /** Viewed-on-open mark; defaults to now so callers can pass explicit time. */
   markRead: (id: string, now?: number) => void;
   /** Turn-done update stamp; defaults to now so callers can pass explicit time. */
@@ -64,6 +72,7 @@ const SYSTEM_PROMPT = "You are Clauro. Context may be lost, so record progress a
 export const useThreadStore = create<ThreadStore>()((set, get) => ({
   threads: {},
   running: [],
+  drafts: {},
 
   openThread: (id) => {
     set((s) => ({
@@ -104,7 +113,23 @@ export const useThreadStore = create<ThreadStore>()((set, get) => ({
   },
 
   reset: () => {
-    set({ threads: {}, running: [] });
+    set({ threads: {}, running: [], drafts: {} });
+  },
+
+  setDraft: (id, text) => {
+    const trimmed = text.trim();
+    if (trimmed === "") throw new Error("refusing blank draft: nothing to pick up");
+    set((s) => ({ drafts: { ...s.drafts, [id]: trimmed } }));
+  },
+
+  consumeDraft: (id) => {
+    const text = get().drafts[id] ?? null;
+    if (text !== null) {
+      set((s) => ({
+        drafts: Object.fromEntries(Object.entries(s.drafts).filter(([key]) => key !== id)),
+      }));
+    }
+    return text;
   },
 
   markRead: (id, now = Date.now()) => {
