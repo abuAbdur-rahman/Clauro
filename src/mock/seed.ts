@@ -287,3 +287,47 @@ export function pickMockReply(text: string, index: number): SeedReply {
   }
   return SEED_REPLIES[index % SEED_REPLIES.length];
 }
+
+/**
+ * Task 031 T5 — seed transcript for one chat. A copy of the seed messages,
+ * or the honest empty when the id is unknown (blockers B18 rule: never fake
+ * rows for ids the seed does not own).
+ */
+export function mockTranscript(chatId: string): SeedMessage[] {
+  const chat = SEED_CHATS.find((c) => c.id === chatId);
+  if (chat === undefined) return [];
+  return chat.messages.map((m) => ({ role: m.role, text: m.text }));
+}
+
+/**
+ * Task 031 T5 — the default mock model (`SEED_DEFAULT_MODEL`, "p2:claude-sonnet")
+ * in the structural shape the thread store's `selectModel` accepts. Restated
+ * here (not imported from the catalogue) so the mock seed never depends on
+ * real modules — the dependency points mock → nothing.
+ */
+export interface MockModelSelection {
+  provider: string;
+  id: string;
+  name: string;
+  contextWindow: number;
+  maxOutput: number;
+  reasoning: boolean;
+  toolCall: boolean;
+}
+
+export function defaultMockModel(): MockModelSelection {
+  const [provider, ...rest] = SEED_DEFAULT_MODEL.split(":");
+  const id = rest.join(":");
+  const meta: { ctx: number; tags: string[] } | undefined = (
+    SEED_MODEL_META as Record<string, { ctx: number; tags: string[] } | undefined>
+  )[id];
+  return {
+    provider,
+    id,
+    name: id,
+    contextWindow: meta?.ctx ?? 128_000,
+    maxOutput: 8192,
+    reasoning: meta?.tags.includes("reasoning") ?? false,
+    toolCall: true,
+  };
+}

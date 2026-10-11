@@ -7,17 +7,35 @@
  * the same convention as App's intent collection.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Command,
+  Folder,
+  Layers,
+  MessageSquare,
+  PanelLeft,
+  Plug,
+  Plus,
+  Search,
+  SearchX,
+  Settings as SettingsIcon,
+  SunMoon,
+  type LucideIcon,
+} from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   BUILTIN_ACTION_ITEMS,
   filterPalette,
   groupPalette,
+  itemSection,
   paletteActions,
   settingsPageItems,
   type PaletteItem,
+  type PaletteSection,
   type PaletteState,
 } from "./palette";
+import { Kbd, SETTINGS_SECTION_ICONS } from "../settings/SettingsDialog";
 import { useSettingsStore, type SettingsSection } from "./settings";
 import { useThreadStore } from "../catalogue/thread";
 import { useTheme } from "./usetheme";
@@ -45,6 +63,36 @@ const SETTING_IDS: readonly string[] = [
 
 function isSettingsSection(value: string): value is SettingsSection {
   return SETTING_IDS.includes(value);
+}
+
+/** Leading icons mirror the html palette (index.html:517-518): per-action
+ *  icons, message-square for chats, folder for projects, the settings page
+ *  icon for settings entries. Lucide only, one stroke weight. */
+const ACTION_ICONS: Partial<Record<string, LucideIcon>> = {
+  "action:new-chat": Plus,
+  "action:toggle-theme": SunMoon,
+  "action:open-settings": SettingsIcon,
+  "action:toggle-sidebar": PanelLeft,
+  "action:compact": Layers,
+  "action:add-provider": Plug,
+};
+
+const SECTION_ICONS: Record<PaletteSection, LucideIcon> = {
+  Actions: Command,
+  Chats: MessageSquare,
+  Projects: Folder,
+  Settings: SettingsIcon,
+};
+
+function itemIcon(item: PaletteItem): LucideIcon {
+  if (item.id.startsWith("settings:")) {
+    const page = item.id.slice("settings:".length);
+    if (isSettingsSection(page)) return SETTINGS_SECTION_ICONS[page];
+    return SettingsIcon;
+  }
+  const action = ACTION_ICONS[item.id];
+  if (action !== undefined) return action;
+  return SECTION_ICONS[itemSection(item)];
 }
 
 export function CommandPalette({
@@ -154,52 +202,66 @@ export function CommandPalette({
         if (!next) onClose();
       }}
     >
-      <DialogContent aria-label="command palette" className="sm:max-w-lg" data-testid="palette">
-        <DialogTitle>Palette</DialogTitle>
+      <DialogContent
+        aria-label="command palette"
+        className="gap-0 overflow-hidden p-0 sm:max-w-[560px]"
+        data-testid="palette"
+      >
+        <DialogTitle className="sr-only">Palette</DialogTitle>
         {m.blocked ? (
-          <p>{m.reason}</p>
+          <p className="px-4 py-6 text-sm text-muted-foreground">{m.reason}</p>
         ) : (
           <div>
-            <Input
-              ref={inputRef}
-              aria-label="Search palette"
-              aria-activedescendant={activeId}
-              aria-controls="palette-list"
-              role="combobox"
-              aria-expanded="true"
-              aria-autocomplete="list"
-              placeholder="Search chats, projects, settings, actions…"
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setIdx(0);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setIdx((i) => Math.min(i + 1, Math.max(0, visible.length - 1)));
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setIdx((i) => Math.max(i - 1, 0));
-                } else if (e.key === "Enter") {
-                  e.preventDefault();
-                  if (visible.length > 0) select(visible[safeIdx].id);
-                }
-              }}
-            />
+            <div
+              data-testid="palette-search-row"
+              className="flex h-12 items-center gap-2.5 border-b border-border px-3.5"
+            >
+              <Search size={16} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+              <input
+                ref={inputRef}
+                aria-label="Search palette"
+                aria-activedescendant={activeId}
+                aria-controls="palette-list"
+                role="combobox"
+                aria-expanded="true"
+                aria-autocomplete="list"
+                placeholder="Search chats, projects, settings, actions…"
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setIdx(0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setIdx((i) => Math.min(i + 1, Math.max(0, visible.length - 1)));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setIdx((i) => Math.max(i - 1, 0));
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (visible.length > 0) select(visible[safeIdx].id);
+                  }
+                }}
+                className="h-full w-full bg-transparent text-[15px] placeholder:text-muted-foreground"
+              />
+            </div>
             <div
               id="palette-list"
               role="listbox"
               aria-label="palette results"
-              className="mt-2 max-h-64 overflow-y-auto"
+              className="max-h-[50vh] overflow-y-auto p-1.5"
               data-testid="palette-list"
             >
               {groups.map(([section, list]) => (
                 <div key={section}>
-                  <div className="px-2 pt-2 text-xs font-medium text-neutral-500">{section}</div>
+                  <div className="px-2 pt-3 pb-1 text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+                    {section}
+                  </div>
                   <ul>
                     {list.map((i) => {
                       const selected = i.id === activeId;
+                      const Icon = itemIcon(i);
                       return (
                         <li key={i.id}>
                           <button
@@ -208,7 +270,7 @@ export function CommandPalette({
                             id={i.id}
                             aria-selected={selected}
                             data-testid={`palette-item-${i.id}`}
-                            className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-accent ${
+                            className={`flex h-9 w-full items-center gap-2.5 rounded px-2.5 text-left text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
                               selected ? "bg-accent" : ""
                             }`}
                             onMouseEnter={() => {
@@ -219,7 +281,8 @@ export function CommandPalette({
                               select(i.id);
                             }}
                           >
-                            {i.label}
+                            <Icon size={16} strokeWidth={1.75} aria-hidden="true" className="shrink-0 text-muted-foreground" />
+                            <span className="min-w-0 truncate">{i.label}</span>
                           </button>
                         </li>
                       );
@@ -227,9 +290,28 @@ export function CommandPalette({
                   </ul>
                 </div>
               ))}
-              {visible.length === 0 && <p className="px-2 py-4 text-sm text-neutral-500">No results</p>}
+              {visible.length === 0 && (
+                <div className="flex flex-col items-center gap-2 px-2 py-8 text-center">
+                  <SearchX size={20} strokeWidth={1.5} aria-hidden="true" className="text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">No results</p>
+                </div>
+              )}
             </div>
-            <p className="mt-2 text-xs text-neutral-500">↑↓ navigate · Enter select · Esc close</p>
+            <div
+              data-testid="palette-footer"
+              className="flex items-center gap-1.5 border-t border-border px-3.5 py-2 text-xs text-muted-foreground"
+            >
+              <span aria-hidden="true" className="flex items-center gap-1.5">
+                <ArrowUp size={12} strokeWidth={2} aria-hidden="true" />
+                <ArrowDown size={12} strokeWidth={2} aria-hidden="true" />
+                <span>navigate ·</span>
+                <Kbd>Enter</Kbd>
+                <span>select ·</span>
+                <Kbd>Esc</Kbd>
+                <span>close</span>
+              </span>
+              <span className="sr-only">navigate · Enter select · Esc close</span>
+            </div>
           </div>
         )}
       </DialogContent>

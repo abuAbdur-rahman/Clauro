@@ -108,6 +108,37 @@ describe("ProjectDetail", () => {
     expect(onDeleteFile).toHaveBeenCalledWith(0);
   });
 
+  it("back is an icon-only chevron button (no text glyph)", () => {
+    render(<ProjectDetail {...base} onBack={() => {}} />);
+    const back = screen.getByTestId("project-back");
+    expect(back.getAttribute("aria-label")).toBe("Back to projects");
+    expect(back.textContent.trim()).toBe("");
+    expect(back.querySelector("svg")).not.toBeNull();
+  });
+
+  it("composer send is an icon button with an accessible label", async () => {
+    const user = userEvent.setup();
+    render(<ProjectDetail {...base} onStartChat={() => {}} />);
+    const send = screen.getByTestId("project-composer-send");
+    expect(send.querySelector("svg")).not.toBeNull();
+    expect(send.getAttribute("aria-label")).toBe("Start chat");
+    await user.type(screen.getByTestId("project-composer"), "Hello");
+    expect(send.textContent.trim()).toBe("");
+  });
+
+  it("file delete is an icon button (no unicode glyph)", () => {
+    render(
+      <ProjectDetail
+        {...base}
+        files={[{ name: "a.pdf", sizeBytes: 1024 }]}
+        capacityBytes={2048}
+      />,
+    );
+    const del = screen.getByTestId("project-file-delete-0");
+    expect(del.querySelector("svg")).not.toBeNull();
+    expect(del.textContent.trim()).toBe("");
+  });
+
   it("labels sample capacity honestly when none is supplied", () => {
     render(<ProjectDetail {...base} files={[]} />);
     expect(screen.getByTestId("project-capacity-label").textContent).toContain("(sample capacity)");

@@ -108,6 +108,78 @@ describe("CommandPalette sections + search", () => {
   });
 });
 
+describe("CommandPalette html parity (031)", () => {
+  it("shows a search icon in the search row", async () => {
+    render(<CommandPalette state={{ turnRunning: false }} open={true} />);
+    await screen.findByTestId("palette-list");
+    const row = screen.getByTestId("palette-search-row");
+    expect(row.querySelector("svg")).toBeTruthy();
+  });
+
+  it("keeps the dialog title screen-reader-only", async () => {
+    render(<CommandPalette state={{ turnRunning: false }} open={true} />);
+    await screen.findByTestId("palette-list");
+    const title = document.querySelector('[data-slot="dialog-title"]');
+    expect(title?.classList.contains("sr-only")).toBe(true);
+  });
+
+  it("renders section headers as uppercase group labels", async () => {
+    render(
+      <CommandPalette
+        state={{ turnRunning: false }}
+        open={true}
+        chats={CHATS}
+        projects={PROJECTS}
+      />,
+    );
+    const list = await screen.findByTestId("palette-list");
+    const headers = within(list).getAllByText(/^(Actions|Chats|Projects|Settings)$/);
+    for (const h of headers) {
+      expect(h.className).toMatch("uppercase");
+    }
+  });
+
+  it("renders a leading icon in every item", async () => {
+    render(
+      <CommandPalette
+        state={{ turnRunning: false }}
+        open={true}
+        chats={CHATS}
+        projects={PROJECTS}
+      />,
+    );
+    await screen.findByTestId("palette-list");
+    for (const testid of [
+      "palette-item-action:new-chat",
+      "palette-item-chat:c1",
+      "palette-item-project:pr1",
+      "palette-item-settings:memory",
+    ]) {
+      expect(screen.getByTestId(testid).querySelector("svg")).toBeTruthy();
+    }
+  });
+
+  it("hints footer uses kbd chips for the keys", async () => {
+    render(<CommandPalette state={{ turnRunning: false }} open={true} />);
+    await screen.findByTestId("palette-list");
+    const footer = screen.getByTestId("palette-footer");
+    const kbds = within(footer).getAllByText(/^(Enter|Esc)$/);
+    expect(kbds).toHaveLength(2);
+    for (const k of kbds) {
+      expect(k.tagName).toBe("KBD");
+    }
+  });
+
+  it("empty state pairs an icon with No results", async () => {
+    const user = userEvent.setup();
+    render(<CommandPalette state={{ turnRunning: false }} open={true} />);
+    await screen.findByTestId("palette-list");
+    await user.type(screen.getByPlaceholderText(/search/i), "zzz-no-such-thing");
+    const empty = await screen.findByText("No results");
+    expect(empty.closest("div")?.querySelector("svg")).toBeTruthy();
+  });
+});
+
 describe("CommandPalette keyboard + close", () => {
   it("arrow nav + Enter selects, calls onAction, and closes", async () => {
     const user = userEvent.setup();

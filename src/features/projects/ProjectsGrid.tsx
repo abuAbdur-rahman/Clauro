@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -143,22 +144,23 @@ export function ProjectsGrid({
   );
   return (
     <div>
-      <div className="mb-4 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between">
         <h1 className="font-serif text-2xl text-neutral-100">Projects</h1>
-        <div className="flex items-center gap-2">
-          <Input
-            aria-label="Search projects"
-            data-testid="project-search"
-            placeholder="Search projects"
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-            }}
-            className="w-48"
-          />
-          <Button onClick={onNew}>New project</Button>
-        </div>
+        <Button onClick={onNew}>
+          <Plus aria-hidden="true" />
+          New project
+        </Button>
       </div>
+      <Input
+        aria-label="Search projects"
+        data-testid="project-search"
+        placeholder="Search projects"
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+        }}
+        className="mb-4"
+      />
       <div
         data-testid="projects-grid"
         className="grid gap-4"
@@ -171,8 +173,12 @@ export function ProjectsGrid({
               ? formatChatCount(chatCountByProject[p.id] ?? 0)
               : `${formatChatCount(chatCountByProject[p.id] ?? 0)} · ${updated}`;
           return (
-            <Card key={p.id} data-testid={`project-card-${p.id}`}>
-              <CardHeader>
+            <Card
+              key={p.id}
+              data-testid={`project-card-${p.id}`}
+              className="min-h-[120px] transition-colors hover:bg-accent/50"
+            >
+              <CardHeader className="flex-1">
                 <CardTitle>
                   <button
                     type="button"
@@ -193,7 +199,10 @@ export function ProjectsGrid({
                 {projectDescription(p) !== "" && (
                   <CardDescription>{projectDescription(p)}</CardDescription>
                 )}
-                <p data-testid={`project-meta-${p.id}`} className="text-xs text-neutral-400">
+                <p
+                  data-testid={`project-meta-${p.id}`}
+                  className="mt-auto pt-2 text-xs text-neutral-400"
+                >
                   {meta}
                 </p>
               </CardHeader>

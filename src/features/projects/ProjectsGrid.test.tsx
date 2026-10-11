@@ -77,6 +77,12 @@ describe("ProjectsGrid", () => {
     expect(onOpen).toHaveBeenCalledWith("b");
   });
 
+  it("new-project action carries a lucide icon (html parity)", () => {
+    render(<ProjectsGrid projects={projs} onNew={() => {}} onOpen={() => {}} />);
+    const action = screen.getByRole("button", { name: /new project/i });
+    expect(action.querySelector("svg")).not.toBeNull();
+  });
+
   it("new-project dialog requires a name, then creates", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn();

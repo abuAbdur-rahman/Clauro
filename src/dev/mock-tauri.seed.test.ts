@@ -4,8 +4,8 @@
  * Failing-first: provider_list 3, transcript_read c1, turn_start echo,
  * unknown rejects. Seed always on in mock mode; `?seed=0` gives bare shell.
  */
-import { beforeEach, describe, expect, it } from "vitest";
-import { invoke } from "./mock-tauri";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { invoke, listen } from "./mock-tauri";
 import { SEED_CHATS, SEED_NOW } from "@/mock/seed";
 
 function setQuery(q: string): void {
@@ -84,5 +84,128 @@ describe("mock-tauri seed serving (029 slice 2)", () => {
 
   it("unknown command still rejects loudly", async () => {
     await expect(invoke("no_such_command_xyz")).rejects.toThrow(/has no mock for invoke/);
+  });
+
+  it("turn_start streams a scripted reply: thinking, word deltas, then done", async () => {
+    vi.useFakeTimers();
+    try {
+      const threadId = "stream-t1";
+      const events: Array<{ thread_id: string; event: { type: string; text?: string } }> = [];
+      const dones: Array<Record<string, unknown>> = [];
+      const offEvents = await listen("clauro://turn-event", (envelope) => {
+        events.push(envelope.payload as { thread_id: string; event: { type: string; text?: string } });
+      });
+      const offDone = await listen("clauro://turn-done", (envelope) => {
+        dones.push(envelope.payload as Record<string, unknown>);
+      });
+      try {
+        const ack = (await invoke("turn_start", {
+          threadId,
+          text: "help with code",
+          provider: "p2",
+          model: "claude-sonnet",
+          effort: "medium",
+          maxTokens: 100,
+        })) as { thread_id: string };
+        expect(ack.thread_id).toBe(threadId);
+        await vi.advanceTimersByTimeAsync(10_000);
+        const mine = events.filter((e) => e.thread_id === threadId);
+        expect(mine.length).toBeGreaterThan(1);
+        expect(mine[0].event.type).toBe("thinking_delta");
+        const deltas = mine.slice(1);
+        expect(deltas.every((d) => d.event.type === "text_delta")).toBe(true);
+        const streamed = deltas.map((d) => d.event.text ?? "").join("");
+        expect(streamed).toContain("debounce");
+        const myDones = dones.filter((d) => d["thread_id"] === threadId);
+        expect(myDones).toHaveLength(1);
+      } finally {
+        offEvents();
+        offDone();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("turn-done commits the scripted reply: the re-read converges on it", async () => {
+    vi.useFakeTimers();
+    try {
+      const threadId = "stream-persist";
+      const offDone = await listen("clauro://turn-done", () => {});
+      try {
+        await invoke("turn_start", { threadId, text: "help with code" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        const rows = (await invoke("transcript_read", { threadId })) as Array<{
+          block: { kind: string; text: string };
+          role: string;
+        }>;
+        expect(rows).toHaveLength(2);
+        expect(rows[0].role).toBe("user");
+        expect(rows[0].block.text).toBe("help with code");
+        expect(rows[1].role).toBe("assistant");
+        expect(rows[1].block.text).toContain("debounce");
+      } finally {
+        offDone();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("broadcasts to every subscriber: two listeners both receive the stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const threadId = "stream-broadcast";
+      const first: unknown[] = [];
+      const second: unknown[] = [];
+      const offFirst = await listen("clauro://turn-event", (envelope) => {
+        first.push(envelope.payload);
+      });
+      const offSecond = await listen("clauro://turn-event", (envelope) => {
+        second.push(envelope.payload);
+      });
+      try {
+        await invoke("turn_start", { threadId, text: "help with code" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        const mine = (arr: unknown[]): number =>
+          arr.filter((e) => (e as { thread_id: string }).thread_id === threadId).length;
+        expect(mine(first)).toBeGreaterThan(1);
+        expect(mine(second)).toBe(mine(first));
+      } finally {
+        offFirst();
+        offSecond();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("?seed=0 turn_start emits nothing (honest empty)", async () => {
+    setQuery("seed=0");
+    vi.useFakeTimers();
+    try {
+      const threadId = "stream-bare";
+      const events: Array<{ thread_id: string }> = [];
+      const dones: Array<{ thread_id: string }> = [];
+      const offEvents = await listen("clauro://turn-event", (envelope) => {
+        events.push(envelope.payload as { thread_id: string });
+      });
+      const offDone = await listen("clauro://turn-done", (envelope) => {
+        dones.push(envelope.payload as { thread_id: string });
+      });
+      try {
+        await invoke("turn_start", { threadId, text: "hello", provider: "p2", model: "x" });
+        await vi.advanceTimersByTimeAsync(10_000);
+        // Filter to this thread: earlier tests' real-timer leftovers may still
+        // land in the shared channel for their own thread ids.
+        expect(events.filter((e) => e.thread_id === threadId)).toEqual([]);
+        expect(dones.filter((d) => d.thread_id === threadId)).toEqual([]);
+      } finally {
+        offEvents();
+        offDone();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

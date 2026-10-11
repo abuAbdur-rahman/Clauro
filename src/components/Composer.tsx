@@ -1,8 +1,12 @@
 /**
- * Composer shell (Task 027). Textarea plus the footer action row: attach,
- * memory toggle, thinking-effort select, provider-grouped model picker,
- * disabled voice, send/stop, live token estimate, slash-command menu,
- * and markdown wrap keys.
+ * Composer shell (Task 027, polished Task 031 T7). Textarea plus the footer
+ * action row: attach, memory toggle, thinking-effort select, provider-grouped
+ * model picker, disabled voice, send/stop, live token estimate, slash-command
+ * menu, and markdown wrap keys.
+ *
+ * Icon-only buttons carry no visible text: the tooltip carries the TEXT label
+ * (memory on/off, web search, thinking level, send/stop). Hints on the dark
+ * card read neutral-400 or brighter (4.5:1 floor).
  *
  * Send is a callback prop — no turn loop exists yet (023 owns dispatch), so
  * the shell collects intent and hands it off. Voice renders disabled with
@@ -11,7 +15,14 @@
  * Suggestion chips live with the home surface (HomeGreeting), not here:
  * App/HomeGreeting are under another hand, so this file stays chip-free.
  */
-import { ArrowUpIcon, MicIcon, PlusIcon, SquareIcon } from "lucide-react";
+import {
+  ArrowUpIcon,
+  BrainIcon,
+  GlobeIcon,
+  MicIcon,
+  PlusIcon,
+  SquareIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useThreadStore, type Effort } from "../features/catalogue/thread";
 import ModelPicker from "./ModelPicker";
@@ -73,6 +84,9 @@ export default function Composer({
   const [composing, setComposing] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashOff, setSlashOff] = useState(false);
+  // Web search is composer-local request-parameter state (031 T7): visual
+  // only, no wire shape changes. On by default per the html reference.
+  const [webOn, setWebOn] = useState(true);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const pendingSel = useRef<{ start: number; end: number } | null>(null);
   const effort = useThreadStore((s) => s.threads[threadId]?.effort ?? "medium");
@@ -196,7 +210,7 @@ export default function Composer({
           className="absolute right-3 bottom-full left-3 z-10 mb-1 rounded-xl border border-neutral-800 bg-neutral-900 p-1"
         >
           {slashItems.length === 0 ? (
-            <p className="px-2 py-1.5 text-sm text-neutral-500">No matches</p>
+            <p className="px-2 py-1.5 text-sm text-neutral-400">No matches</p>
           ) : (
             slashItems.map((c, i) => (
               <button
@@ -261,22 +275,39 @@ export default function Composer({
             <Button
               type="button"
               variant={memoryOff === true ? "secondary" : "ghost"}
-              size="sm"
+              size="icon"
               aria-label="Memory"
               aria-pressed={memoryOff === true}
               onClick={() => {
                 onMemoryToggle?.();
               }}
             >
-              {memoryOff === true ? "Memory off" : "Memory on"}
+              <BrainIcon />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Per-chat memory toggle (locks after first send, D9)</TooltipContent>
+          <TooltipContent>{memoryOff === true ? "Memory off" : "Memory on"}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant={webOn ? "secondary" : "ghost"}
+              size="icon"
+              aria-label="Web search"
+              aria-pressed={webOn}
+              onClick={() => {
+                setWebOn((v) => !v);
+              }}
+            >
+              <GlobeIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{webOn ? "Web search on" : "Web search off"}</TooltipContent>
         </Tooltip>
         <div className="flex-1" />
         <span
           data-testid="token-hint"
-          className="text-xs text-neutral-500"
+          className="text-xs text-neutral-400"
           title="Approximate input size: characters ÷ 4"
         >
           ≈{tokens} token{tokens === 1 ? "" : "s"} · estimate
@@ -287,9 +318,14 @@ export default function Composer({
             setEffort(threadId, v as Effort);
           }}
         >
-          <SelectTrigger aria-label="Effort" size="sm" className="w-auto">
-            <SelectValue />
-          </SelectTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <SelectTrigger aria-label="Thinking level" size="sm" className="w-auto">
+                <SelectValue />
+              </SelectTrigger>
+            </TooltipTrigger>
+            <TooltipContent>Thinking level — request params only</TooltipContent>
+          </Tooltip>
           <SelectContent>
             {EFFORTS.map((e) => (
               <SelectItem key={e.value} value={e.value}>
@@ -310,19 +346,40 @@ export default function Composer({
           <TooltipContent>No voice — not ours (DESIGN.md §6)</TooltipContent>
         </Tooltip>
         {running ? (
-          <Button type="button" size="icon" aria-label="Stop" onClick={onStop}>
-            <SquareIcon />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                size="icon"
+                aria-label="Stop"
+                onClick={onStop}
+                className="rounded-full"
+              >
+                <SquareIcon />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Stop</TooltipContent>
+          </Tooltip>
         ) : (
-          <Button
-            type="button"
-            size="icon"
-            aria-label="Send"
-            disabled={empty}
-            onClick={send}
-          >
-            <ArrowUpIcon />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              {/* Disabled buttons take no pointer events, so the tooltip
+                  rides the wrapper (same pattern as Voice below). */}
+              <span className="inline-flex">
+                <Button
+                  type="button"
+                  size="icon"
+                  aria-label="Send"
+                  disabled={empty}
+                  onClick={send}
+                  className="rounded-full"
+                >
+                  <ArrowUpIcon />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>Send</TooltipContent>
+          </Tooltip>
         )}
       </div>
     </div>

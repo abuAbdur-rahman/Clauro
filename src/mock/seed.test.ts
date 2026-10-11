@@ -6,7 +6,9 @@ import {
   SEED_MEMORIES,
   SEED_PROJECTS,
   SEED_PROVIDERS,
+  defaultMockModel,
   groupChats,
+  mockTranscript,
   pickMockReply,
   threadStatus,
 } from "./seed";
@@ -40,5 +42,26 @@ describe("mock seed", () => {
     expect(threadStatus({ status: "idle", updatedAt: 2, lastReadAt: 1, running: false })).toBe("done");
     expect(threadStatus({ status: "idle", updatedAt: 2, lastReadAt: 0, running: false })).toBe("not-viewed");
     expect(threadStatus({ status: "idle", updatedAt: 1, lastReadAt: 1, running: false })).toBe("idle");
+  });
+
+  it("mockTranscript serves one chat's seed messages, honest empty for unknown", () => {
+    const rows = mockTranscript("c1");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].role).toBe("user");
+    expect(rows[0].text).toContain("debounce");
+    expect(rows[1].role).toBe("assistant");
+    expect(mockTranscript("no-such-chat")).toEqual([]);
+  });
+
+  it("defaultMockModel parses SEED_DEFAULT_MODEL into the thread-store shape", () => {
+    const [provider, id] = SEED_DEFAULT_MODEL.split(":");
+    const model = defaultMockModel();
+    expect(model.provider).toBe(provider);
+    expect(model.id).toBe(id);
+    expect(model.name).toBe(id);
+    expect(model.contextWindow).toBeGreaterThan(0);
+    expect(model.maxOutput).toBeGreaterThan(0);
+    expect(typeof model.reasoning).toBe("boolean");
+    expect(typeof model.toolCall).toBe("boolean");
   });
 });
