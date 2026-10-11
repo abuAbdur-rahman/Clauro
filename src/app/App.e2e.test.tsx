@@ -143,6 +143,23 @@ describe("App dual-mode shell e2e", () => {
   // parallel load.
   30000);
 
+  it("chat pane docks the composer: full-height column, transcript owns the scroll", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    render(<App />);
+    await user.click(await screen.findByTestId("thread-row-thread-001"));
+    const pane = await screen.findByTestId("chat-pane");
+    expect(pane.className).toContain("h-full");
+    expect(pane.className).toContain("flex-col");
+    const scroller = await screen.findByTestId("transcript-scroll");
+    expect(scroller.className).toContain("flex-1");
+    expect(scroller.className).toContain("overflow-y-auto");
+    const footer = await screen.findByTestId("composer-footer");
+    expect(footer.className).toContain("shrink-0");
+  },
+  // Full-App render + click: exceeds the 5s default under full-suite
+  // parallel load.
+  30000);
+
   it("providers opens as a modal, never an inline page", async () => {
     const user = (await import("@testing-library/user-event")).default.setup();
     render(<App />);

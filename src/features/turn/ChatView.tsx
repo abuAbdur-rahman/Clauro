@@ -12,10 +12,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import Composer from "../../components/Composer";
+import { ArrowDown } from "lucide-react";
+import { Progress } from "../../components/ui/progress";
 import { useThreadStore } from "../catalogue/thread";
 import { useArtifactProducer } from "../artifact/live";
 import { TranscriptView, ThinkingRegion } from "../transcript/TranscriptView";
-import type { RenderRow } from "../transcript/types";
+import type { ContentBlock, RenderRow } from "../transcript/types";
 import {
   listenTurnDone,
   listenTurnEvents,
@@ -25,6 +27,33 @@ import {
   turnStop,
 } from "./turn";
 
+/**
+ * Honest context estimate: characters summed across the transcript (plus the
+ * live streaming text) over the same ÷4 divisor the composer hint uses.
+ */
+function rowChars(block: ContentBlock): number {
+  switch (block.kind) {
+    case "text":
+    case "thinking":
+    case "notice":
+    case "summary":
+      return block.text.length;
+    case "tool_use":
+      return block.input_json.length;
+    case "tool_result":
+      return block.preview.length;
+    case "artifact_ref":
+      return block.title.length;
+    case "question_card":
+      return (
+        block.prompt.length +
+        (block.options ?? []).reduce((n, o) => n + o.label.length, 0)
+      );
+    case "compaction":
+      return 0;
+  }
+}
+
 export function ChatView({ threadId }: { threadId: string }): React.JSX.Element {
   const [rows, setRows] = useState<RenderRow[]>([]);
   const [streaming, setStreaming] = useState("");
@@ -32,9 +61,21 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const model = useThreadStore((s) => s.threads[threadId]?.model ?? null);
-  const effort = useThreadStore((s) => s.threads[threadId]?.effort ?? "medium");
   const streamingRef = useRef("");
   const runningRef = useRef(false);
+  // Stick-to-bottom (html truth): the transcript follows new rows only while
+  // the reader is near the bottom (<48px). Scrolling up parks the stick and
+  // raises "Jump to latest", which scrolls down and resumes it.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [stuck, setStuck] = useState(true);
+
+  // Context bar estimate (html truth): tokens ≈ chars/4 against the thread
+  // model's window, labelled as an estimate. Shown only when rows exist.
+  const contextWindow = model?.contextWindow ?? 200000;
+  const tokens = Math.ceil(
+    (rows.reduce((n, r) => n + rowChars(r.block), 0) + streaming.length) / 4,
+  );
+  const pct = Math.min(100, Math.round((tokens / contextWindow) * 100));
 
   const refresh = useCallback(async () => {
     try {
@@ -207,20 +248,53 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
     }
   }
 
+  function onTranscriptScroll() {
+    const el = scrollRef.current;
+    if (el === null) return;
+    setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 48);
+  }
+
+  // Follow new rows and streaming text while stuck; parked readers stay put.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el !== null && stuck) el.scrollTop = el.scrollHeight;
+  }, [rows, streaming, stuck]);
+
+  function jumpToLatest() {
+    const el = scrollRef.current;
+    if (el !== null) el.scrollTop = el.scrollHeight;
+    setStuck(true);
+  }
+
+  // Compact is intent-only: the turn loop (023) owns dispatch — the same
+  // event the palette and the shell hotkey emit (App.tsx).
+  function requestCompact() {
+    window.dispatchEvent(new CustomEvent("clauro:compact-request"));
+  }
+
+  // No attachment pipeline exists yet: the pick is honoured with a notice
+  // naming the files, never dropped silently.
+  function attach(files: File[]) {
+    if (files.length === 0) return;
+    const names = files.map((f) => f.name).join(", ");
+    setNotice(`Attached ${String(files.length)} file(s): ${names} — sending files is not wired yet.`);
+  }
+
   return (
-    <div data-testid="chat-view" className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col">
-      <p className="mt-1 shrink-0 text-xs text-neutral-500">
-        thread {threadId} · model{" "}
-        {model ? `${model.provider}/${model.id}` : "none"} · effort {effort}
-      </p>
+    <div data-testid="chat-view" className="relative mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col">
       {notice && (
         <p role="status" className="mt-2 shrink-0 text-xs text-amber-400">
           {notice}
         </p>
       )}
       {/* The ONLY vertical scroller (UI-GUIDE §3): the transcript grows here,
-          never the root. */}
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          never the root. The composer footer below is shrink-0: docked. */}
+      <div
+        ref={scrollRef}
+        data-testid="transcript-scroll"
+        onScroll={onTranscriptScroll}
+        className="mt-3 min-h-0 flex-1 overflow-y-auto"
+      >
         <TranscriptView
           rows={rows}
           streaming={streaming.length > 0 ? streaming : undefined}
@@ -234,27 +308,52 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
           </div>
         )}
       </div>
-      <div className="mt-4 shrink-0">
-        <Composer
-          threadId={threadId}
-          memoryOff={false}
-          onSend={(text) => {
-            void send(text);
-          }}
-        />
-        {running && (
-          <div className="mt-2 flex justify-center">
+      {!stuck && rows.length > 0 && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="absolute bottom-40 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-neutral-700 bg-neutral-900 px-3 py-1 text-xs text-neutral-200 shadow-lg hover:bg-neutral-800"
+        >
+          <ArrowDown size={12} strokeWidth={2} />
+          Jump to latest
+        </button>
+      )}
+      <div data-testid="composer-footer" className="mt-4 shrink-0">
+        {rows.length > 0 && (
+          <div
+            data-testid="context-bar"
+            title={`≈ ${String(tokens)} / ${String(contextWindow)} tokens · estimate`}
+            className="mb-2 flex items-center gap-2 text-xs text-neutral-400"
+          >
+            <span className="shrink-0">Context {String(pct)}% used</span>
+            <Progress value={pct} className="h-1 flex-1" />
+            <span className="shrink-0">
+              ≈{String(tokens)} tokens · estimate
+            </span>
             <button
               type="button"
-              onClick={() => {
-                void stop();
-              }}
-              className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
+              disabled={running}
+              onClick={requestCompact}
+              className="shrink-0 rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Stop
+              Compact
             </button>
           </div>
         )}
+        <Composer
+          threadId={threadId}
+          memoryOff={false}
+          running={running}
+          onSend={(text) => {
+            void send(text);
+          }}
+          onStop={() => {
+            void stop();
+          }}
+          onAttach={attach}
+          onCompact={requestCompact}
+        />
+        {/* Stop lives in the composer (send↔stop swap); no second button here. */}
         <p className="mt-2 text-center text-xs text-neutral-500">
           Clauro runs on your machine. Double-check important answers.
         </p>
