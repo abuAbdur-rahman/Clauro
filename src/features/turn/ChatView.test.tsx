@@ -8,7 +8,7 @@
  * not the transport. Listener callbacks are captured so tests can simulate a
  * streaming turn without a Tauri runtime.
  */
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatView } from "./ChatView";
@@ -58,6 +58,16 @@ function selectModel() {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Radix `use-size` (reached through the real Composer) needs ResizeObserver,
+  // which jsdom does not provide. Without it the whole render crashes and
+  // every test in this file fails for environmental reasons.
+  if (typeof globalThis.ResizeObserver === "undefined") {
+    globalThis.ResizeObserver = class {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+  }
   listeners.events = [];
   listeners.dones = [];
   useThreadStore.getState().reset();
@@ -356,5 +366,52 @@ describe("ChatView", () => {
       expect(useArtifactContent.getState().threads[THREAD]?.source).toBe("<h1>x</h1>");
     });
     expect(artifactLatest).toHaveBeenCalledWith(THREAD);
+  });
+});
+
+describe("ChatView mock mode (031 T5)", () => {
+  const realMode = import.meta.env.MODE;
+
+  function setMode(mode: string): void {
+    import.meta.env.MODE = mode;
+  }
+
+  beforeEach(() => {
+    setMode("mock");
+  });
+
+  afterEach(() => {
+    setMode(realMode);
+  });
+
+  it("auto-selects the seed model when none is chosen (no model-none dead-end)", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(useThreadStore.getState().threads[THREAD]?.model).not.toBeNull();
+    });
+    expect(useThreadStore.getState().threads[THREAD]?.model?.id).toBe("claude-sonnet");
+    expect(screen.queryByText(/select a model/i)).toBeNull();
+  });
+
+  it("send works without a pre-selected model once the seed model lands", async () => {
+    const user = userEvent.setup();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD }));
+    });
+    expect(screen.queryByText(/select a model/i)).toBeNull();
+  });
+
+  it("renders the honest empty state when the seed transcript is empty (?seed=0)", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+    });
   });
 });

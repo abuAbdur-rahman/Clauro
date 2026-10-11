@@ -275,6 +275,72 @@ describe("SettingsDialog", () => {
   });
 });
 
+describe("SettingsDialog html parity (031)", () => {
+  const NAV_LABELS = [
+    "General",
+    "Appearance",
+    "Providers",
+    "Models",
+    "Memory",
+    "Data",
+    "Shortcuts",
+    "About",
+  ];
+
+  it("pairs every nav entry with a lucide icon", () => {
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    const nav = screen.getByTestId("settings-nav");
+    for (const label of NAV_LABELS) {
+      const button = within(nav).getByRole("button", { name: label });
+      expect(button.querySelector("svg")).toBeTruthy();
+    }
+  });
+
+  it("keeps the dialog title screen-reader-only (no visible nav header)", () => {
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    const title = document.querySelector('[data-slot="dialog-title"]');
+    expect(title?.textContent).toBe("Settings");
+    expect(title?.classList.contains("sr-only")).toBe(true);
+  });
+
+  it("renders the active page heading at html h2 scale", () => {
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    const heading = screen.getByRole("heading", { level: 2, name: "General" });
+    expect(heading.className).toMatch("text-xl");
+  });
+
+  it("marks the accent swatch with a lucide check, never a unicode tick", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("appearance");
+    render(<SettingsDialog threadId="t1" />);
+    await user.click(screen.getByRole("button", { name: "Blue" }));
+    expect(screen.getByRole("button", { name: "Blue" }).querySelector("svg")).toBeTruthy();
+    expect(screen.queryByText("✓")).toBeNull();
+  });
+
+  it("renders memory row actions as named icon buttons", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("memory");
+    render(<SettingsDialog threadId="t1" />);
+    await user.type(screen.getByLabelText("Add a memory"), "Prefers short answers");
+    await user.click(screen.getByRole("button", { name: "Add memory" }));
+    const del = screen.getByRole("button", { name: /delete memory/i });
+    const edit = screen.getByRole("button", { name: /edit memory/i });
+    expect(del.querySelector("svg")).toBeTruthy();
+    expect(edit.querySelector("svg")).toBeTruthy();
+  });
+
+  it("pairs the models empty state with an icon", async () => {
+    useSettingsStore.getState().openSettings("models");
+    render(<SettingsDialog threadId="t1" />);
+    const empty = await screen.findByText(/no models/i);
+    expect(empty.closest("div")?.querySelector("svg")).toBeTruthy();
+  });
+});
+
 describe("filterSettingsSections", () => {
   it("matches labels and content keywords", () => {
     expect(filterSettingsSections("")).toHaveLength(8);

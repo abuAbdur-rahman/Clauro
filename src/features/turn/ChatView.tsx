@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Composer from "../../components/Composer";
 import { useThreadStore } from "../catalogue/thread";
 import { useArtifactProducer } from "../artifact/live";
-import { TranscriptView } from "../transcript/TranscriptView";
+import { TranscriptView, ThinkingRegion } from "../transcript/TranscriptView";
 import type { RenderRow } from "../transcript/types";
 import {
   listenTurnDone,
@@ -50,6 +50,29 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
     setNotice(reason);
   }, []);
   useArtifactProducer(threadId, onArtifactError);
+
+  // Task 031 T5: mock MODE auto-selects the seed model when the thread has
+  // none, so mock threads are never stuck on the "model none" dead-end. The
+  // seed loads through a dynamic relative import on this branch only — the
+  // real bundle stays mock-free (same pattern as App.tsx) and the real path
+  // never runs this effect.
+  useEffect(() => {
+    if (import.meta.env.MODE !== "mock") return;
+    if (useThreadStore.getState().threads[threadId] === undefined) {
+      useThreadStore.getState().openThread(threadId);
+    }
+    if (useThreadStore.getState().threads[threadId]?.model != null) return;
+    let cancelled = false;
+    void import("../../mock/seed").then((mod) => {
+      if (cancelled) return;
+      const store = useThreadStore.getState();
+      if (store.threads[threadId] === undefined) return;
+      store.selectModel(threadId, mod.defaultMockModel());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
 
   useEffect(() => {
     runningRef.current = false;
@@ -191,7 +214,11 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
           onQuestionAnswer={(toolCallId, answer) => answerQuestion(toolCallId, answer)}
         />
         {thinking && streaming.length === 0 && (
-          <p className="mt-2 text-xs text-neutral-500">Thinking…</p>
+          <div className="mt-2">
+            <ThinkingRegion
+              block={{ kind: "thinking", text: "Thinking…", signature: "", display: "summary" }}
+            />
+          </div>
         )}
       </div>
       <div className="mt-4 shrink-0">

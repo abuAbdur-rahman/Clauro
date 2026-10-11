@@ -11,11 +11,28 @@
  * Seed-derived tables (accents, shortcuts) are local copies, not imports.
  */
 import { useEffect, useState } from "react";
-import { Download, Moon, Sun, MonitorSmartphone } from "lucide-react";
+import {
+  Brain,
+  Check,
+  Cpu,
+  Database,
+  Download,
+  Info,
+  Keyboard,
+  LoaderCircle,
+  Moon,
+  Palette as PaletteIcon,
+  Pencil,
+  Plug,
+  Settings as SettingsIcon,
+  Sun,
+  MonitorSmartphone,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
 import {
@@ -31,16 +48,39 @@ import { providerList, providerModelsEnriched, type EnrichedModel } from "../pro
 import { useTheme } from "../shell/usetheme";
 import { useSettingsStore, type SettingsSection } from "../shell/settings";
 
-const SECTIONS: { id: SettingsSection; label: string; keywords: string }[] = [
-  { id: "general", label: "General", keywords: "display name language send auto-compact context bar system prompt" },
-  { id: "appearance", label: "Appearance", keywords: "theme accent font size density group dates preview" },
-  { id: "providers", label: "Providers", keywords: "api keys endpoints add provider" },
-  { id: "models", label: "Models", keywords: "default model visible temperature max tokens top p parameters" },
-  { id: "memory", label: "Memory", keywords: "remember enable ask search add edit delete clear export" },
-  { id: "data", label: "Data", keywords: "export import clear chats reset storage" },
-  { id: "shortcuts", label: "Shortcuts", keywords: "keyboard ctrl palette sidebar compact maximize" },
-  { id: "about", label: "About", keywords: "version status changelog licenses" },
+const SECTIONS: { id: SettingsSection; label: string; keywords: string; icon: LucideIcon }[] = [
+  { id: "general", label: "General", keywords: "display name language send auto-compact context bar system prompt", icon: SettingsIcon },
+  { id: "appearance", label: "Appearance", keywords: "theme accent font size density group dates preview", icon: PaletteIcon },
+  { id: "providers", label: "Providers", keywords: "api keys endpoints add provider", icon: Plug },
+  { id: "models", label: "Models", keywords: "default model visible temperature max tokens top p parameters", icon: Cpu },
+  { id: "memory", label: "Memory", keywords: "remember enable ask search add edit delete clear export", icon: Brain },
+  { id: "data", label: "Data", keywords: "export import clear chats reset storage", icon: Database },
+  { id: "shortcuts", label: "Shortcuts", keywords: "keyboard ctrl palette sidebar compact maximize", icon: Keyboard },
+  { id: "about", label: "About", keywords: "version status changelog licenses", icon: Info },
 ];
+
+/** Section icons, shared with the command palette's Settings group so both
+ *  surfaces name pages the same way (html PAGES, index.html:332). */
+export const SETTINGS_SECTION_ICONS: Record<SettingsSection, LucideIcon> = {
+  general: SettingsIcon,
+  appearance: PaletteIcon,
+  providers: Plug,
+  models: Cpu,
+  memory: Brain,
+  data: Database,
+  shortcuts: Keyboard,
+  about: Info,
+};
+
+/** kbd chip (html;font:12px mono,border-bottom-width:2px). Copy sits on
+ *  bg-background so muted-foreground keeps its ≥4.5:1 contrast. */
+export function Kbd({ children }: { children: React.ReactNode }): React.JSX.Element {
+  return (
+    <kbd className="rounded border border-b-2 border-border bg-background px-1.5 py-px font-mono text-[11px] text-muted-foreground">
+      {children}
+    </kbd>
+  );
+}
 
 /** Accent swatches. Values mirror the prototype palette verbatim (local copy:
  *  real code must never import `@/mock/seed`). */
@@ -97,22 +137,27 @@ function Row({
   label,
   desc,
   query,
+  fluid = false,
   children,
 }: {
   label: string;
   desc?: string;
   query: string;
+  /** Wide controls (theme tiles) take the free width like html `.rc.free`. */
+  fluid?: boolean;
   children: React.ReactNode;
 }): React.JSX.Element {
   const q = query.trim().toLowerCase();
   const hit = q !== "" && label.toLowerCase().includes(q);
   return (
-    <div className={`flex items-start justify-between gap-4 rounded-md px-2 py-3 ${hit ? "bg-accent" : ""}`}>
+    <div className={`flex items-center justify-between gap-4 rounded-md px-2 py-3 ${hit ? "bg-accent" : ""}`}>
       <div className="min-w-0">
-        <div className="text-sm">{label}</div>
+        <div className="text-sm font-medium">{label}</div>
         {desc && <div className="mt-0.5 text-xs text-muted-foreground">{desc}</div>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className={fluid ? "flex min-w-0 flex-1 items-center justify-end" : "flex w-[260px] shrink-0 items-center justify-end gap-2"}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -135,13 +180,13 @@ function Toggle({
       onClick={() => {
         onChange(!checked);
       }}
-      className={`relative h-5 w-9 rounded-full border border-border transition-colors ${
-        checked ? "bg-primary" : "bg-muted"
+      className={`relative h-5 w-10 shrink-0 rounded-full border transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+        checked ? "border-primary bg-primary" : "border-muted-foreground bg-background"
       }`}
     >
       <span
-        className={`absolute top-0.5 size-3.5 rounded-full bg-background transition-all ${
-          checked ? "left-[18px]" : "left-0.5"
+        className={`absolute top-[3px] size-3 rounded-full transition-all ${
+          checked ? "left-[23px] bg-primary-foreground" : "left-[3px] bg-muted-foreground"
         }`}
       />
     </button>
@@ -181,11 +226,9 @@ export function SettingsDialog({ threadId }: { threadId: string }): React.JSX.El
         className="h-[min(640px,calc(100dvh-2rem))] w-[min(920px,calc(100vw-2rem))] max-w-none gap-0 overflow-hidden p-0 sm:max-w-[min(920px,calc(100vw-2rem))]"
       >
         <div className="flex h-full min-h-0">
-          <nav aria-label="Settings sections" className="w-[220px] shrink-0 overflow-y-auto border-r border-border p-2">
-            <DialogHeader className="px-2 pb-2 text-left">
-              <DialogTitle className="text-sm">Settings</DialogTitle>
-            </DialogHeader>
-            <div className="px-2 pb-2">
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <nav aria-label="Settings sections" className="w-[220px] shrink-0 overflow-y-auto border-r border-border bg-muted/40 p-3">
+            <div className="pb-2">
               <input
                 aria-label="Search settings"
                 placeholder="Search settings"
@@ -194,10 +237,10 @@ export function SettingsDialog({ threadId }: { threadId: string }): React.JSX.El
                 onChange={(e) => {
                   setQuery(e.target.value);
                 }}
-                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-8 w-full rounded-lg border border-border bg-background px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
               />
             </div>
-            <ul className="flex flex-col gap-1" data-testid="settings-nav">
+            <ul className="flex flex-col gap-0.5" data-testid="settings-nav">
               {visibleSections.map((s) => (
                 <li key={s.id}>
                   <button
@@ -206,20 +249,21 @@ export function SettingsDialog({ threadId }: { threadId: string }): React.JSX.El
                     onClick={() => {
                       setSection(s.id);
                     }}
-                    className={`w-full rounded-md px-3 py-2 text-left text-sm hover:bg-accent ${
-                      s.id === section ? "bg-accent font-medium" : ""
+                    className={`flex h-[34px] w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm hover:bg-accent ${
+                      s.id === section ? "bg-accent font-semibold" : ""
                     }`}
                   >
+                    <s.icon size={16} strokeWidth={1.75} aria-hidden="true" className="shrink-0" />
                     {s.label}
                   </button>
                 </li>
               ))}
               {visibleSections.length === 0 && (
-                <li className="px-3 py-2 text-xs text-muted-foreground">No matches</li>
+                <li className="px-2.5 py-2 text-xs text-muted-foreground">No matches</li>
               )}
             </ul>
           </nav>
-          <div className="min-w-0 flex-1 overflow-y-auto p-4">
+          <div className="min-w-0 flex-1 overflow-y-auto p-6">
             {section === "general" && <GeneralPane query={q} />}
             {section === "appearance" && <AppearancePane query={q} />}
             {section === "providers" && <ProvidersPane />}
@@ -243,8 +287,8 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
   const [showContext, setShowContext] = useLocalFlag("clauro.prefs.showContext", true);
   return (
     <div data-testid="settings-page-general">
-      <h2 className="text-sm font-medium">General</h2>
-      <div className="mt-2 divide-y divide-border">
+      <h2 className="mb-4 text-xl font-semibold">General</h2>
+      <div className="divide-y divide-border">
         <Row label="Display name" desc="Used in the greeting and profile" query={query}>
           <input
             aria-label="Display name"
@@ -252,13 +296,13 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
             onChange={(e) => {
               setName(e.target.value);
             }}
-            className="w-48 rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </Row>
         <Row label="Language" query={query}>
           <select
             aria-label="Language"
-            className="w-48 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
           >
             <option>English</option>
             <option disabled>Español (soon)</option>
@@ -272,7 +316,7 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
             onChange={(e) => {
               setSendWith(e.target.value);
             }}
-            className="w-48 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
           >
             <option value="enter">Enter</option>
             <option value="ctrl">Ctrl+Enter</option>
@@ -293,7 +337,7 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
             onChange={(e) => {
               setSysPrompt(e.target.value);
             }}
-            className="w-48 rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </Row>
       </div>
@@ -318,13 +362,13 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
 
   return (
     <div data-testid="settings-page-appearance">
-      <h2 className="text-sm font-medium">Appearance</h2>
+      <h2 className="mb-4 text-xl font-semibold">Appearance</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         Theme follows the device unless pinned. White surfaces exist only in light mode.
       </p>
-      <div className="mt-2 divide-y divide-border">
-        <Row label="Theme" desc="Applies instantly" query={query}>
-          <div className="flex gap-2" role="radiogroup" aria-label="Theme">
+      <div className="divide-y divide-border">
+        <Row label="Theme" desc="Applies instantly" query={query} fluid>
+          <div className="flex gap-2.5" role="radiogroup" aria-label="Theme">
             {(
               [
                 { value: "system", label: "System", icon: MonitorSmartphone, preview: "system" },
@@ -340,13 +384,13 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
                 onClick={() => {
                   setMode(value);
                 }}
-                className={`flex flex-col items-center gap-1 rounded-md border border-border px-3 py-2 text-xs hover:bg-accent ${
-                  mode === value ? "border-ring font-medium" : ""
+                className={`flex w-[110px] flex-col items-center gap-1.5 rounded-lg border-2 p-2 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
+                  mode === value ? "border-ring font-medium" : "border-border"
                 }`}
               >
                 <span
                   aria-hidden="true"
-                  className={`h-8 w-14 rounded border border-border ${
+                  className={`h-10 w-full rounded border border-border ${
                     preview === "light"
                       ? "bg-white"
                       : preview === "dark"
@@ -355,14 +399,14 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
                   }`}
                 />
                 <span className="flex items-center gap-1">
-                  <Icon size={14} strokeWidth={1.75} />
+                  <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
                   {label}
                 </span>
               </button>
             ))}
           </div>
         </Row>
-        <Row label="Accent color" query={query}>
+        <Row label="Accent color" query={query} fluid>
           <div className="flex gap-2">
             {ACCENTS.map(([name, value]) => (
               <button
@@ -375,11 +419,11 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
                   pickAccent(value);
                 }}
                 style={{ background: value }}
-                className={`size-6 rounded-full border-2 text-white ${
+                className={`grid size-7 place-items-center rounded-full border-2 text-white focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
                   accent === value ? "border-ring" : "border-transparent"
                 }`}
               >
-                {accent === value ? "✓" : ""}
+                {accent === value ? <Check size={14} strokeWidth={2.5} aria-hidden="true" /> : null}
               </button>
             ))}
           </div>
@@ -404,7 +448,7 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
           The quick brown fox jumps over the lazy dog.
         </div>
         <Row label="Message density" query={query}>
-          <div className="flex gap-2" role="radiogroup" aria-label="Density">
+          <div className="inline-flex overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Density">
             {(
               [
                 { value: "comfortable", label: "Comfortable" },
@@ -419,8 +463,8 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
                 onClick={() => {
                   setDensity(value);
                 }}
-                className={`rounded-md border border-border px-3 py-2 text-xs hover:bg-accent ${
-                  density === value ? "border-ring font-medium" : ""
+                className={`px-3 py-1.5 text-xs focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:outline-none ${
+                  density === value ? "bg-primary font-medium text-primary-foreground" : "hover:bg-accent"
                 }`}
               >
                 {label}
@@ -440,7 +484,7 @@ function ProvidersPane(): React.JSX.Element {
   const openSettings = useSettingsStore((s) => s.openSettings);
   return (
     <div data-testid="settings-page-providers">
-      <h2 className="text-sm font-medium">Providers</h2>
+      <h2 className="mb-4 text-xl font-semibold">Providers</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         Bring your own API keys. Endpoints and keys are managed in the Providers surface; this
         dialog stays self-contained and only routes there through the settings store.
@@ -533,8 +577,8 @@ function ModelsPane({ query }: { query: string }): React.JSX.Element {
 
   return (
     <div data-testid="settings-page-models">
-      <h2 className="text-sm font-medium">Models</h2>
-      <div className="mt-2 divide-y divide-border">
+      <h2 className="mb-4 text-xl font-semibold">Models</h2>
+      <div className="divide-y divide-border">
         <Row label="Default model" desc="Used for new chats" query={query}>
           <select
             aria-label="Default model"
@@ -542,7 +586,7 @@ function ModelsPane({ query }: { query: string }): React.JSX.Element {
             onChange={(e) => {
               setDefaultModel(e.target.value);
             }}
-            className="w-48 rounded-md border border-border bg-background px-2 py-1.5 text-xs"
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs"
           >
             <option value="">Select a model</option>
             {(rows ?? []).map((r) => (
@@ -553,7 +597,18 @@ function ModelsPane({ query }: { query: string }): React.JSX.Element {
           </select>
         </Row>
       </div>
-      {notice && <p className="mt-2 text-xs text-muted-foreground">{notice}</p>}
+      {rows === null && (
+        <p className="flex items-center gap-2 px-2 py-6 text-xs text-muted-foreground">
+          <LoaderCircle size={14} strokeWidth={1.75} aria-hidden="true" className="animate-spin" />
+          Loading models…
+        </p>
+      )}
+      {rows !== null && rows.length === 0 && (
+        <div className="flex flex-col items-center gap-2 px-2 py-6 text-center">
+          <Cpu size={20} strokeWidth={1.5} aria-hidden="true" className="text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">{notice ?? "No models"}</p>
+        </div>
+      )}
       {(rows ?? []).length > 0 && (
         <table className="mt-2 w-full text-left text-xs">
           <thead>
@@ -647,8 +702,8 @@ function MemoryPane({ query }: { query: string }): React.JSX.Element {
 
   return (
     <div data-testid="settings-page-memory">
-      <h2 className="text-sm font-medium">Memory</h2>
-      <div className="mt-2 divide-y divide-border">
+      <h2 className="mb-4 text-xl font-semibold">Memory</h2>
+      <div className="divide-y divide-border">
         <Row label="Enable memory" desc="Clauro can remember things you tell it" query={query}>
           <Toggle checked={enabled} onChange={setEnabled} label="Enable memory" />
         </Row>
@@ -729,36 +784,41 @@ function MemoryPane({ query }: { query: string }): React.JSX.Element {
           ) : (
             <div key={m.id} className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 hover:bg-accent">
               <span className="min-w-0 truncate text-xs">{m.text}</span>
-              <span className="flex shrink-0 gap-1">
+              <span className="flex shrink-0 gap-0.5">
                 <button
                   type="button"
                   aria-label={`Edit memory ${m.text}`}
+                  title="Edit memory"
                   onClick={() => {
                     setEditing(m.id);
                     setEditText(m.text);
                   }}
-                  className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-background"
+                  className="rounded p-1.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
-                  Edit
+                  <Pencil size={14} strokeWidth={1.75} aria-hidden="true" />
                 </button>
                 <button
                   type="button"
                   aria-label={`Delete memory ${m.text}`}
+                  title="Delete memory"
                   onClick={() => {
                     setEntries((prev) => prev.filter((e) => e.id !== m.id));
                   }}
-                  className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-background"
+                  className="rounded p-1.5 text-muted-foreground hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                 >
-                  Delete
+                  <Trash2 size={14} strokeWidth={1.75} aria-hidden="true" />
                 </button>
               </span>
             </div>
           ),
         )}
         {shown.length === 0 && (
-          <p className="px-2 py-3 text-xs text-muted-foreground">
-            {entries.length === 0 ? "No memories yet. Add one above." : "No memories match."}
-          </p>
+          <div className="flex flex-col items-center gap-2 px-2 py-6 text-center">
+            <Brain size={20} strokeWidth={1.5} aria-hidden="true" className="text-muted-foreground" />
+            <p className="text-xs text-muted-foreground">
+              {entries.length === 0 ? "No memories yet. Add one above." : "No memories match."}
+            </p>
+          </div>
         )}
       </div>
       {note && (
@@ -879,8 +939,8 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
 
   return (
     <div data-testid="settings-page-data">
-      <h2 className="text-sm font-medium">Data</h2>
-      <div className="mt-2 divide-y divide-border">
+      <h2 className="mb-4 text-xl font-semibold">Data</h2>
+      <div className="divide-y divide-border">
         <Row label="Export this thread" desc="Thinking stripped; key-shaped content blocks the write" query={query}>
           <span className="flex gap-2">
             <button
@@ -946,7 +1006,7 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
         </Row>
       </div>
       {status && (
-        <p role="status" className="mt-2 px-2 text-xs text-amber-400">
+        <p role="status" className="mt-2 px-2 text-xs text-yellow-700 dark:text-amber-300">
           {status}
         </p>
       )}
@@ -966,7 +1026,7 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
 function ShortcutsPane(): React.JSX.Element {
   return (
     <div data-testid="settings-page-shortcuts">
-      <h2 className="text-sm font-medium">Shortcuts</h2>
+      <h2 className="mb-4 text-xl font-semibold">Shortcuts</h2>
       <table className="mt-2 w-full text-left text-xs">
         <tbody>
           {SHORTCUTS.map(([keys, desc]) => (
@@ -975,9 +1035,7 @@ function ShortcutsPane(): React.JSX.Element {
                 {keys.split("+").map((k, i) => (
                   <span key={k}>
                     {i > 0 && <span className="text-muted-foreground"> + </span>}
-                    <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
-                      {k}
-                    </kbd>
+                    <Kbd>{k}</Kbd>
                   </span>
                 ))}
               </td>
@@ -994,8 +1052,8 @@ function AboutPane(): React.JSX.Element {
   const [note, setNote] = useState<string | null>(null);
   return (
     <div data-testid="settings-page-about">
-      <h2 className="text-sm font-medium">About</h2>
-      <div className="mt-2 divide-y divide-border">
+      <h2 className="mb-4 text-xl font-semibold">About</h2>
+      <div className="divide-y divide-border">
         <Row label="App name" query="">
           <span className="text-xs">Clauro</span>
         </Row>

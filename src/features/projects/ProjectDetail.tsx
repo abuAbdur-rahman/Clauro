@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ArrowUp, ChevronLeft, FileText, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -63,9 +64,17 @@ export function ProjectDetail({
 
   return (
     <div>
-      <div className="mb-4">
-        <Button type="button" variant="ghost" size="sm" data-testid="project-back" onClick={onBack}>
-          ← Back
+      <div className="mb-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          data-testid="project-back"
+          aria-label="Back to projects"
+          title="Back to projects"
+          onClick={onBack}
+        >
+          <ChevronLeft aria-hidden="true" />
         </Button>
       </div>
       <div className="flex gap-6">
@@ -81,7 +90,7 @@ export function ProjectDetail({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="w-full border border-transparent bg-transparent font-serif text-2xl text-neutral-100 outline-none hover:border-neutral-700 focus:border-neutral-500"
+            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 font-serif text-2xl text-neutral-100 outline-none hover:border-neutral-700 focus:border-neutral-500"
           />
           <div className="mt-4 rounded-lg border border-neutral-800 p-3">
             <Textarea
@@ -94,11 +103,13 @@ export function ProjectDetail({
                 setComposer(e.target.value);
               }}
             />
-            <div className="mt-2 flex justify-end">
+            <div className="mt-2 flex items-center justify-end">
               <Button
                 type="button"
-                size="sm"
+                size="icon"
                 data-testid="project-composer-send"
+                aria-label="Start chat"
+                title="Start chat"
                 disabled={composer.trim() === ""}
                 onClick={() => {
                   const text = composer.trim();
@@ -106,24 +117,25 @@ export function ProjectDetail({
                   onStartChat?.(text);
                   setComposer("");
                 }}
+                className="size-8 rounded-full"
               >
-                Start chat
+                <ArrowUp aria-hidden="true" />
               </Button>
             </div>
           </div>
-          <h3 className="mt-4 mb-2 text-sm font-semibold text-neutral-200">Chats</h3>
+          <h3 className="mt-6 mb-2 text-sm font-semibold text-neutral-200">Chats</h3>
           {chats.length === 0 ? (
             <p data-testid="project-chats-empty" className="text-sm text-neutral-400">
               No chats yet.
             </p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="space-y-1.5">
               {chats.map((c) => (
                 <li key={c.id}>
                   <button
                     type="button"
                     data-testid={`project-chat-${c.id}`}
-                    className="w-full truncate rounded px-2 py-1 text-left text-sm text-neutral-300 hover:bg-neutral-800"
+                    className="block w-full truncate rounded-lg border border-neutral-800 px-3 py-2 text-left text-sm text-neutral-300 hover:bg-neutral-800"
                     onClick={() => {
                       onOpenChat?.(c.id);
                     }}
@@ -213,6 +225,7 @@ export function ProjectDetail({
                 </div>
                 {files.map((f, i) => (
                   <div key={`${f.name}-${String(i)}`} className="flex items-center gap-2 text-sm">
+                    <FileText aria-hidden="true" className="size-4 flex-none text-neutral-400" />
                     <span data-testid={`project-file-${String(i)}`} className="min-w-0 flex-1 truncate">
                       {f.name}
                     </span>
@@ -221,12 +234,12 @@ export function ProjectDetail({
                       type="button"
                       aria-label={`Delete ${f.name}`}
                       data-testid={`project-file-delete-${String(i)}`}
-                      className="text-neutral-400 hover:text-neutral-100"
+                      className="grid size-6 flex-none place-items-center rounded text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
                       onClick={() => {
                         onDeleteFile?.(i);
                       }}
                     >
-                      ×
+                      <Trash2 aria-hidden="true" className="size-4" />
                     </button>
                   </div>
                 ))}

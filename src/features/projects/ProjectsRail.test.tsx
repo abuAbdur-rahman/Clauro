@@ -353,3 +353,90 @@ describe("ProjectsRail new chat + footer", () => {
     expect(screen.queryByTestId("chat-group-TODAY")).toBeNull();
   });
 });
+
+// Task 031 T4 — rail folders: folder icon per project, hover chevron,
+// collapsible threads (expanded by default, local state, button + aria).
+describe("ProjectsRail folders", () => {
+  function renderFolders() {
+    return render(
+      <ProjectsRail
+        projects={[{ id: "p1", name: "Alpha" }]}
+        memoryOff={false}
+        threadsByProject={{ p1: [{ id: "t1", title: "Milestones" }] }}
+      />,
+    );
+  }
+
+  it("project rows use a folder icon and keep the color dot", () => {
+    renderFolders();
+    expect(screen.getByTestId("project-folder-p1")).toBeDefined();
+    const dot = screen.getByTestId("project-dot-p1");
+    expect(dot.style.backgroundColor).toBe("rgb(201, 100, 66)");
+  });
+
+  it("project threads are expanded by default with aria-expanded", () => {
+    renderFolders();
+    const header = screen.getByTestId("project-row-p1");
+    expect(header.tagName).toBe("BUTTON");
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("thread-sub-t1")).toBeDefined();
+  });
+
+  it("header click collapses and re-expands threads, chevron flips", async () => {
+    const user = userEvent.setup();
+    renderFolders();
+    const header = screen.getByTestId("project-row-p1");
+    expect(screen.getByTestId("project-chevron-p1").getAttribute("data-state")).toBe("open");
+
+    await user.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("thread-sub-t1")).toBeNull();
+    expect(screen.getByTestId("project-chevron-p1").getAttribute("data-state")).toBe("closed");
+
+    await user.click(header);
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("thread-sub-t1")).toBeDefined();
+  });
+
+  it("chevron reveals on hover and collapse is per-project", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProjectsRail
+        projects={[
+          { id: "p1", name: "Alpha" },
+          { id: "p2", name: "Beta" },
+        ]}
+        memoryOff={false}
+        threadsByProject={{
+          p1: [{ id: "t1", title: "One" }],
+          p2: [{ id: "t2", title: "Two" }],
+        }}
+      />,
+    );
+    const chevron = screen.getByTestId("project-chevron-p1");
+    expect(chevron.className).toContain("opacity-0");
+    await user.click(screen.getByTestId("project-row-p1"));
+    // Collapsing p1 leaves p2 expanded (local per-project state).
+    expect(screen.queryByTestId("thread-sub-t1")).toBeNull();
+    expect(screen.getByTestId("thread-sub-t2")).toBeDefined();
+    expect(screen.getByTestId("project-row-p2").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("header toggles via keyboard and still selects the project", async () => {
+    const user = userEvent.setup();
+    const onSelectProject = vi.fn();
+    render(
+      <ProjectsRail
+        projects={[{ id: "p1", name: "Alpha" }]}
+        memoryOff={false}
+        threadsByProject={{ p1: [{ id: "t1", title: "Milestones" }] }}
+        onSelectProject={onSelectProject}
+      />,
+    );
+    const header = screen.getByTestId("project-row-p1");
+    header.focus();
+    await user.keyboard("{Enter}");
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(onSelectProject).toHaveBeenCalledWith("p1");
+  });
+});

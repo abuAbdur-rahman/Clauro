@@ -75,14 +75,74 @@ describe("Composer", () => {
     expect(onMemoryToggle).toHaveBeenCalledOnce();
   });
 
-  it("effort select writes thread effort without touching the model", async () => {
+  it("effort select is a thinking-level indicator writing thread effort", async () => {
     const user = userEvent.setup();
     render(<Composer threadId={THREAD}  onSend={vi.fn()} />);
-    await user.click(screen.getByRole("combobox", { name: /effort/i }));
+    const trigger = screen.getByRole("combobox", { name: /thinking level/i });
+    await user.hover(trigger);
+    expect(await screen.findByText(/thinking level — request params only/i)).toBeTruthy();
+    await user.click(trigger);
     await user.click(await screen.findByRole("option", { name: /high/i }));
     const thread = useThreadStore.getState().threads[THREAD];
     expect(thread?.effort).toBe("high");
     expect(thread?.model).toBeNull();
+  });
+
+  it("memory toggle is an icon-only Brain button carrying its state in the tooltip", async () => {
+    const user = userEvent.setup();
+    const onMemoryToggle = vi.fn();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} onMemoryToggle={onMemoryToggle} />);
+    const btn = screen.getByRole("button", { name: /^memory$/i });
+    // Icon-only: no visible text label, the tooltip carries "Memory on/off".
+    expect(btn.textContent).toBe("");
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+    await user.hover(btn);
+    expect(await screen.findByText("Memory on")).toBeTruthy();
+    await user.click(btn);
+    expect(onMemoryToggle).toHaveBeenCalledOnce();
+
+    cleanup();
+    render(
+      <Composer threadId={THREAD} memoryOff onSend={vi.fn()} onMemoryToggle={vi.fn()} />,
+    );
+    const off = screen.getByRole("button", { name: /^memory$/i });
+    expect(off.textContent).toBe("");
+    expect(off.getAttribute("aria-pressed")).toBe("true");
+    await user.hover(off);
+    expect(await screen.findByText("Memory off")).toBeTruthy();
+  });
+
+  it("web search is an icon-only toggle, on by default", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const btn = screen.getByRole("button", { name: /web search/i });
+    expect(btn.textContent).toBe("");
+    expect(btn.getAttribute("aria-pressed")).toBe("true");
+    await user.hover(btn);
+    expect(await screen.findByText("Web search on")).toBeTruthy();
+    await user.click(btn);
+    expect(btn.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("send and stop are round icon buttons with tooltips", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const send = screen.getByRole("button", { name: /^send$/i });
+    expect(send.className).toMatch(/rounded-full/);
+    await user.hover(send);
+    expect(await screen.findByText(/^Send$/)).toBeTruthy();
+
+    cleanup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} running onStop={vi.fn()} />);
+    const stop = screen.getByRole("button", { name: /^stop$/i });
+    expect(stop.className).toMatch(/rounded-full/);
+  });
+
+  it("token hint meets the contrast floor", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const hint = screen.getByTestId("token-hint");
+    expect(hint.className).toMatch(/text-neutral-400/);
+    expect(hint.className).not.toMatch(/text-neutral-500/);
   });
 
   it("embeds the provider-grouped model picker", async () => {

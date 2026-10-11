@@ -11,7 +11,13 @@ import { Skeleton } from "../components/ui/skeleton";
 import { useThreadStore, type ThreadStatus } from "../features/catalogue/thread";
 import { ProjectsRail, type RailThread } from "../features/projects/ProjectsRail";
 import { HomeGreeting } from "../features/home/HomeGreeting";
-import { useSettingsHotkey, useSummonHotkey } from "../features/shell/hotkey";
+import {
+  useCompactHotkey,
+  useMaximizeHotkey,
+  useNewChatHotkey,
+  useSettingsHotkey,
+  useSummonHotkey,
+} from "../features/shell/hotkey";
 import { useSettingsStore } from "../features/shell/settings";
 import { useArtifactContent } from "../features/artifact/live";
 import { useTheme } from "../features/shell/usetheme";
@@ -60,7 +66,7 @@ function ViewSkeleton({ label }: { label: string }): React.JSX.Element {
  */
 function BootSkeleton(): React.JSX.Element {
   return (
-    <div data-testid="boot-skeleton" className="flex h-dvh w-screen flex-col bg-background">
+    <div data-testid="boot-skeleton" className="flex h-dvh w-screen min-w-[900px] flex-col bg-background">
       <span className="sr-only">Starting Clauro…</span>
       <div className="h-8 w-full border-b border-border">
         <Skeleton className="m-2 h-4 w-24" />
@@ -310,7 +316,25 @@ export default function App() {
   useSettingsHotkey(() => {
     openSettings("providers");
   });
-
+  // Task 031 T6: every hotkey hook in hotkey.ts fires from the shell.
+  // New chat opens the thread-owned chat view (same path as home send).
+  useNewChatHotkey(() => {
+    goChat();
+  });
+  // usePanelHotkey stays unwired on purpose: the artifact store has no drawer
+  // open-state to toggle (empty/compiling/live per thread; empty renders
+  // zero-width), so there is nothing for the hook to drive yet.
+  // Compact is intent-only: the turn loop (023) owns dispatch — the same
+  // event the palette's action:compact emits (CommandPalette.tsx).
+  useCompactHotkey(() => {
+    window.dispatchEvent(new CustomEvent("clauro:compact-request"));
+  });
+  // TitleBar.tsx is read-only: drive its Maximize caption affordance through
+  // the button it renders instead of duplicating the Tauri toggle here.
+  useMaximizeHotkey(() => {
+    const btn = document.querySelector('button[aria-label="Maximize"]');
+    if (btn instanceof HTMLButtonElement) btn.click();
+  });
 
   // Device theme, followed live and user-overridable (Appearance pane):
   // white surfaces only exist in light mode. Previously a hardcoded `false`
@@ -405,8 +429,8 @@ export default function App() {
 
   // Home send routes through the thread store (it owns threads) into the
   // chat view. The turn loop (023) owns dispatch from there; the old `noop`
-  // dead-end is gone.
-  function handleHomeSend(): void {
+  // dead-end is gone. Ctrl+N rides the same path (useNewChatHotkey above).
+  function goChat(): void {
     openThread(THREAD);
     if (isMockMode()) {
       useThreadStore.getState().markUpdated(THREAD, Date.now());
@@ -414,8 +438,12 @@ export default function App() {
     setView({ name: "chat" });
   }
 
+  function handleHomeSend(): void {
+    goChat();
+  }
+
   return (
-    <div className="flex h-dvh w-screen flex-col overflow-hidden bg-background font-sans text-sm text-foreground">
+    <div className="flex h-dvh w-screen min-w-[900px] flex-col overflow-hidden bg-background font-sans text-sm text-foreground">
       <TitleBar title={title} />
       <Suspense fallback={null}>
         <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
@@ -431,7 +459,7 @@ export default function App() {
       >
         <DialogContent
           aria-label="Providers"
-          className="h-[min(640px,calc(100dvh-2rem))] w-[min(920px,calc(100vw-2rem))] max-w-none gap-0 overflow-y-auto p-4 sm:max-w-[min(920px,calc(100vw-2rem))]"
+          className="h-[min(640px,calc(100dvh-2rem))] w-[min(960px,calc(100vw-2rem))] max-w-none gap-0 overflow-y-auto p-4 sm:max-w-[min(960px,calc(100vw-2rem))]"
         >
           <DialogHeader className="pb-2 text-left">
             <DialogTitle className="text-sm">Providers</DialogTitle>

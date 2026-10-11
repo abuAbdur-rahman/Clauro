@@ -21,8 +21,11 @@
 import { useState } from "react";
 import {
   Brain,
+  ChevronDown,
+  ChevronUp,
   Ellipsis,
-  FolderKanban,
+  Folder,
+  FolderOpen,
   MessageSquare,
   PanelLeft,
   Plus,
@@ -249,6 +252,18 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
   const collapsed = state === "collapsed";
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
+  // Task 031 T4: collapsible project threads. Expanded by default; collapsed
+  // ids live in local component state only (no persistence).
+  const [collapsedProjects, setCollapsedProjects] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleProject = (id: string): void => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const flat: readonly RailThread[] =
     chats ??
@@ -486,7 +501,7 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
                       aria-label={collapsed ? "Projects" : undefined}
                       onClick={onOpenProjects}
                     >
-                      <FolderKanban size={16} strokeWidth={1.75} />
+                      <Folder size={16} strokeWidth={1.75} />
                       {!collapsed && <span>Projects</span>}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -497,40 +512,77 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
               {!collapsed && <SidebarGroupLabel>Projects</SidebarGroupLabel>}
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {projects.map((p) => (
-                    <SidebarMenuItem key={p.id}>
-                      <SidebarMenuButton
-                        tooltip={p.name}
-                        aria-label={collapsed ? p.name : undefined}
-                        isActive={p.id === activeProjectId}
-                        onClick={() => {
-                          onSelectProject(p.id);
-                        }}
-                      >
-                        <FolderKanban size={16} strokeWidth={1.75} />
-                        {!collapsed && <span className="truncate">{p.name}</span>}
-                      </SidebarMenuButton>
-                      {!collapsed && (
-                        <SidebarMenuSub>
-                          {(threadsByProject[p.id] ?? []).map((t) => (
-                            <SidebarMenuSubItem key={t.id}>
-                              <SidebarMenuSubButton
-                                data-testid={`thread-sub-${t.id}`}
-                                data-status={statusByThread[t.id] ?? "idle"}
-                                isActive={t.id === activeThreadId}
-                                onClick={() => {
-                                  onSelectThread(t.id);
-                                }}
+                  {projects.map((p) => {
+                    const expanded = !collapsedProjects.has(p.id);
+                    const color = projectColor(p.id, projects);
+                    return (
+                      <SidebarMenuItem key={p.id}>
+                        <SidebarMenuButton
+                          tooltip={p.name}
+                          aria-label={collapsed ? p.name : `${p.name}, ${expanded ? "expanded" : "collapsed"}`}
+                          aria-expanded={!collapsed ? expanded : undefined}
+                          data-testid={`project-row-${p.id}`}
+                          isActive={p.id === activeProjectId}
+                          onClick={() => {
+                            toggleProject(p.id);
+                            onSelectProject(p.id);
+                          }}
+                        >
+                          <span data-testid={`project-folder-${p.id}`} className="flex shrink-0 items-center">
+                            {expanded ? (
+                              <FolderOpen size={16} strokeWidth={1.75} />
+                            ) : (
+                              <Folder size={16} strokeWidth={1.75} />
+                            )}
+                          </span>
+                          {!collapsed && (
+                            <>
+                              {color !== undefined && (
+                                <span
+                                  aria-hidden="true"
+                                  data-testid={`project-dot-${p.id}`}
+                                  style={{ backgroundColor: color }}
+                                  className="h-2 w-2 shrink-0 rounded-full"
+                                />
+                              )}
+                              <span className="truncate">{p.name}</span>
+                              <span
+                                data-testid={`project-chevron-${p.id}`}
+                                data-state={expanded ? "open" : "closed"}
+                                aria-hidden="true"
+                                className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity group-hover/menu-item:opacity-100 group-focus-within/menu-item:opacity-100"
                               >
-                                <StatusDot status={statusByThread[t.id] ?? "idle"} />
-                                <span className="truncate">{t.title}</span>
-                              </SidebarMenuSubButton>
-                            </SidebarMenuSubItem>
-                          ))}
-                        </SidebarMenuSub>
-                      )}
-                    </SidebarMenuItem>
-                  ))}
+                                {expanded ? (
+                                  <ChevronUp size={16} strokeWidth={1.75} />
+                                ) : (
+                                  <ChevronDown size={16} strokeWidth={1.75} />
+                                )}
+                              </span>
+                            </>
+                          )}
+                        </SidebarMenuButton>
+                        {!collapsed && expanded && (
+                          <SidebarMenuSub>
+                            {(threadsByProject[p.id] ?? []).map((t) => (
+                              <SidebarMenuSubItem key={t.id}>
+                                <SidebarMenuSubButton
+                                  data-testid={`thread-sub-${t.id}`}
+                                  data-status={statusByThread[t.id] ?? "idle"}
+                                  isActive={t.id === activeThreadId}
+                                  onClick={() => {
+                                    onSelectThread(t.id);
+                                  }}
+                                >
+                                  <StatusDot status={statusByThread[t.id] ?? "idle"} />
+                                  <span className="truncate">{t.title}</span>
+                                </SidebarMenuSubButton>
+                              </SidebarMenuSubItem>
+                            ))}
+                          </SidebarMenuSub>
+                        )}
+                      </SidebarMenuItem>
+                    );
+                  })}
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>

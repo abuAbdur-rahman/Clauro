@@ -49,22 +49,29 @@ html {
   --input: oklch(0.922 0 0);
   --ring: #d97757;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
+  /* T3 parity: light sidebar is the #eeeeee flavour against the white main
+     (html --sidebar vs --surface). oklch(0.935 0 0) ≈ #eee; the active-row
+     fill sits one step darker so selected rows read on the gray. */
+  --sidebar: oklch(0.935 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.906 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  /* T3 parity: dark main is the #2b2b2b flavour, sidebar the #1b1b1b flavour
+     (html --surface vs --sidebar). The old pair was inverted — sidebar
+     lighter than main. Card/popover ride with main so dialogs, composer and
+     cards sit on the main surface; secondary/accent stay lighter for hover. */
+  --background: oklch(0.22 0 0);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
+  --card: oklch(0.22 0 0);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.145 0 0);
+  --popover: oklch(0.22 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: #d97757;
   --primary-foreground: oklch(0.985 0 0);
@@ -79,7 +86,7 @@ html {
   --border: oklch(0.269 0 0);
   --input: oklch(0.269 0 0);
   --ring: #d97757;
-  --sidebar: oklch(0.205 0 0);
+  --sidebar: oklch(0.145 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
@@ -245,4 +252,109 @@ html {
 .markdown-body th {
   font-weight: 600;
   color: var(--foreground);
+}
+
+/* ===== T3 theme/scrollbar/size floor (visual-only, token system only) ===== */
+
+/* Overlay-thin scrollbars app-wide: no native Win32 bars anywhere. Firefox
+   gets scrollbar-width/color; Chromium gets the ::-webkit-scrollbar set.
+   Thumb rides on --border in light, --sidebar-ring in dark, hover steps up
+   to --muted-foreground. Track stays transparent (overlay feel). Covers
+   every scroll region: transcript, sidebar/rail lists, modals, palette,
+   drawers, settings panes, pre blocks. */
+:root,
+.dark {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.dark {
+  scrollbar-color: var(--sidebar-ring) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: var(--sidebar-ring);
+}
+.dark *::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Lists that jump when a bar appears reserve the gutter instead. */
+[role="dialog"] *,
+[role="listbox"],
+aside *,
+nav * {
+  scrollbar-gutter: stable;
+}
+
+/* Selection from the one accent; caret follows the ring; focus is a ring
+   nobody can miss, always on-palette (terracotta, never browser default). */
+::selection {
+  background: color-mix(in oklch, var(--primary) 32%, transparent);
+}
+.dark ::selection {
+  background: color-mix(in oklch, var(--primary) 45%, transparent);
+}
+input,
+textarea,
+[contenteditable="true"] {
+  caret-color: var(--ring);
+}
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* Size guards (§10 parity). The shell never crushes below 900px — narrower
+   viewports clip instead of collapsing the rail/column grid. Chat column is
+   760px and home 720px per html (.col / .wcol); the chat-view override pins
+   the one column that drifted (max-w-3xl = 816px at the 17px root). */
+#root {
+  min-width: 900px;
+}
+[data-testid="chat-view"] {
+  max-width: 760px;
+}
+
+/* Artifact drawer becomes an overlay below 1100px (html §10), instead of
+   squeezing the center column. Fixed positioning keeps this CSS-only: no
+   offset-parent dependency on the flex shell. */
+@media (max-width: 1100px) {
+  aside[aria-label="artifact drawer"] {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(420px, 90%);
+    z-index: 20;
+    background: var(--background);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  }
+  .dark aside[aria-label="artifact drawer"] {
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }
