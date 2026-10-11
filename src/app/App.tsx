@@ -2,26 +2,84 @@
  * Boot gate (Task 003, D53). A missing WebView2 runtime is detected and
  * explained before first paint — never a blank window, never a bare crash.
  */
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { shortError, webviewStatus } from "../features/catalogue/catalogue";
 import Composer from "../components/Composer";
 import ModelPicker from "../components/ModelPicker";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Skeleton } from "../components/ui/skeleton";
 import { useThreadStore, type ThreadStatus } from "../features/catalogue/thread";
-import { ProvidersView } from "../features/providers/ProvidersView";
-import { ChatView } from "../features/turn/ChatView";
-import { ArtifactDrawer } from "../components/ArtifactDrawer";
 import { ProjectsRail, type RailThread } from "../features/projects/ProjectsRail";
-import { ProjectsGrid } from "../features/projects/ProjectsGrid";
-import { ProjectDetail } from "../features/projects/ProjectDetail";
 import { HomeGreeting } from "../features/home/HomeGreeting";
-import { CommandPalette } from "../features/shell/CommandPalette";
 import { useSettingsHotkey, useSummonHotkey } from "../features/shell/hotkey";
 import { useSettingsStore } from "../features/shell/settings";
-import { SettingsDialog } from "../features/settings/SettingsDialog";
 import { useArtifactContent } from "../features/artifact/live";
 import { useTheme } from "../features/shell/usetheme";
 import { TitleBar } from "./TitleBar";
+
+// Task 030: non-home views load on demand so first paint transforms the shell
+// only. Overlays resolve behind a null fallback — they render nothing while
+// closed anyway.
+const ChatView = lazy(() =>
+  import("../features/turn/ChatView").then((m) => ({ default: m.ChatView })),
+);
+const ProvidersView = lazy(() =>
+  import("../features/providers/ProvidersView").then((m) => ({ default: m.ProvidersView })),
+);
+const ProjectsGrid = lazy(() =>
+  import("../features/projects/ProjectsGrid").then((m) => ({ default: m.ProjectsGrid })),
+);
+const ProjectDetail = lazy(() =>
+  import("../features/projects/ProjectDetail").then((m) => ({ default: m.ProjectDetail })),
+);
+const CommandPalette = lazy(() =>
+  import("../features/shell/CommandPalette").then((m) => ({ default: m.CommandPalette })),
+);
+const SettingsDialog = lazy(() =>
+  import("../features/settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
+);
+const ArtifactDrawer = lazy(() =>
+  import("../components/ArtifactDrawer").then((m) => ({ default: m.ArtifactDrawer })),
+);
+
+/** Skeleton for a lazily loading view (Task 030): layout-shaped, labelled. */
+function ViewSkeleton({ label }: { label: string }): React.JSX.Element {
+  return (
+    <div data-testid="view-skeleton" aria-label={label} className="flex h-full flex-col gap-3 p-4">
+      <Skeleton className="h-6 w-48" />
+      <Skeleton className="h-24 w-full" />
+      <Skeleton className="h-24 w-full" />
+    </div>
+  );
+}
+
+/**
+ * Boot splash (Task 030): the shell's own shape in skeleton — titlebar bar,
+ * rail, greeting block — instead of a bare text line, so first paint already
+ * looks like the app while the runtime check + seed preload run behind it.
+ */
+function BootSkeleton(): React.JSX.Element {
+  return (
+    <div data-testid="boot-skeleton" className="flex h-dvh w-screen flex-col bg-background">
+      <span className="sr-only">Starting Clauro…</span>
+      <div className="h-8 w-full border-b border-border">
+        <Skeleton className="m-2 h-4 w-24" />
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-[260px] flex-col gap-2 p-3">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-28 w-full max-w-[720px]" />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const THREAD = "thread-001";
 
@@ -277,6 +335,16 @@ export default function App() {
         }
         setBoot({ stage: "ready" });
         openThread(THREAD);
+        // Preload the two most likely next chunks while the user reads home
+        // (Task 030): chat view + settings resolve in the background, so
+        // opening them later never pays a transform. Fire-and-forget by
+        // design — failures surface when the view actually opens.
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(() => {
+            void import("../features/turn/ChatView");
+            void import("../features/settings/SettingsDialog");
+          });
+        }
         if (isMockMode()) {
           // Dynamic relative import: the mock chunk loads only on this
           // branch, so the real bundle stays mock-free, and the raw source
@@ -310,7 +378,7 @@ export default function App() {
   }, [openThread]);
 
   if (boot.stage === "checking") {
-    return <p className="p-4 font-mono text-sm text-muted-foreground">Starting Clauro…</p>;
+    return <BootSkeleton />;
   }
 
   if (boot.stage === "missing") {
@@ -349,8 +417,12 @@ export default function App() {
   return (
     <div className="flex h-dvh w-screen flex-col overflow-hidden bg-background font-sans text-sm text-foreground">
       <TitleBar title={title} />
-      <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
-      <SettingsDialog threadId={THREAD} />
+      <Suspense fallback={null}>
+        <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <SettingsDialog threadId={THREAD} />
+      </Suspense>
       <Dialog
         open={providersOpen}
         onOpenChange={(next) => {
@@ -364,7 +436,9 @@ export default function App() {
           <DialogHeader className="pb-2 text-left">
             <DialogTitle className="text-sm">Providers</DialogTitle>
           </DialogHeader>
-          <ProvidersView />
+          <Suspense fallback={null}>
+            <ProvidersView />
+          </Suspense>
         </DialogContent>
       </Dialog>
       <div className="flex min-h-0 flex-1 items-stretch gap-0">
@@ -463,39 +537,45 @@ export default function App() {
             </div>
           )}
           {view.name === "projects" && (
-            <ProjectsGrid
-              projects={railProjects}
-              chatCountByProject={mockSeed?.rail.chatCountByProject}
-              onNew={noop}
-              onOpen={(id) => {
-                setView({ name: "project", id });
-              }}
-            />
+            <Suspense fallback={<ViewSkeleton label="Loading projects" />}>
+              <ProjectsGrid
+                projects={railProjects}
+                chatCountByProject={mockSeed?.rail.chatCountByProject}
+                onNew={noop}
+                onOpen={(id) => {
+                  setView({ name: "project", id });
+                }}
+              />
+            </Suspense>
           )}
           {view.name === "project" && project && detail && (
-            <ProjectDetail
-              project={project}
-              instructions={detail.instructions}
-              memoryCount={0}
-              contextUsed="0%"
-              chats={detail.chats}
-              files={detail.files}
-              onOpenChat={() => {
-                setView({ name: "chat" });
-              }}
-              onStartChat={() => {
-                setView({ name: "chat" });
-              }}
-              onBack={() => {
-                setView({ name: "projects" });
-              }}
-            />
+            <Suspense fallback={<ViewSkeleton label="Loading project" />}>
+              <ProjectDetail
+                project={project}
+                instructions={detail.instructions}
+                memoryCount={0}
+                contextUsed="0%"
+                chats={detail.chats}
+                files={detail.files}
+                onOpenChat={() => {
+                  setView({ name: "chat" });
+                }}
+                onStartChat={() => {
+                  setView({ name: "chat" });
+                }}
+                onBack={() => {
+                  setView({ name: "projects" });
+                }}
+              />
+            </Suspense>
           )}
           {view.name === "chat" && (
             <div>
               <h1 className="text-base">Clauro</h1>
               {error && <p className="mt-2 text-xs text-red-400">Boot error: {error}</p>}
-              <ChatView threadId={THREAD} />
+              <Suspense fallback={<ViewSkeleton label="Loading chat" />}>
+                <ChatView threadId={THREAD} />
+              </Suspense>
             </div>
           )}
         </div>
@@ -503,13 +583,15 @@ export default function App() {
             the Tauri runtime check exists (021). Windows-verified is the dev
             default per AGENTS.md §8a. The artifact content rides the
             producer's store (D121); empty means nothing has been produced. */}
-        <ArtifactDrawer
-          threadId={THREAD}
-          engine={{ platform: "windows", opaqueProven: true }}
-          source={artifactContent?.source ?? ""}
-          mediaType={artifactContent?.mediaType ?? "text/html"}
-          title={artifactContent?.title ?? ""}
-        />
+        <Suspense fallback={null}>
+          <ArtifactDrawer
+            threadId={THREAD}
+            engine={{ platform: "windows", opaqueProven: true }}
+            source={artifactContent?.source ?? ""}
+            mediaType={artifactContent?.mediaType ?? "text/html"}
+            title={artifactContent?.title ?? ""}
+          />
+        </Suspense>
       </div>
     </div>
   );

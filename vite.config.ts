@@ -33,6 +33,38 @@ export default defineConfig(({ mode }) => {
         ...browserMocks,
       },
     },
+    // Cold-start fix (Task 030): pre-bundle the stable heavy graph at server
+    // start instead of on first paint. Without this, the first load of
+    // App.tsx (~40s measured) blocks behind on-demand dep optimization of
+    // radix/marked/dompurify/zod/sucrase, and the total cold launch lands in
+    // the minutes on a loaded box. Cached in node_modules/.vite afterwards.
+    optimizeDeps: {
+      include: [
+        "react",
+        "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "zustand",
+        "clsx",
+        "tailwind-merge",
+        "class-variance-authority",
+        "lucide-react",
+        "marked",
+        "dompurify",
+        "zod",
+        "@radix-ui/react-avatar",
+        "@radix-ui/react-collapsible",
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-dropdown-menu",
+        "@radix-ui/react-label",
+        "@radix-ui/react-progress",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-select",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slot",
+        "@radix-ui/react-tooltip",
+      ],
+    },
 
     // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
     //
@@ -43,6 +75,10 @@ export default defineConfig(({ mode }) => {
       port: 1420,
       strictPort: true,
       host: host || false,
+      // 4. transform the shell graph at ready, not at first paint (Task 030).
+      warmup: {
+        clientFiles: ["./src/main.tsx", "./src/app/App.tsx", "./src/styles.css"],
+      },
       hmr: host
         ? {
             protocol: "ws",
