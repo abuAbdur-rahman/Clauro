@@ -82,14 +82,16 @@ function initialsOf(name: string): string {
   return `${first.slice(0, 1)}${second.slice(0, 1)}`.toUpperCase();
 }
 
-/** Best guess at the dialog type for a stored row (kind + endpoint root). */
+/** Best guess at the dialog type for a stored row (endpoint root). Legacy
+ *  `anthropic`-kind rows predate the five-provider set (D125) and have no
+ *  URL — they land on `custom` so re-adding is honest, never a dead type. */
 function typeForRow(row: ProviderRow): ProviderType {
-  if (row.kind === "anthropic") return "anthropic";
+  if (row.kind === "anthropic") return "custom";
   const url = row.base_url ?? "";
+  if (url.includes("agentrouter.org")) return "agentrouter";
+  if (url.includes("generativelanguage.googleapis.com")) return "google";
   if (url.includes("openrouter.ai")) return "openrouter";
-  if (url.includes("api.openai.com")) return "openai";
   if (url.includes("11434") || url.includes("localhost")) return "ollama";
-  if (row.kind === "openai-compatible" && url === "") return "openai";
   return "custom";
 }
 
@@ -419,7 +421,7 @@ function ProviderDialog({
   onNotice: (notice: string | null) => void;
   onStatus: (id: string, status: ProbeStatus) => void;
 }): React.JSX.Element {
-  const initialType: ProviderType = row === null ? "openai" : typeForRow(row);
+  const initialType: ProviderType = row === null ? "openrouter" : typeForRow(row);
   const initialPreset = PROVIDER_PRESETS[initialType];
   const [type, setType] = useState<ProviderType>(initialType);
   const [name, setName] = useState<string>(row?.display_name ?? initialPreset.name);
@@ -506,7 +508,7 @@ function ProviderDialog({
     try {
       if (mode === "add") {
         let id: string;
-        if (type === "openai" || type === "anthropic" || type === "openrouter") {
+        if (type === "openrouter" || type === "agentrouter" || type === "ollama" || type === "google") {
           id = (await providerAddBuiltin(type)).id;
         } else {
           id = (
@@ -517,7 +519,10 @@ function ProviderDialog({
             })
           ).id;
         }
-        if (key.trim() !== "") {
+        // Ollama proves keyless: the host accepts a blank key for its row
+        // and fetches without auth, so models arrive on first save. Every
+        // other type still needs a typed key before proof can run.
+        if (key.trim() !== "" || type === "ollama") {
           try {
             const proven = await providerSetKey(id, key);
             onStatus(id, "connected");
@@ -619,7 +624,7 @@ function ProviderDialog({
                 setBaseUrl(e.target.value);
                 setTouchedUrl(true);
               }}
-              placeholder={type === "anthropic" ? "Built-in endpoint" : "https://"}
+              placeholder="https://"
               className="mt-1 block w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
             />
           </label>

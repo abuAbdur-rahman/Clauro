@@ -322,13 +322,13 @@ export function ChatView({ threadId }: { threadId: string }): React.JSX.Element 
         {rows.length > 0 && (
           <div
             data-testid="context-bar"
-            title={`≈ ${String(tokens)} / ${String(contextWindow)} tokens · estimate`}
+            title={`${String(tokens)} / ${String(contextWindow)} tokens · estimate`}
             className="mb-2 flex items-center gap-2 text-xs text-neutral-400"
           >
             <span className="shrink-0">Context {String(pct)}% used</span>
             <Progress value={pct} className="h-1 flex-1" />
             <span className="shrink-0">
-              ≈{String(tokens)} tokens · estimate
+              {String(tokens)} tokens · estimate
             </span>
             <button
               type="button"

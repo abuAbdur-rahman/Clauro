@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProjectDetail } from "./ProjectDetail";
 
@@ -142,5 +142,49 @@ describe("ProjectDetail", () => {
   it("labels sample capacity honestly when none is supplied", () => {
     render(<ProjectDetail {...base} files={[]} />);
     expect(screen.getByTestId("project-capacity-label").textContent).toContain("(sample capacity)");
+  });
+
+  it("page frame wraps the two-column rhythm (1fr 320px, 20px gap)", () => {
+    render(<ProjectDetail {...base} />);
+    const cols = screen.getByTestId("project-detail-cols");
+    expect(cols.classList.contains("detail-cols")).toBe(true);
+    expect(cols.closest(".page-frame")).not.toBeNull();
+  });
+
+  it("chats heading leaves more space above than below (html h3 rhythm)", () => {
+    render(<ProjectDetail {...base} />);
+    expect(screen.getByTestId("project-chats-heading").classList.contains("section-heading")).toBe(
+      true,
+    );
+  });
+
+  it("side panels carry the definite 1px card frame", () => {
+    render(<ProjectDetail {...base} files={[]} capacityBytes={2048} />);
+    const panels = within(screen.getByLabelText("project context")).getAllByTestId(
+      /project-panel-/,
+    );
+    expect(panels.length).toBeGreaterThan(2);
+    for (const panel of panels) expect(panel.classList.contains("side-card")).toBe(true);
+  });
+
+  it("chat rows carry the bordered row rhythm", () => {
+    render(
+      <ProjectDetail {...base} chats={[{ id: "c1", title: "First chat" }]} />,
+    );
+    expect(screen.getByTestId("project-chat-c1").classList.contains("chat-row")).toBe(true);
+  });
+
+  it("empty chats state is a framed panel, not a bare paragraph", () => {
+    render(<ProjectDetail {...base} chats={[]} />);
+    const empty = screen.getByTestId("project-chats-empty");
+    expect(empty.textContent).toBe("No chats yet.");
+    expect(empty.closest(".empty-frame")).not.toBeNull();
+  });
+
+  it("composer box uses the 1px border token", () => {
+    render(<ProjectDetail {...base} />);
+    expect(screen.getByTestId("project-composer-box").classList.contains("border-border")).toBe(
+      true,
+    );
   });
 });

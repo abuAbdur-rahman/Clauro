@@ -60,14 +60,17 @@ describe("App hotkey wiring (031 T6)", () => {
     window.matchMedia = media;
   });
 
-  it("Ctrl+N opens the thread-owned chat view", async () => {
+  it("Ctrl+N creates a thread and opens the chat view", async () => {
     render(<App />);
     await screen.findByTestId("home-header");
+    const before = new Set(Object.keys(useThreadStore.getState().threads));
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "n", ctrlKey: true }));
     // Full-App render: the lazy ChatView chunk exceeds the 1s default under
     // full-suite parallel load (same reason shell.test raises its timeout).
     expect(await screen.findByTestId("transcript-empty", undefined, { timeout: 15000 })).toBeDefined();
-    expect(useThreadStore.getState().threads["thread-001"]?.open).toBe(true);
+    const fresh = Object.keys(useThreadStore.getState().threads).filter((id) => !before.has(id));
+    expect(fresh.length).toBe(1);
+    expect(useThreadStore.getState().threads[fresh[0]]?.open).toBe(true);
   }, 30000);
 
   it("Ctrl+Shift+C dispatches the palette /compact intent", async () => {

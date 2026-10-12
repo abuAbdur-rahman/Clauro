@@ -10,6 +10,7 @@ import { render, screen, cleanup, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import {
   SettingsDialog,
+  SETTINGS_SHORTCUTS,
   filterSettingsSections,
   rowToExportBlock,
 } from "./SettingsDialog";
@@ -216,6 +217,28 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog threadId="t1" />);
     expect(await screen.findByTestId("settings-page-about")).toBeTruthy();
     expect(screen.getByText("0.1.0-prototype")).toBeTruthy();
+  });
+
+  it("shortcuts page renders every row with split kbd chips and a description", async () => {
+    useSettingsStore.getState().openSettings("shortcuts");
+    render(<SettingsDialog threadId="t1" />);
+    const page = await screen.findByTestId("settings-page-shortcuts");
+    // All eight prototype KEYS rows (html truth index.html:334).
+    expect(SETTINGS_SHORTCUTS).toHaveLength(8);
+    expect(within(page).getAllByRole("row")).toHaveLength(8);
+    for (const [keys, desc] of SETTINGS_SHORTCUTS) {
+      // Description column.
+      expect(within(page).getByText(desc)).toBeTruthy();
+      // One kbd chip per key part: "Ctrl+Shift+C" is three chips.
+      for (const part of keys.split("+")) {
+        const chips = within(page)
+          .getAllByText(part, { selector: "kbd" });
+        expect(chips.length).toBeGreaterThan(0);
+      }
+    }
+    // Multi-key combos join chips with a bare "+" separator, never one chip.
+    const combo = within(page).getByText("Toggle artifact panel").closest("tr");
+    expect(combo?.querySelectorAll("kbd")).toHaveLength(3);
   });
 
   it("export downloads markdown with thinking stripped", async () => {

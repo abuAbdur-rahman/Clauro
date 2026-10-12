@@ -9,7 +9,7 @@
  * streaming turn without a Tauri runtime.
  */
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatView } from "./ChatView";
 import { useThreadStore } from "../catalogue/thread";
@@ -390,6 +390,224 @@ describe("ChatView", () => {
       expect(useArtifactContent.getState().threads[THREAD]?.source).toBe("<h1>x</h1>");
     });
     expect(artifactLatest).toHaveBeenCalledWith(THREAD);
+  });
+
+  it("docks the composer: the transcript owns the only scroller", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "pinned below" },
+        role: "assistant",
+        id: "dock1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByText("pinned below")).toBeTruthy();
+    });
+    const root = screen.getByTestId("chat-view");
+    expect(root.className).toMatch(/flex-col/);
+    expect(root.className).toMatch(/h-full/);
+    const scroller = screen.getByTestId("transcript-scroll");
+    expect(scroller.className).toMatch(/flex-1/);
+    expect(scroller.className).toMatch(/overflow-y-auto/);
+    expect(scroller.className).toMatch(/min-h-0/);
+    const footer = screen.getByTestId("composer-footer");
+    expect(footer.className).toMatch(/shrink-0/);
+    // The composer never lives inside the scroller.
+    expect(scroller.contains(screen.getByLabelText(/message/i))).toBe(false);
+  });
+
+  it("shows the context bar with an honest estimate once rows exist", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "12345678" },
+        role: "assistant",
+        id: "ctx1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByText("12345678")).toBeTruthy();
+    });
+    const bar = screen.getByTestId("context-bar");
+    expect(bar.textContent).toMatch(/context \d+% used/i);
+    // 8 chars / 4 = the same honest divisor the composer token hint uses.
+    expect(bar.textContent).toMatch(/2 tokens.*estimate/i);
+    expect(screen.getByRole("button", { name: /^compact$/i })).toBeTruthy();
+  });
+
+  it("hides the context bar when the transcript is empty", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("context-bar")).toBeNull();
+  });
+
+  it("Compact dispatches the shell compact intent instead of nooping", async () => {
+    const user = userEvent.setup();
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "shrink me" },
+        role: "assistant",
+        id: "ctx2",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByText("shrink me")).toBeTruthy();
+    });
+    const seen: string[] = [];
+    const onReq = () => {
+      seen.push("compact");
+    };
+    window.addEventListener("clauro:compact-request", onReq);
+    try {
+      await user.click(screen.getByRole("button", { name: /^compact$/i }));
+      expect(seen).toEqual(["compact"]);
+    } finally {
+      window.removeEventListener("clauro:compact-request", onReq);
+    }
+  });
+
+  it("sticks to the bottom on new rows when near the bottom", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "first" },
+        role: "assistant",
+        id: "stick1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByText("first")).toBeTruthy();
+    });
+    const scroller = screen.getByTestId("transcript-scroll");
+    // jsdom lays out nothing: pin the geometry by hand.
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 1000, configurable: true },
+      clientHeight: { value: 200, configurable: true },
+    });
+    // 10px from the bottom: inside the 48px stick band.
+    scroller.scrollTop = 790;
+    fireEvent.scroll(scroller);
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "first" },
+        role: "assistant",
+        id: "stick1",
+        seq: 0,
+        generation: 0,
+      },
+      {
+        block: { kind: "text", text: "second" },
+        role: "assistant",
+        id: "stick2",
+        seq: 1,
+        generation: 0,
+      },
+    ]);
+    const onDone = listeners.dones[listeners.dones.length - 1];
+    onDone({
+      thread_id: THREAD,
+      end: "EndTurn",
+      dispatched: [],
+      assistant_messages: 1,
+      pending_approvals: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByText("second")).toBeTruthy();
+    });
+    // The follow-scroll is a passive effect: poll until it flushes instead
+    // of assuming it ran before the row paint was observed.
+    await waitFor(() => {
+      expect(scroller.scrollTop).toBe(1000);
+    });
+    expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
+  });
+
+  it("offers Jump to latest instead of yanking when scrolled up", async () => {
+    const user = userEvent.setup();
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "top row" },
+        role: "assistant",
+        id: "jump1",
+        seq: 0,
+        generation: 0,
+      },
+    ]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByText("top row")).toBeTruthy();
+    });
+    const scroller = screen.getByTestId("transcript-scroll");
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 1000, configurable: true },
+      clientHeight: { value: 200, configurable: true },
+    });
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    const jump = await screen.findByRole("button", { name: /jump to latest/i });
+    expect(jump).toBeTruthy();
+    vi.mocked(transcriptRead).mockResolvedValue([
+      {
+        block: { kind: "text", text: "top row" },
+        role: "assistant",
+        id: "jump1",
+        seq: 0,
+        generation: 0,
+      },
+      {
+        block: { kind: "text", text: "bottom row" },
+        role: "assistant",
+        id: "jump2",
+        seq: 1,
+        generation: 0,
+      },
+    ]);
+    const onDone = listeners.dones[listeners.dones.length - 1];
+    onDone({
+      thread_id: THREAD,
+      end: "EndTurn",
+      dispatched: [],
+      assistant_messages: 1,
+      pending_approvals: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByText("bottom row")).toBeTruthy();
+    });
+    // Scrolled up: the view must not yank.
+    expect(scroller.scrollTop).toBe(0);
+    await user.click(screen.getByRole("button", { name: /jump to latest/i }));
+    expect(scroller.scrollTop).toBe(1000);
+    expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeNull();
+  });
+
+  it("wires the composer attach button to a real file picker", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    render(<ChatView threadId={THREAD} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+    });
+    const input = screen.getByTestId("attach-input");
+    expect(input instanceof HTMLInputElement).toBe(true);
+    fireEvent.change(input, {
+      target: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] },
+    });
+    // Never a silent noop: the pick surfaces as a view notice naming the file.
+    await waitFor(() => {
+      expect(screen.getByText(/notes\.txt/)).toBeTruthy();
+    });
   });
 });
 

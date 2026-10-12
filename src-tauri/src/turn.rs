@@ -341,18 +341,24 @@ impl LiveExchange {
                 // The translator drops Anthropic-only controls, so the beta
                 // header that gated them drops with them — sending it would
                 // claim controls this body does not carry. Auth is bearer,
-                // the one header every chat-completions endpoint reads.
+                // the one header every chat-completions endpoint reads —
+                // omitted entirely on a blank key (keyless Ollama, D125),
+                // never sent as an empty `Bearer `.
                 let mut body = translate_request(&request.body);
                 body["stream"] = serde_json::Value::Bool(true);
+                let mut headers = vec![(
+                    "content-type".to_string(),
+                    "application/json".to_string(),
+                )];
+                if !self.api_key.trim().is_empty() {
+                    headers.push((
+                        "authorization".to_string(),
+                        format!("Bearer {}", self.api_key.trim()),
+                    ));
+                }
                 WireRequest {
                     url: endpoint.clone(),
-                    headers: vec![
-                        ("content-type".to_string(), "application/json".to_string()),
-                        (
-                            "authorization".to_string(),
-                            format!("Bearer {}", self.api_key),
-                        ),
-                    ],
+                    headers,
                     body,
                 }
             }
@@ -787,11 +793,12 @@ pub fn turn_start(
     })?;
     // The key lives in the OS keychain under the provider name. Read it here,
     // on the command thread, so the turn thread never touches the keychain —
-    // and the key itself never crosses into an event payload.
+    // and the key itself never crosses into an event payload. The `ollama`
+    // row is exempt from the blank-key refusal: keyless by design (D125).
     let api_key = crate::keyring_store::retrieve(&provider).map_err(|_| TurnError::NoKey {
         provider: provider.clone(),
     })?;
-    if api_key.trim().is_empty() {
+    if api_key.trim().is_empty() && !crate::providers::allows_blank_key(&provider) {
         return Err(TurnError::NoKey { provider });
     }
 
@@ -1159,7 +1166,9 @@ pub fn question_answer(
     let api_key = crate::keyring_store::retrieve(&provider).map_err(|_| AnswerError::NoKey {
         provider: provider.clone(),
     })?;
-    if api_key.trim().is_empty() {
+    // Same keyless-Ollama exemption as `turn_start` (D125): a resume never
+    // switches wire mid-thread, and the row already decided this one.
+    if api_key.trim().is_empty() && !crate::providers::allows_blank_key(&provider) {
         return Err(AnswerError::NoKey { provider });
     }
     {
@@ -1408,6 +1417,35 @@ mod tests {
             serde_json::Value::Bool(true),
             "stream is a transport concern, set after translation"
         );
+    }
+
+    #[test]
+    fn compat_wire_omits_auth_on_a_blank_key() {
+        // Keyless Ollama (D125): a blank key must not become `Bearer ` or
+        // `Bearer null` — the header is absent, not empty.
+        for blank in ["", "   "] {
+            let ex = LiveExchange::new(
+                Wire::OpenAi {
+                    endpoint: "http://localhost:11434/v1/chat/completions".to_string(),
+                },
+                blank.to_string(),
+            )
+            .expect("client");
+            let built = BuiltRequest {
+                headers: vec![],
+                body: serde_json::json!({
+                    "model": "llama3.2",
+                    "max_tokens": 64,
+                    "messages": [{"role": "user", "content": [{"type": "text", "text": "yo"}]}]
+                }),
+            };
+            let wire = ex.build_http(&built);
+            assert!(
+                !wire.headers.iter().any(|(k, _)| k == "authorization"),
+                "blank key sends no auth header, got: {:?}",
+                wire.headers
+            );
+        }
     }
 
     #[test]

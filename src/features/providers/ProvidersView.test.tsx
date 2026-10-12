@@ -26,10 +26,10 @@ vi.mock("./providers", () => ({
   providerRefresh: vi.fn(),
   providerModels: vi.fn(),
   PROVIDER_PRESETS: {
-    openai: { label: "OpenAI", name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
-    anthropic: { label: "Anthropic", name: "Anthropic", baseUrl: "" },
     openrouter: { label: "OpenRouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
-    ollama: { label: "Ollama (local)", name: "Ollama (local)", baseUrl: "http://localhost:11434" },
+    agentrouter: { label: "AgentRouter", name: "AgentRouter", baseUrl: "https://agentrouter.org/v1" },
+    ollama: { label: "Ollama (local)", name: "Ollama (local)", baseUrl: "http://localhost:11434/v1" },
+    google: { label: "Google", name: "Google", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
     custom: { label: "Custom (OpenAI-compatible)", name: "", baseUrl: "" },
   },
   ProviderFormSchema: {
@@ -41,7 +41,7 @@ vi.mock("./providers", () => ({
       const key = typeof rec["key"] === "string" ? rec["key"] : "";
       const type = rec["type"];
       if (name === "") return { success: false };
-      if (type !== "anthropic" && !/^https?:\/\/.+/i.test(url)) return { success: false };
+      if (!/^https?:\/\/.+/i.test(url)) return { success: false };
       if (type !== "ollama" && key.trim() === "" && key !== "keep-existing-key") {
         return { success: false };
       }
@@ -55,7 +55,7 @@ vi.mock("./providers", () => ({
     const url = typeof rec["baseUrl"] === "string" ? rec["baseUrl"].trim() : "";
     const key = typeof rec["key"] === "string" ? rec["key"] : "";
     if (name === "") return false;
-    if (rec["type"] !== "anthropic" && !/^https?:\/\/.+/i.test(url)) return false;
+    if (!/^https?:\/\/.+/i.test(url)) return false;
     if (key.trim() === "") {
       if (rec["type"] === "ollama") return true;
       return opts?.allowBlankKey === true;
@@ -84,10 +84,10 @@ import {
 
 function row(over: Partial<ProviderView> = {}): ProviderView {
   return {
-    id: "anthropic",
-    display_name: "Anthropic",
-    kind: "anthropic",
-    base_url: null,
+    id: "openrouter",
+    display_name: "OpenRouter",
+    kind: "openai-compatible",
+    base_url: "https://openrouter.ai/api/v1",
     model_count: 2,
     models_fetched_at: 1000,
     stale: false,
@@ -153,7 +153,7 @@ describe("ProvidersView cards", () => {
     expect(within(card).getByText("https://llm.office.example/v1")).toBeTruthy();
     // Masked, never echoed: the real key text must not appear anywhere.
     expect(within(card).getByText("No key")).toBeTruthy();
-    expect(screen.getByTestId("provider-key-anthropic").textContent).toBe("••••••••");
+    expect(screen.getByTestId("provider-key-openrouter").textContent).toBe("••••••••");
     expect(document.body.textContent).not.toContain("sk-live");
     expect(screen.getByTestId("provider-status-office").textContent).toBe("Untested");
     expect(screen.getByTestId("provider-enable-office").getAttribute("aria-checked")).toBe("true");
@@ -166,7 +166,7 @@ describe("ProvidersView cards", () => {
     const user = userEvent.setup();
     vi.mocked(providerList).mockResolvedValue([row()]);
     render(<ProvidersView />);
-    const toggle = await screen.findByTestId("provider-enable-anthropic");
+    const toggle = await screen.findByTestId("provider-enable-openrouter");
     await user.click(toggle);
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     await user.click(toggle);
@@ -176,14 +176,14 @@ describe("ProvidersView cards", () => {
   it("Test proves the key live: pill flips, notice shows count and latency", async () => {
     const user = userEvent.setup();
     vi.mocked(providerList).mockResolvedValue([row()]);
-    vi.mocked(providerRefresh).mockResolvedValue(modelsView("anthropic"));
+    vi.mocked(providerRefresh).mockResolvedValue(modelsView("openrouter"));
     render(<ProvidersView />);
-    await user.click(await screen.findByTestId("provider-test-anthropic"));
+    await user.click(await screen.findByTestId("provider-test-openrouter"));
     await waitFor(() => {
-      expect(providerRefresh).toHaveBeenCalledWith("anthropic");
+      expect(providerRefresh).toHaveBeenCalledWith("openrouter");
     });
     await waitFor(() => {
-      expect(screen.getByTestId("provider-status-anthropic").textContent).toBe("Connected");
+      expect(screen.getByTestId("provider-status-openrouter").textContent).toBe("Connected");
     });
     expect(screen.getByRole("status").textContent).toMatch(/connected · 2 models · \d+ms/i);
   });
@@ -193,9 +193,9 @@ describe("ProvidersView cards", () => {
     vi.mocked(providerList).mockResolvedValue([row()]);
     vi.mocked(providerRefresh).mockRejectedValue(new Error("provider refused the key"));
     render(<ProvidersView />);
-    await user.click(await screen.findByTestId("provider-test-anthropic"));
+    await user.click(await screen.findByTestId("provider-test-openrouter"));
     await waitFor(() => {
-      expect(screen.getByTestId("provider-status-anthropic").textContent).toBe("Error");
+      expect(screen.getByTestId("provider-status-openrouter").textContent).toBe("Error");
     });
     expect(screen.getByText(/provider refused the key/i)).toBeTruthy();
   });
@@ -205,9 +205,9 @@ describe("ProvidersView cards", () => {
     vi.mocked(providerList).mockResolvedValue([row()]);
     vi.mocked(providerRemove).mockResolvedValue(true);
     render(<ProvidersView />);
-    await user.click(await screen.findByTestId("provider-delete-anthropic"));
+    await user.click(await screen.findByTestId("provider-delete-openrouter"));
     const confirm = await screen.findByTestId("provider-delete-confirm");
-    expect(within(confirm).getAllByText(/anthropic/i).length).toBeGreaterThan(0);
+    expect(within(confirm).getAllByText(/openrouter/i).length).toBeGreaterThan(0);
     // Cancel dismisses without calling through.
     await user.click(screen.getByTestId("provider-delete-confirm-cancel"));
     await waitFor(() => {
@@ -215,11 +215,11 @@ describe("ProvidersView cards", () => {
     });
     expect(providerRemove).not.toHaveBeenCalled();
     // Reopen and confirm for real.
-    await user.click(screen.getByTestId("provider-delete-anthropic"));
+    await user.click(screen.getByTestId("provider-delete-openrouter"));
     await screen.findByTestId("provider-delete-confirm");
     await user.click(screen.getByTestId("provider-delete-confirm-ok"));
     await waitFor(() => {
-      expect(providerRemove).toHaveBeenCalledWith("anthropic");
+      expect(providerRemove).toHaveBeenCalledWith("openrouter");
     });
     expect(providerList).toHaveBeenCalledTimes(2);
   });
@@ -253,7 +253,7 @@ describe("ProvidersView add dialog", () => {
     await user.selectOptions(screen.getByTestId("provider-dialog-type"), "custom");
     const url = inputByTestId("provider-dialog-url");
     await user.type(url, "https://llm.office.example/v1");
-    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "openai");
+    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "google");
     // The user's own URL survives the type switch.
     expect(inputByTestId("provider-dialog-url").value).toBe(
       "https://llm.office.example/v1",
@@ -282,18 +282,18 @@ describe("ProvidersView add dialog", () => {
   it("saving a builtin adds it then proves the key live", async () => {
     const user = userEvent.setup();
     vi.mocked(providerList).mockResolvedValue([]);
-    vi.mocked(providerAddBuiltin).mockResolvedValue(row({ id: "openai", display_name: "OpenAI" }));
-    vi.mocked(providerSetKey).mockResolvedValue(modelsView("openai"));
+    vi.mocked(providerAddBuiltin).mockResolvedValue(row({ id: "google", display_name: "Google" }));
+    vi.mocked(providerSetKey).mockResolvedValue(modelsView("google"));
     render(<ProvidersView />);
     await user.click(await screen.findByTestId("provider-add"));
     await screen.findByTestId("provider-dialog");
-    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "openai");
+    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "google");
     await user.type(screen.getByTestId("provider-dialog-key"), "sk-live");
     await user.click(screen.getByTestId("provider-dialog-save"));
     await waitFor(() => {
-      expect(providerAddBuiltin).toHaveBeenCalledWith("openai");
+      expect(providerAddBuiltin).toHaveBeenCalledWith("google");
     });
-    expect(providerSetKey).toHaveBeenCalledWith("openai", "sk-live");
+    expect(providerSetKey).toHaveBeenCalledWith("google", "sk-live");
     await waitFor(() => {
       expect(screen.queryByTestId("provider-dialog")).toBeNull();
     });
@@ -327,14 +327,14 @@ describe("ProvidersView add dialog", () => {
   it("a rejected key on save shows the refusal and keeps the dialog open", async () => {
     const user = userEvent.setup();
     vi.mocked(providerList).mockResolvedValue([]);
-    vi.mocked(providerAddBuiltin).mockResolvedValue(row({ id: "openai", display_name: "OpenAI" }));
+    vi.mocked(providerAddBuiltin).mockResolvedValue(row({ id: "google", display_name: "Google" }));
     // The host rolls the bad key back; the row stays keyless and the notice
     // says why — the dialog stays open so the key can be fixed.
     vi.mocked(providerSetKey).mockRejectedValue(new Error("provider refused the key"));
     render(<ProvidersView />);
     await user.click(await screen.findByTestId("provider-add"));
     await screen.findByTestId("provider-dialog");
-    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "openai");
+    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "google");
     await user.type(screen.getByTestId("provider-dialog-key"), "sk-bad");
     await user.click(screen.getByTestId("provider-dialog-save"));
     await waitFor(() => {
@@ -348,9 +348,9 @@ describe("ProvidersView edit dialog", () => {
   async function openEdit(): Promise<ReturnType<typeof userEvent.setup>> {
     const user = userEvent.setup();
     vi.mocked(providerList).mockResolvedValue([row()]);
-    vi.mocked(providerModels).mockResolvedValue(modelsView("anthropic"));
+    vi.mocked(providerModels).mockResolvedValue(modelsView("openrouter"));
     render(<ProvidersView />);
-    await user.click(await screen.findByTestId("provider-edit-anthropic"));
+    await user.click(await screen.findByTestId("provider-edit-openrouter"));
     await screen.findByTestId("provider-dialog");
     return user;
   }
@@ -358,7 +358,7 @@ describe("ProvidersView edit dialog", () => {
   it("shows stored fields with a blank Replace-key input — never the stored key", async () => {
     await openEdit();
     expect(inputByTestId("provider-dialog-name").value).toBe(
-      "Anthropic",
+      "OpenRouter",
     );
     const key = inputByTestId("provider-dialog-key");
     expect(key.value).toBe("");
@@ -379,7 +379,7 @@ describe("ProvidersView edit dialog", () => {
     const user = await openEdit();
     await user.click(screen.getByTestId("provider-dialog-fetch"));
     await waitFor(() => {
-      expect(providerModels).toHaveBeenCalledWith("anthropic");
+      expect(providerModels).toHaveBeenCalledWith("openrouter");
     });
     expect(await screen.findByText("claude-x")).toBeTruthy();
     await user.type(screen.getByTestId("provider-dialog-model-input"), "claude-z");
@@ -391,7 +391,7 @@ describe("ProvidersView edit dialog", () => {
 
   it("Test proves live and shows the connected count; key edits reset to untested", async () => {
     const user = await openEdit();
-    vi.mocked(providerRefresh).mockResolvedValue(modelsView("anthropic"));
+    vi.mocked(providerRefresh).mockResolvedValue(modelsView("openrouter"));
     await user.click(screen.getByTestId("provider-dialog-test"));
     await waitFor(() => {
       expect(screen.getByTestId("provider-dialog-status").textContent).toBe("Connected");
@@ -404,11 +404,11 @@ describe("ProvidersView edit dialog", () => {
 
   it("saving a replacement key proves it live and closes", async () => {
     const user = await openEdit();
-    vi.mocked(providerSetKey).mockResolvedValue(modelsView("anthropic"));
+    vi.mocked(providerSetKey).mockResolvedValue(modelsView("openrouter"));
     await user.type(screen.getByTestId("provider-dialog-key"), "sk-new");
     await user.click(screen.getByTestId("provider-dialog-save"));
     await waitFor(() => {
-      expect(providerSetKey).toHaveBeenCalledWith("anthropic", "sk-new");
+      expect(providerSetKey).toHaveBeenCalledWith("openrouter", "sk-new");
     });
     await waitFor(() => {
       expect(screen.queryByTestId("provider-dialog")).toBeNull();

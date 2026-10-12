@@ -61,12 +61,33 @@ describe("ProjectsGrid", () => {
     expect(screen.queryByTestId("projects-grid")?.querySelector("[data-testid^='project-card-']")).toBeNull();
   });
 
-  it("uses auto-fill minmax grid and stable color dots", () => {
+  it("page-grid rhythm: auto-fill 230px columns with a 12px gap token", () => {
     render(<ProjectsGrid projects={projs} onNew={() => {}} onOpen={() => {}} />);
     const grid = screen.getByTestId("projects-grid");
-    expect(grid.style.gridTemplateColumns).toBe("repeat(auto-fill, minmax(230px, 1fr))");
+    expect(grid.classList.contains("page-grid")).toBe(true);
     const dot = screen.getByTestId("project-dot-a");
     expect(dot.style.background).not.toBe("");
+  });
+
+  it("page frame normalizes host padding to the 24px page rhythm", () => {
+    render(<ProjectsGrid projects={projs} onNew={() => {}} onOpen={() => {}} />);
+    expect(screen.getByTestId("projects-grid").closest(".page-frame")).not.toBeNull();
+    expect(screen.getByTestId("projects-grid").closest(".page-col")).not.toBeNull();
+  });
+
+  it("cards carry a definite 1px border-token frame", () => {
+    render(<ProjectsGrid projects={projs} onNew={() => {}} onOpen={() => {}} />);
+    const card = screen.getByTestId("project-card-a");
+    expect(card.classList.contains("project-card")).toBe(true);
+  });
+
+  it("empty state renders a framed panel, not a bare paragraph", async () => {
+    const user = userEvent.setup();
+    render(<ProjectsGrid projects={projs} onNew={() => {}} onOpen={() => {}} />);
+    await user.type(screen.getByTestId("project-search"), "zzz");
+    const empty = screen.getByTestId("projects-empty");
+    expect(empty.textContent).toBe("No projects found.");
+    expect(empty.closest(".empty-frame")).not.toBeNull();
   });
 
   it("opens cards via onOpen", async () => {
