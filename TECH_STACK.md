@@ -184,6 +184,8 @@ part of the job, otherwise the next person cannot tell what was actually tested.
 | A JS/Rust transpiler for artifacts | Sucrase, in-browser. The compile must happen client-side because the artifact runs client-side. |
 | A local embedding model | ~200 MB. Would triple the binary for a v3 feature. Embeddings are a remote API, opt-in. |
 | macOS / WKWebView | Dropped from scope. Windows is the low-risk platform; Linux is the open one. |
+| Markdown-input component (`@uiw/react-md-editor`, MDXEditor, Milkdown) | Researched 2026-10-11 for composer fence/list editing. Rejected: a document editor fights the chat composer (Enter-to-send, slash menu, footer actions, draft model) and would need the heavy overriding §4 forbids. `@uiw/react-md-editor` (textarea-based, ~150 KB, maintained) is the closest fit and stays the fallback if hand-rolled editing outgrows itself; MDXEditor/Milkdown (Lexical WYSIWYG) are document-shaped, wrong for chat. Fence opener/Tab/paste/list-continuation live as ~120 lines of pure helpers in `Composer.tsx` instead. |
+| `highlight.js` 11.12.0 | Researched 2026-10-11 (re-checked 2026-10-12) for transcript/preview code-block colouring. Rejected: **BSD-3-Clause** — outside the MIT/ISC/Apache-2.0/CC0 allowlist §6.1 requires — and the common language bundle is ~40 grammars with `sideEffects` declared, limiting tree-shaking. `shiki` (MIT, already vetted in `docs/dependencies.md` §5) is adopted instead; it also matches the no-`eval` posture because its JavaScript regex engine needs none. |
 
 ### 6.1 Rules for adopting a dependency
 

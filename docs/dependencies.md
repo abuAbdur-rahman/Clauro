@@ -223,6 +223,28 @@ per **D24/D97**; `reqwest` is the byte pipe underneath it either way.
 | `ajv` | JSON Schema, not TypeScript-first: the type has to be written twice and then kept in sync by hand — exactly the drift the contract surface exists to prevent. |
 | Hand-written type guards | `CONTRACTS.md` shapes arrive from the host and from disk; a hand-written guard per shape is a bug farm with a type annotation. |
 
+### 4.5 `shiki` (npm) — syntax highlighting for code blocks
+
+Adopted 2026-10-12 for transcript and composer-preview code blocks (`src/features/transcript/codeblocks.ts`).
+
+| Field | Value |
+|---|---|
+| Package | `shiki` **4.5.0** |
+| Licence | **MIT** — compatible |
+| URL | https://www.npmjs.com/package/shiki · https://github.com/shikijs/shiki |
+| Maintenance | Current major, actively maintained at check date. |
+| Verified | 2026-10-12 (npm registry; `shiki/core` + JavaScript regex engine, no WASM, no `eval`) |
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| `highlight.js` 11.12.0 | **BSD-3-Clause** — outside the §5a allowlist (MIT/ISC/Apache-2.0/CC0). Also ships a ~40-grammar common bundle marked `sideEffects`, which limits tree-shaking. Recorded in `TECH_STACK.md` §6. |
+| Hand-rolled regex tokeniser | A decade of edge cases (raw strings, nested comments, template literals) re-discovered by us; §5a's textbook case. |
+| Prism | CSS-class-token model would require shipping a theme stylesheet through the transcript's sanitiser path; shiki's DOM-enhancement pass keeps colours out of the purifier's scope entirely. |
+
+Wired as a **post-sanitisation DOM pass**: `renderMarkdown` stays plaintext, and `enhanceCodeBlocks` colourises the already-purified `<pre><code>` by copying shiki's token nodes in — nothing re-enters the string-HTML path.
+
 ---
 
 ## 5. Identified, vetted, NOT installed
@@ -236,7 +258,7 @@ needs its own task, and its own `TECH_STACK.md` row before it lands (`AGENTS.md`
 | Filesystem watch for the workspace tree | `notify` | 8.2.0 | CC0/MIT | **Adopt when `010` lands.** |
 | Virtualised transcript | `@tanstack/react-virtual` | 3.14.13 | MIT | **Likely.** A long thread is a flat append-only list that must not render every block. |
 | Markdown in transcript | `react-markdown` | 10.1.0 | MIT | **Likely.** Sanitisation is ours to get right; not a default-export decision. |
-| Syntax highlight | `shiki` | 4.5.0 | MIT | **Likely.** TextMate grammars, no `eval`. |
+| Syntax highlight | `shiki` | 4.5.0 | MIT | **Adopted 2026-10-12** — see §4.5. TextMate grammars, no `eval`. |
 | Command palette | `cmdk` | 1.1.1 | MIT | **Likely for D42/D44.** |
 | Hotkeys | `react-hotkeys-hook` | 5.3.3 | MIT | **Likely for D66.** |
 | Pseudo-terminal for `bash` | `portable-pty` | 0.9.0 | MIT | **Open question for D28/D30.** A pty changes signal and exit-code semantics; do not adopt without reading that task. |

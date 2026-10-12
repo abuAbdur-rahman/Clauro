@@ -26,6 +26,13 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<li>one</li>");
   });
 
+  it("renders ordered lists with numbering intact", async () => {
+    const html = await renderMarkdown("1. first\n2. second\n3. third");
+    expect(html).toContain("<ol");
+    expect(html).toContain("<li>first</li>");
+    expect(html).toContain("<li>third</li>");
+  });
+
   // ── D100: the purifier is not optional ────────────────────────────────────
 
   it("strips a script tag", async () => {
