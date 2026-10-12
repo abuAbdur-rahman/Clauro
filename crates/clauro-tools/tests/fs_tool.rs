@@ -234,6 +234,56 @@ fn traversal_symlink_and_reserved_all_refused() {
     }
 }
 
+#[test]
+fn grep_glob_never_follow_junctions_out_of_workspace() {
+    // audit CRITICAL (01/02): `walk_files` followed directory junctions
+    // (`path.is_dir()` is true for a junction) and never canonicalised, so the
+    // always-on grep/glob listed and read files outside the workspace — an
+    // out-of-tree read oracle reachable from a single tool call. Fix: skip
+    // reparse points / canonicalise + contain each dir, plus a visited set so
+    // a cycle terminates. Junctions via `mklink /J` are UNPRIVILEGED on
+    // Windows, so this test always exercises the real branch (unlike the
+    // privileged symlink test above, which degrades to a tautology).
+    let t = trees();
+    let (reg, _, epoch) = host(&t, None);
+    // A real in-workspace file grep must still find.
+    std::fs::write(t.session.join("inside.txt"), "NEEDLE_OK inside").expect("seed");
+    // An out-of-workspace directory holding a needle that must never surface.
+    let outside = t.tmp.join("outside_dir");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("secret.txt"), "NEEDLE_SECRET outside").expect("seed");
+    #[cfg(windows)]
+    let junction = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(t.session.join("escape"))
+        .arg(&outside)
+        .status()
+        .expect("run mklink");
+    #[cfg(not(windows))]
+    let junction = std::os::unix::fs::symlink(&outside, t.session.join("escape"));
+    #[cfg(windows)]
+    assert!(junction.success(), "junction must be creatable (unprivileged)");
+    #[cfg(not(windows))]
+    junction.expect("symlink must be creatable");
+
+    // grep: the out-of-workspace needle must not appear; the in-workspace one
+    // must still be found (so this is not a false pass by breaking grep).
+    let grep = ok_text(run(&reg, epoch, json!({"command": "grep", "pattern": "NEEDLE_"})));
+    assert!(grep.contains("NEEDLE_OK"), "in-workspace grep works: {grep}");
+    assert!(
+        !grep.contains("NEEDLE_SECRET"),
+        "grep leaked a file outside the workspace: {grep}"
+    );
+
+    // glob: the junction target must not be listed.
+    let glob = ok_text(run(&reg, epoch, json!({"command": "glob", "pattern": "**/*.txt"})));
+    assert!(glob.contains("inside.txt"), "glob lists in-workspace: {glob}");
+    assert!(
+        !glob.contains("secret.txt"),
+        "glob leaked a file outside the workspace: {glob}"
+    );
+}
+
 // ── uploads ──────────────────────────────────────────────────────────────────
 
 #[test]

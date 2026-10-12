@@ -3,7 +3,8 @@
 //! here: rows gone, source untouched on fork.
 
 use clauro_store::{
-    MessageRole, NewBlock, NewMessage, NewProject, NewThread, NewToolResult, NewUsage, Store,
+    MessageRole, NewArtifact, NewBlock, NewCompactionEvent, NewMessage, NewProject, NewThread,
+    NewToolResult, NewUsage, Store,
 };
 
 fn thread(store: &Store, id: &str) {
@@ -119,4 +120,105 @@ fn delete_project_clears_threads_and_memories() {
         .unwrap();
     store.delete_project("p1").unwrap();
     assert!(store.get_thread("pt1").unwrap().is_none());
+}
+
+#[test]
+fn delete_thread_removes_artifact_and_compaction_rows() {
+    // V6 audit CRITICAL: delete_thread skipped `artifact`/`compaction_event`
+    // (both REFERENCES thread(id), no CASCADE) and ran 6 DELETEs with no
+    // transaction — an artifact-bearing thread destroyed its history then
+    // failed FK forever. Fix: children first, one transaction.
+    let store = Store::open_memory().unwrap();
+    thread(&store, "t1");
+    store
+        .insert_artifact_version(
+            &NewArtifact {
+                id: "art-1".to_string(),
+                thread_id: "t1".to_string(),
+                title: "demo".to_string(),
+                media_type: "text/html".to_string(),
+                source_path: "artifacts/art-1-1/source".to_string(),
+                created_at: 1,
+            },
+            1,
+        )
+        .unwrap();
+    store
+        .insert_compaction_event(NewCompactionEvent {
+            id: "ce-1".to_string(),
+            thread_id: "t1".to_string(),
+            generation: 1,
+            summary_block: "{}".to_string(),
+            covers_from: 0,
+            covers_to: 1,
+            summary_tokens: 0,
+            summary_used_tokens: None,
+            created_at: 1,
+        })
+        .unwrap();
+    // Must not error on FK (thread row goes last), must not leave orphans.
+    store.delete_thread("t1").unwrap();
+    assert_eq!(store.thread_artifact_count("t1").unwrap(), 0);
+    assert_eq!(store.thread_compaction_count("t1").unwrap(), 0);
+    assert!(store.get_thread("t1").unwrap().is_none());
+    assert_eq!(store.thread_message_count("t1").unwrap(), 0);
+}
+
+#[test]
+fn delete_project_removes_artifact_bearing_threads() {
+    // V6 audit CRITICAL: delete_project ran its artifact DELETE *after* the
+    // thread loop → dead code exactly when it mattered; compaction_event never
+    // deleted anywhere. A project with any artifact-bearing thread could never
+    // be deleted. Fix: children inside the same transaction as the thread loop.
+    let store = Store::open_memory().unwrap();
+    store
+        .insert_project(NewProject {
+            id: "p1".to_string(),
+            name: "P".to_string(),
+            instructions: String::new(),
+            bash_enabled: false,
+        })
+        .unwrap();
+    store
+        .insert_thread(NewThread {
+            id: "pt1".to_string(),
+            project_id: Some("p1".to_string()),
+            title: None,
+            incognito: false,
+            memory_off: false,
+            system_frozen: "s".to_string(),
+            tools_frozen: "[]".to_string(),
+        })
+        .unwrap();
+    store
+        .insert_artifact_version(
+            &NewArtifact {
+                id: "art-1".to_string(),
+                thread_id: "pt1".to_string(),
+                title: "demo".to_string(),
+                media_type: "text/html".to_string(),
+                source_path: "artifacts/art-1-1/source".to_string(),
+                created_at: 1,
+            },
+            1,
+        )
+        .unwrap();
+    store
+        .insert_compaction_event(NewCompactionEvent {
+            id: "ce-1".to_string(),
+            thread_id: "pt1".to_string(),
+            generation: 1,
+            summary_block: "{}".to_string(),
+            covers_from: 0,
+            covers_to: 1,
+            summary_tokens: 0,
+            summary_used_tokens: None,
+            created_at: 1,
+        })
+        .unwrap();
+    store.delete_project("p1").unwrap();
+    assert!(store.get_thread("pt1").unwrap().is_none());
+    assert_eq!(store.thread_artifact_count("pt1").unwrap(), 0);
+    assert_eq!(store.thread_compaction_count("pt1").unwrap(), 0);
+    assert!(store.get_project("p1").unwrap().is_none());
 }

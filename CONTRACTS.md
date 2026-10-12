@@ -215,7 +215,7 @@ CREATE INDEX idx_compaction_thread ON compaction_event(thread_id, generation DES
 -- I3 in §2 (generation non-decreasing) is what makes this well-founded.
 
 CREATE TABLE provider (
-  id          TEXT PRIMARY KEY,   -- 'anthropic', 'openai', 'openrouter', or a custom id
+  id          TEXT PRIMARY KEY,   -- 'openrouter', 'agentrouter', 'ollama', 'google', or a custom id (D125)
   kind        TEXT NOT NULL CHECK (kind IN ('anthropic','openai_compatible')),
   display_name TEXT NOT NULL,     -- our own words, never the vendor's tagline
   base_url    TEXT,               -- openai_compatible only; Anthropic's URL is fixed
