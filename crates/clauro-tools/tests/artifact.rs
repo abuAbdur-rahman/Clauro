@@ -184,6 +184,47 @@ fn refresh_same_id_bumps_version_never_rewrites() {
 }
 
 #[test]
+fn traversal_artifact_id_refused_and_writes_nothing() {
+    // audit CRITICAL (01): model-controlled `artifactId` was joined straight
+    // into a path with no validation — `../../evil` escaped the workspace and
+    // `C:\evil` replaced the whole path. Fix: reject anything outside
+    // `^[A-Za-z0-9_-]+$` before any join.
+    let t = trees();
+    let (reg, epoch) = host(&t);
+    let outside = t
+        .tmp
+        .canonicalize()
+        .expect("tmp")
+        .parent()
+        .expect("parent")
+        .join("clauro-artifact-escape");
+    for evil in [
+        "../../evil",
+        "..\\evil",
+        "../..",
+        outside.to_str().expect("utf8"),
+    ] {
+        let out = run(
+            &reg,
+            epoch,
+            json!({"title": "D", "mediaType": "text/html", "source": "x", "artifactId": evil}),
+        );
+        match out {
+            ToolOutcome::Error { message } => {
+                assert!(!message.is_empty(), "typed error for {evil}")
+            }
+            other => panic!("traversal artifactId {evil} must be refused, got {other:?}"),
+        }
+    }
+    // Nothing written: no artifacts dir under the session, no escape dir.
+    assert!(
+        !t.session.join("artifacts").exists(),
+        "no artifacts dir after refusals"
+    );
+    assert!(!outside.exists(), "nothing written outside the workspace");
+}
+
+#[test]
 fn bad_media_type_oversize_and_shape_refused() {
     let t = trees();
     let (reg, epoch) = host(&t);

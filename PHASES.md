@@ -75,6 +75,7 @@ a display.
 | `Tasks/001-dual-engine-sandbox-spike.md` | ◐ Windows verified · **Linux not run** | — (produces a verdict, not code) | D2, D6, D45, D77 |
 | `Tasks/002-workspace-skeleton-and-ci.md` | ✅ | — | D50 |
 | `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI; providers addendum 2026-10-07 (D116/D117) | `ProviderAdapter.limits` + §1 (`provider`, `provider_model`) | D19, D23, D49, D50, D53, D76, D116, D117 |
+| `Tasks/033-five-provider-set.md` | ✅ verified 2026-10-11, Windows host (lib 80/80, vitest 473/473, tsc + eslint green; live-key proof not run by rule) | §1 (`provider` builtin ids) | D125 |
 
 **Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
 Windows CI jobs. **Linux jobs parked 2026-10-06 (D114), owned by Phase 7 (D115)** — see the Phase 7 gate.

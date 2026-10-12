@@ -80,12 +80,24 @@ pub fn create_artifact(
     if source.len() > ARTIFACT_MAX_SOURCE_BYTES {
         return Err(ArtifactError::TooBig(source.len()));
     }
+    // A model-controlled id is joined straight into a path, so it carries the
+    // same trust as a path fragment: `../../evil` would escape the workspace
+    // and `C:\evil` would replace the whole path (`Path::join` swaps in an
+    // absolute). Accept only `^[A-Za-z0-9_-]+$`; generated ids already do.
     let id = input
         .get("artifactId")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| Store::new_id("art"));
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ArtifactError::BadInput(format!(
+            "artifactId accepts letters, digits, '_' and '-' only: {id}"
+        )));
+    }
     let version = store
         .max_artifact_version(thread_id, &id)
         .map(|v| v + 1)

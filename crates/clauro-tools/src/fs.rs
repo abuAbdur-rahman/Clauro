@@ -183,8 +183,21 @@ impl FsHost {
         Ok(names.join("\n"))
     }
 
+    /// Breadth-first walk of every regular file under `root`.
+    ///
+    /// Containment is decided on the **canonical** target, not the link
+    /// (D34): `path.is_dir()` follows a junction/symlink, so a link planted
+    /// in the workspace pointing at `C:\` or `/etc` would otherwise pull the
+    /// always-on grep/glob into an out-of-tree read oracle. A canonical
+    /// `HashSet` doubles as the visited set, so a link cycle terminates
+    /// instead of walking forever.
     fn walk_files(&self, root: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(root_canon) = root.canonicalize() else {
+            return;
+        };
         let mut stack = vec![root.to_path_buf()];
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(root_canon.clone());
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -192,7 +205,13 @@ impl FsHost {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
-                    stack.push(path);
+                    let Ok(canon) = path.canonicalize() else {
+                        continue; // broken/denied link: skipped, never followed
+                    };
+                    // Under root, and not a cycle already walked.
+                    if canon.starts_with(&root_canon) && seen.insert(canon) {
+                        stack.push(path);
+                    }
                 } else if out.len() < GLOB_CAP {
                     out.push(path);
                 }

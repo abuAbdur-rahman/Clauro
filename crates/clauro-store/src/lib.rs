@@ -1243,25 +1243,73 @@ impl Store {
         )?)
     }
 
-    /// Delete a thread: messages, blocks, usage, tool results go; memories
-    /// survive by design (D10). Files on disk removed by caller (019).
+    pub fn thread_artifact_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM artifact WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn thread_compaction_count(&self, thread_id: &str) -> Result<i64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM compaction_event WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn get_project(&self, id: &str) -> Result<Option<String>, StoreError> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn
+            .query_row("SELECT name FROM project WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Delete a thread: messages, blocks, usage, tool results, artifacts and
+    /// compaction events go; memories survive by design (D10). Files on disk
+    /// removed by caller (019).
+    ///
+    /// Children are deleted **before** the `thread` row and inside one
+    /// transaction. `artifact` and `compaction_event` both carry an FK to
+    /// `thread(id)` with no `ON DELETE CASCADE`, so deleting the parent first
+    /// raises a constraint mid-loop and leaves the thread undeletable; the
+    /// transaction means a failure rolls back to the state it started in
+    /// instead of dropping some tables and not others.
     pub fn delete_thread(&self, thread_id: &str) -> Result<(), StoreError> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        Self::delete_thread_rows(&tx, thread_id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The child-first delete, over an open transaction. Shared by
+    /// `delete_thread` (one thread) and `delete_project` (every thread in the
+    /// project), so both get the same ordering and the same atomicity.
+    fn delete_thread_rows(tx: &rusqlite::Transaction<'_>, thread_id: &str) -> Result<(), StoreError> {
+        tx.execute(
             "DELETE FROM block WHERE message_id IN (SELECT id FROM message WHERE thread_id = ?1)",
             [thread_id],
         )?;
-        self.conn
-            .execute("DELETE FROM usage WHERE thread_id = ?1", [thread_id])?;
-        self.conn
-            .execute("DELETE FROM tool_result WHERE thread_id = ?1", [thread_id])?;
-        self.conn
-            .execute("DELETE FROM message WHERE thread_id = ?1", [thread_id])?;
-        self.conn.execute(
+        tx.execute("DELETE FROM usage WHERE thread_id = ?1", [thread_id])?;
+        tx.execute(
+            "DELETE FROM tool_result WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        tx.execute("DELETE FROM artifact WHERE thread_id = ?1", [thread_id])?;
+        tx.execute(
+            "DELETE FROM compaction_event WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        tx.execute("DELETE FROM message WHERE thread_id = ?1", [thread_id])?;
+        tx.execute(
             "DELETE FROM memory_setting WHERE thread_id = ?1",
             [thread_id],
         )?;
-        self.conn
-            .execute("DELETE FROM thread WHERE id = ?1", [thread_id])?;
+        tx.execute("DELETE FROM thread WHERE id = ?1", [thread_id])?;
         Ok(())
     }
 
@@ -1327,28 +1375,34 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a project: threads (rows), memories, attachments, artifacts,
-    /// then the project row. Subtree files removed by caller (019).
+    /// Delete a project: every thread's rows, then memories, attachments and
+    /// the project row, in one transaction. Subtree files removed by caller
+    /// (019).
+    ///
+    /// The per-thread child rows (blocks, usage, tool results, **artifacts**
+    /// and **compaction events**) go through `delete_thread_rows` inside this
+    /// same transaction. The previous version deleted threads first and ran a
+    /// `DELETE FROM artifact ... project_id` *afterward — dead code, since by
+    /// then the threads (and their artifacts) were already gone — and never
+    /// touched `compaction_event` at all, so any project with an
+    /// artifact-bearing thread could not be deleted.
     pub fn delete_project(&self, project_id: &str) -> Result<(), StoreError> {
-        let threads: Vec<String> = self
-            .conn
+        let tx = self.conn.unchecked_transaction()?;
+        let threads: Vec<String> = tx
             .prepare("SELECT id FROM thread WHERE project_id = ?1")?
             .query_map([project_id], |row| row.get(0))?
             .filter_map(Result::ok)
             .collect();
         for t in &threads {
-            self.delete_thread(t)?;
+            Self::delete_thread_rows(&tx, t)?;
         }
-        self.conn
-            .execute("DELETE FROM memory WHERE project_id = ?1", [project_id])?;
-        self.conn
-            .execute("DELETE FROM attachment WHERE project_id = ?1", [project_id])?;
-        self.conn.execute(
-            "DELETE FROM artifact WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+        tx.execute("DELETE FROM memory WHERE project_id = ?1", [project_id])?;
+        tx.execute(
+            "DELETE FROM attachment WHERE project_id = ?1",
             [project_id],
         )?;
-        self.conn
-            .execute("DELETE FROM project WHERE id = ?1", [project_id])?;
+        tx.execute("DELETE FROM project WHERE id = ?1", [project_id])?;
+        tx.commit()?;
         Ok(())
     }
 

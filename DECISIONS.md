@@ -1423,6 +1423,26 @@ the *dispatch* closure is the cited host code plus the two pinned premises — n
 rejection. Any future `remote` capability must revisit this decision first; the test fails
 until it does.
 
+**D125 — The builtin provider set is OpenRouter, AgentRouter, Ollama, and Google; Ollama is keyless.**
+
+Decided 2026-10-11 (task 033). The original three builtins (Anthropic, OpenAI,
+OpenRouter) predated the BYOK focus: Anthropic's fixed-URL special case and OpenAI's
+curated row earned no keep against the five endpoints in active use. All four are
+OpenAI-compatible, so no `ProviderKind`, translator, or parser changes — the swap is
+roots only: AgentRouter at `https://agentrouter.org/v1` (behaviour MIRRORED from
+OpenCode's custom-provider pattern — permitted source, no code reused), Google at its
+documented OpenAI-compat root
+`https://generativelanguage.googleapis.com/v1beta/openai`, Ollama at
+`http://localhost:11434/v1` (the `/v1` the old root was missing — both `/models`
+fetch and `/chat/completions` turns 404'd without it). `anthropic`/`openai` ids are
+unreserved: existing stored rows keep working (rows persist; `builtins()` only gates
+new adds), and a custom row may reuse the names. Ollama is keyless by design — blank
+keys accepted at set/refresh/turn, auth header omitted, never sent as empty `Bearer `
+— every other provider still rejects blanks loudly. Two honest limitations ship with
+it, not papered over: AgentRouter's live-turn quirks (client fingerprinting,
+malformed `data: null` SSE chunk) are documented, not handled; AgentRouter models
+without models.dev coverage stay unselectable under D117's no-zero-guess rule.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:
