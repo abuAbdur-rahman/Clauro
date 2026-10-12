@@ -143,7 +143,8 @@ export function ProjectsGrid({
     `${p.name} ${projectDescription(p)}`.toLowerCase().includes(needle),
   );
   return (
-    <div>
+    <div className="page-frame">
+      <div className="page-col">
       <div className="mb-3 flex items-center justify-between">
         <h1 className="font-serif text-2xl text-neutral-100">Projects</h1>
         <Button onClick={onNew}>
@@ -159,13 +160,8 @@ export function ProjectsGrid({
         onChange={(e) => {
           setQ(e.target.value);
         }}
-        className="mb-4"
       />
-      <div
-        data-testid="projects-grid"
-        className="grid gap-4"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))" }}
-      >
+      <div data-testid="projects-grid" className="page-grid">
         {visible.map((p) => {
           const updated = formatProjectUpdated(p.updatedAt, now);
           const meta =
@@ -176,9 +172,9 @@ export function ProjectsGrid({
             <Card
               key={p.id}
               data-testid={`project-card-${p.id}`}
-              className="min-h-[120px] transition-colors hover:bg-accent/50"
+              className="project-card shadow-none transition-colors hover:bg-accent/50"
             >
-              <CardHeader className="flex-1">
+              <CardHeader className="project-card-head">
                 <CardTitle>
                   <button
                     type="button"
@@ -201,7 +197,7 @@ export function ProjectsGrid({
                 )}
                 <p
                   data-testid={`project-meta-${p.id}`}
-                  className="mt-auto pt-2 text-xs text-neutral-400"
+                  className="mt-auto text-xs text-neutral-400"
                 >
                   {meta}
                 </p>
@@ -211,15 +207,18 @@ export function ProjectsGrid({
         })}
       </div>
       {visible.length === 0 && (
-        <p data-testid="projects-empty" className="mt-4 text-sm text-neutral-400">
-          No projects found.
-        </p>
+        <div className="empty-frame">
+          <p data-testid="projects-empty" className="text-sm text-neutral-400">
+            No projects found.
+          </p>
+        </div>
       )}
       <NewProjectDialog
         open={dialogOpen ?? false}
         onOpenChange={onDialogChange ?? (() => {})}
         onCreate={onCreate ?? (() => {})}
       />
+      </div>
     </div>
   );
 }

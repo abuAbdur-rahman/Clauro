@@ -25,29 +25,35 @@ pub struct Builtin {
     pub base_url: Option<&'static str>,
 }
 
-/// Built-in providers, in picker order. Three first-class entries plus the
+/// Built-in providers, in picker order. Four first-class entries plus the
 /// `custom` shape handled by `validate_base_url`/`validate_custom_id` — one
 /// generic path covers every other OpenAI-compatible endpoint instead of N
-/// curated rows that rot on vendor cadence.
+/// curated rows that rot on vendor cadence (D125).
 pub fn builtins() -> Vec<Builtin> {
     vec![
-        Builtin {
-            id: "anthropic",
-            display_name: "Anthropic",
-            kind: ProviderKind::Anthropic,
-            base_url: None,
-        },
-        Builtin {
-            id: "openai",
-            display_name: "OpenAI",
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: Some("https://api.openai.com/v1"),
-        },
         Builtin {
             id: "openrouter",
             display_name: "OpenRouter",
             kind: ProviderKind::OpenAiCompatible,
             base_url: Some("https://openrouter.ai/api/v1"),
+        },
+        Builtin {
+            id: "agentrouter",
+            display_name: "AgentRouter",
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: Some("https://agentrouter.org/v1"),
+        },
+        Builtin {
+            id: "ollama",
+            display_name: "Ollama (local)",
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: Some("http://localhost:11434/v1"),
+        },
+        Builtin {
+            id: "google",
+            display_name: "Google",
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         },
     ]
 }
@@ -125,6 +131,26 @@ pub fn validate_custom_id(raw: &str) -> Result<String, ProviderError> {
         ));
     }
     Ok(id)
+}
+
+/// Whether a provider row accepts a blank key. Only the local-model case —
+/// Ollama serves loopback with no key — every keyed endpoint still rejects
+/// blanks loudly at set/refresh/turn time (D125).
+#[must_use]
+pub fn allows_blank_key(id: &str) -> bool {
+    id.trim() == "ollama"
+}
+
+/// The bearer value for a key, or `None` when blank. A blank key must omit
+/// the header, never send `Bearer ` or `Bearer null`.
+#[must_use]
+pub(crate) fn auth_header(key: &str) -> Option<String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("Bearer {trimmed}"))
+    }
 }
 
 /// Freshness over an injected clock. `None` (never fetched) is always stale;
@@ -311,7 +337,11 @@ fn fetch_live_models(
             let root = base_url.ok_or_else(|| ProviderError::BadInput {
                 reason: "this provider has no endpoint URL".to_string(),
             })?;
-            client.get(format!("{root}/models")).bearer_auth(key)
+            let req = client.get(format!("{root}/models"));
+            match auth_header(key) {
+                Some(value) => req.header("authorization", value),
+                None => req,
+            }
         }
     };
     let resp = req.send().map_err(|e| ProviderError::Fetch {
@@ -512,18 +542,14 @@ pub fn provider_remove(
 /// Store a provider key and prove it: the key is validated by fetching the
 /// live model list, which is stored on success. On failure the key is rolled
 /// back out of the keychain and nothing is stored — a typo'd key fails here,
-/// loudly, not at the first turn.
+/// loudly, not at the first turn. The `ollama` row accepts a blank key: the
+/// local server has none, and the proof fetch runs without auth.
 #[tauri::command]
 pub fn provider_set_key(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
     key: String,
 ) -> Result<ModelsView, ProviderError> {
-    if key.trim().is_empty() {
-        return Err(ProviderError::BadInput {
-            reason: "key must not be blank".to_string(),
-        });
-    }
     let (kind, base_url) = {
         let store = state.store.lock().map_err(|_| ProviderError::Store {
             reason: "store lock poisoned".to_string(),
@@ -535,6 +561,11 @@ pub fn provider_set_key(
         })?;
         (row.kind, row.base_url.clone())
     };
+    if key.trim().is_empty() && !allows_blank_key(&id) {
+        return Err(ProviderError::BadInput {
+            reason: "key must not be blank".to_string(),
+        });
+    }
     crate::keyring_store::store(&id, key.trim()).map_err(|_| ProviderError::Store {
         reason: "cannot write the keychain".to_string(),
     })?;
@@ -715,6 +746,7 @@ pub fn provider_models(
 
 /// Re-fetch one provider's live model list. Needs the stored key — a
 /// keyless provider fails `NoKey`, which is the UI's cue to ask for one.
+/// The `ollama` row is exempt: keyless by design, refreshed without auth.
 #[tauri::command]
 pub fn provider_refresh(
     state: tauri::State<'_, crate::turn::TurnState>,
@@ -734,7 +766,7 @@ pub fn provider_refresh(
     let key = crate::keyring_store::retrieve(&id).map_err(|_| ProviderError::NoKey {
         provider: id.clone(),
     })?;
-    if key.trim().is_empty() {
+    if key.trim().is_empty() && !allows_blank_key(&id) {
         return Err(ProviderError::NoKey {
             provider: id.clone(),
         });
@@ -760,24 +792,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtins_cover_the_three_first_class_providers() {
+    fn builtins_are_the_five_first_class_providers() {
         let ids: Vec<&str> = builtins().iter().map(|b| b.id).collect();
-        assert_eq!(ids, vec!["anthropic", "openai", "openrouter"]);
+        assert_eq!(ids, vec!["openrouter", "agentrouter", "ollama", "google"]);
     }
 
     #[test]
-    fn anthropic_has_no_configurable_url() {
-        let a = builtins()
+    fn ollama_root_is_loopback_v1() {
+        let o = builtins()
             .into_iter()
-            .find(|b| b.id == "anthropic")
-            .expect("anthropic");
-        assert_eq!(a.kind, ProviderKind::Anthropic);
-        assert_eq!(a.base_url, None);
+            .find(|b| b.id == "ollama")
+            .expect("ollama");
+        assert_eq!(o.kind, ProviderKind::OpenAiCompatible);
+        assert_eq!(o.base_url, Some("http://localhost:11434/v1"));
     }
 
     #[test]
     fn compat_providers_carry_their_roots() {
-        for id in ["openai", "openrouter"] {
+        for id in ["openrouter", "agentrouter", "google"] {
             let b = builtins().into_iter().find(|b| b.id == id).expect(id);
             assert_eq!(b.kind, ProviderKind::OpenAiCompatible);
             let url = b.base_url.expect("compat has a root");
@@ -786,6 +818,27 @@ mod tests {
                 "{id} root must be https: {url}"
             );
         }
+    }
+
+    #[test]
+    fn agentrouter_root_is_the_openai_compatible_base() {
+        let b = builtins()
+            .into_iter()
+            .find(|b| b.id == "agentrouter")
+            .expect("agentrouter");
+        assert_eq!(b.base_url, Some("https://agentrouter.org/v1"));
+    }
+
+    #[test]
+    fn google_root_is_the_openai_compatibility_base() {
+        let b = builtins()
+            .into_iter()
+            .find(|b| b.id == "google")
+            .expect("google");
+        assert_eq!(
+            b.base_url,
+            Some("https://generativelanguage.googleapis.com/v1beta/openai")
+        );
     }
 
     #[test]
@@ -816,12 +869,50 @@ mod tests {
 
     #[test]
     fn custom_id_rejects_anything_else() {
-        for bad in ["", "Office", "has space", "under_score", "anthropic"] {
+        for bad in [
+            "",
+            "Office",
+            "has space",
+            "under_score",
+            "openrouter",
+            "agentrouter",
+            "ollama",
+            "google",
+        ] {
             assert!(
                 validate_custom_id(bad).is_err(),
                 "{bad:?} must not become a provider id"
             );
         }
+    }
+
+    #[test]
+    fn retired_ids_are_free_for_custom_use() {
+        // anthropic/openai left the builtin set (D125): nothing reserves
+        // them anymore, so a custom row may reuse the name.
+        for id in ["anthropic", "openai"] {
+            assert_eq!(validate_custom_id(id).expect("retired id"), id);
+        }
+    }
+
+    #[test]
+    fn only_ollama_allows_a_blank_key() {
+        assert!(allows_blank_key("ollama"));
+        assert!(allows_blank_key("  ollama  "));
+        for id in ["openrouter", "agentrouter", "google", "office-gateway", ""] {
+            assert!(!allows_blank_key(id), "{id:?} must require a key");
+        }
+    }
+
+    #[test]
+    fn blank_key_sends_no_auth_header() {
+        assert_eq!(auth_header(""), None);
+        assert_eq!(auth_header("   "), None);
+        assert_eq!(auth_header("sk-live"), Some("Bearer sk-live".to_string()));
+        assert_eq!(
+            auth_header("  sk-live  "),
+            Some("Bearer sk-live".to_string())
+        );
     }
 
     #[test]

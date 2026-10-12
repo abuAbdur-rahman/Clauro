@@ -1027,11 +1027,13 @@ function ShortcutsPane(): React.JSX.Element {
   return (
     <div data-testid="settings-page-shortcuts">
       <h2 className="mb-4 text-xl font-semibold">Shortcuts</h2>
-      <table className="mt-2 w-full text-left text-xs">
+      {/* Prototype .tbl rhythm (index.html:232-233): 8px cells, bottom
+          borders, 13px. Desc column keeps the app's muted table idiom. */}
+      <table className="mt-3 w-full text-left text-[13px]">
         <tbody>
           {SHORTCUTS.map(([keys, desc]) => (
-            <tr key={keys} className="border-t border-border first:border-t-0">
-              <td className="py-1.5 pr-4 whitespace-nowrap">
+            <tr key={keys} className="border-b border-border">
+              <td className="px-2 py-2 pr-4 whitespace-nowrap">
                 {keys.split("+").map((k, i) => (
                   <span key={k}>
                     {i > 0 && <span className="text-muted-foreground"> + </span>}
@@ -1039,7 +1041,7 @@ function ShortcutsPane(): React.JSX.Element {
                   </span>
                 ))}
               </td>
-              <td className="py-1.5 text-muted-foreground">{desc}</td>
+              <td className="px-2 py-2 text-muted-foreground">{desc}</td>
             </tr>
           ))}
         </tbody>

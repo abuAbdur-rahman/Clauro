@@ -5,6 +5,7 @@ import { render, screen, cleanup, within, fireEvent } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import type { UserEvent } from "@testing-library/user-event";
 import { ProjectsRail, groupRailChats, projectColor } from "./ProjectsRail";
+import { useSettingsStore } from "../shell/settings";
 
 // Radix tooltip/popover positioning needs this in jsdom (same stub as the
 // Composer and ModelPicker suites).
@@ -28,6 +29,7 @@ beforeEach(() => {
   window.matchMedia = matchMedia;
   // Sidebar collapse persists via localStorage (B04) — isolate tests.
   window.localStorage.clear();
+  useSettingsStore.getState().closeSettings();
 });
 
 describe("ProjectsRail", () => {
@@ -336,12 +338,36 @@ describe("ProjectsRail new chat + footer", () => {
     await user.click(screen.getByTestId("profile-menu"));
     const menu = screen.getByRole("menu");
     expect(within(menu).getByRole("menuitem", { name: "Settings" })).toBeDefined();
-    // Unwired entries stay disabled with a reason.
-    const shortcuts = within(menu).getByRole("menuitem", { name: "Shortcuts" });
-    expect(shortcuts.getAttribute("data-disabled")).not.toBeNull();
-    expect(shortcuts.getAttribute("title")).toMatch(/no owner/i);
     await user.click(within(menu).getByRole("menuitem", { name: "Settings" }));
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  // Task 032 U1: Shortcuts is enabled and opens Settings on the shortcuts
+  // page through the settings store (openSettings addresses sections, so no
+  // owner prop is required). The optional onOpenShortcuts prop overrides.
+  it("shortcuts menu item is enabled and opens the shortcuts settings page", async () => {
+    const user = userEvent.setup();
+    renderGrouped({ userName: "Abu", userPlan: "BYOK · Free" });
+    await user.click(screen.getByTestId("profile-menu"));
+    const shortcuts = within(screen.getByRole("menu")).getByRole("menuitem", {
+      name: "Shortcuts",
+    });
+    // Radix renders data-disabled="" even when enabled; aria-disabled is the
+    // reliable signal, and the click-through to the store is the real proof.
+    expect(shortcuts.getAttribute("aria-disabled")).toBeNull();
+    await user.click(shortcuts);
+    expect(useSettingsStore.getState().open).toBe(true);
+    expect(useSettingsStore.getState().section).toBe("shortcuts");
+  });
+
+  it("onOpenShortcuts overrides the settings store", async () => {
+    const user = userEvent.setup();
+    const onOpenShortcuts = vi.fn();
+    renderGrouped({ onOpenShortcuts });
+    await user.click(screen.getByTestId("profile-menu"));
+    await user.click(screen.getByRole("menuitem", { name: "Shortcuts" }));
+    expect(onOpenShortcuts).toHaveBeenCalledOnce();
+    expect(useSettingsStore.getState().open).toBe(false);
   });
 
   it("collapsed footer keeps the avatar icon", async () => {

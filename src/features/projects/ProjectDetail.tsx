@@ -63,8 +63,8 @@ export function ProjectDetail({
   const usage = files === undefined ? null : knowledgeUsage(files, capacityBytes);
 
   return (
-    <div>
-      <div className="mb-2">
+    <div className="page-frame">
+      <div className="mb-3">
         <Button
           type="button"
           variant="ghost"
@@ -77,8 +77,8 @@ export function ProjectDetail({
           <ChevronLeft aria-hidden="true" />
         </Button>
       </div>
-      <div className="flex gap-6">
-        <div className="min-w-0 flex-1">
+      <div data-testid="project-detail-cols" className="detail-cols">
+        <div className="detail-main">
           <input
             aria-label="Project name"
             data-testid="project-title"
@@ -92,7 +92,7 @@ export function ProjectDetail({
             }}
             className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 font-serif text-2xl text-neutral-100 outline-none hover:border-neutral-700 focus:border-neutral-500"
           />
-          <div className="mt-4 rounded-lg border border-neutral-800 p-3">
+          <div data-testid="project-composer-box" className="rounded-lg border border-border bg-card p-3">
             <Textarea
               aria-label="New chat in project"
               data-testid="project-composer"
@@ -123,9 +123,17 @@ export function ProjectDetail({
               </Button>
             </div>
           </div>
-          <h3 className="mt-6 mb-2 text-sm font-semibold text-neutral-200">Chats</h3>
+          <h3
+            data-testid="project-chats-heading"
+            className="section-heading text-sm font-semibold text-neutral-200"
+          >
+            Chats
+          </h3>
           {chats.length === 0 ? (
-            <p data-testid="project-chats-empty" className="text-sm text-neutral-400">
+            <p
+              data-testid="project-chats-empty"
+              className="empty-frame text-sm text-neutral-400"
+            >
               No chats yet.
             </p>
           ) : (
@@ -135,7 +143,7 @@ export function ProjectDetail({
                   <button
                     type="button"
                     data-testid={`project-chat-${c.id}`}
-                    className="block w-full truncate rounded-lg border border-neutral-800 px-3 py-2 text-left text-sm text-neutral-300 hover:bg-neutral-800"
+                    className="chat-row block w-full truncate bg-card text-left text-sm text-neutral-300 hover:bg-accent"
                     onClick={() => {
                       onOpenChat?.(c.id);
                     }}
@@ -147,12 +155,12 @@ export function ProjectDetail({
             </ul>
           )}
         </div>
-        <aside className="w-72 space-y-4" aria-label="project context">
-          <Card>
-            <CardHeader>
+        <aside className="detail-side" aria-label="project context">
+          <Card data-testid="project-panel-instructions" className="side-card shadow-none">
+            <CardHeader className="side-card-head">
               <CardTitle>Instructions</CardTitle>
             </CardHeader>
-            <CardContent className="grid gap-2">
+            <CardContent className="side-card-body">
               <Textarea
                 aria-label="Instructions"
                 data-testid="project-instructions"
@@ -176,22 +184,22 @@ export function ProjectDetail({
               </Button>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader>
+          <Card data-testid="project-panel-memory" className="side-card shadow-none">
+            <CardHeader className="side-card-head">
               <CardTitle>Memory</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="side-card-body">
               <p className="text-sm text-neutral-400">
                 {memoryCount} {memoryCount === 1 ? "topic" : "topics"} kept for this project.
               </p>
             </CardContent>
           </Card>
           {files !== undefined && (
-            <Card>
-              <CardHeader>
+            <Card data-testid="project-panel-knowledge" className="side-card shadow-none">
+              <CardHeader className="side-card-head">
                 <CardTitle>Knowledge</CardTitle>
               </CardHeader>
-              <CardContent className="grid gap-2">
+              <CardContent className="side-card-body">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-neutral-400">
                     {files.length === 0
@@ -255,11 +263,11 @@ export function ProjectDetail({
               </CardContent>
             </Card>
           )}
-          <Card>
-            <CardHeader>
+          <Card data-testid="project-panel-context" className="side-card shadow-none">
+            <CardHeader className="side-card-head">
               <CardTitle>Context</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="side-card-body">
               <p className="text-sm text-neutral-400">
                 <span className="text-neutral-100">{usage !== null ? `${String(usage.percent)}%` : contextUsed}</span>{" "}
                 of project capacity used

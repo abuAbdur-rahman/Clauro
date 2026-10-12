@@ -124,21 +124,21 @@ export async function providerRefresh(id: string): Promise<ModelsView> {
 
 // ── add/edit dialog contract ─────────────────────────────────────────────
 // The dialog validates client-side (B23) before any invoke runs: name
-// required, http(s) URL, key required except ollama. Anthropic rides the
-// host's fixed endpoint, so its base URL stays optional. The stored key is
-// never echoed back — the dialog only ever collects a replacement.
+// required, http(s) URL always required, key required except ollama. The
+// stored key is never echoed back — the dialog only ever collects a
+// replacement.
 
-export const PROVIDER_TYPES = ["openai", "anthropic", "openrouter", "ollama", "custom"] as const;
+export const PROVIDER_TYPES = ["openrouter", "agentrouter", "ollama", "google", "custom"] as const;
 export type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 export const PROVIDER_PRESETS: Record<
   ProviderType,
   { label: string; name: string; baseUrl: string }
 > = {
-  openai: { label: "OpenAI", name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
-  anthropic: { label: "Anthropic", name: "Anthropic", baseUrl: "" },
   openrouter: { label: "OpenRouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
-  ollama: { label: "Ollama (local)", name: "Ollama (local)", baseUrl: "http://localhost:11434" },
+  agentrouter: { label: "AgentRouter", name: "AgentRouter", baseUrl: "https://agentrouter.org/v1" },
+  ollama: { label: "Ollama (local)", name: "Ollama (local)", baseUrl: "http://localhost:11434/v1" },
+  google: { label: "Google", name: "Google", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" },
   custom: { label: "Custom (OpenAI-compatible)", name: "", baseUrl: "" },
 };
 
@@ -153,13 +153,7 @@ export const ProviderFormSchema = z
   })
   .superRefine((val, ctx) => {
     const url = val.baseUrl.trim();
-    if (val.type !== "anthropic" && !HTTP_URL.test(url)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["baseUrl"],
-        message: "Base URL must be an http(s) URL",
-      });
-    } else if (val.type === "anthropic" && url !== "" && !HTTP_URL.test(url)) {
+    if (!HTTP_URL.test(url)) {
       ctx.addIssue({
         code: "custom",
         path: ["baseUrl"],

@@ -131,7 +131,7 @@ export const SEED_USER = { name: "Abu", initials: "AB", plan: "BYOK · Free" };
 export const SEED_PROVIDERS: SeedProvider[] = [
   { id: "p1", type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", key: "sk-live-1234a3f9", enabled: true, status: "connected", models: ["gpt-4.1", "gpt-4.1-mini"] },
   { id: "p2", type: "anthropic", name: "Anthropic", baseUrl: "https://api.anthropic.com/v1", key: "sk-ant-9999b7c2", enabled: true, status: "connected", models: ["claude-sonnet", "claude-haiku"] },
-  { id: "p3", type: "ollama", name: "Ollama (local)", baseUrl: "http://localhost:11434", key: "", enabled: false, status: "untested", models: ["llama3.2", "qwen2.5-coder"] },
+  { id: "p3", type: "ollama", name: "Ollama (local)", baseUrl: "http://localhost:11434/v1", key: "", enabled: false, status: "untested", models: ["llama3.2", "qwen2.5-coder"] },
 ];
 
 export const SEED_MODEL_META: Record<string, { ctx: number; tags: string[] }> = {

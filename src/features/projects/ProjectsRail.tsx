@@ -61,6 +61,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Project } from "./projects";
 import type { ThreadStatus } from "@/features/catalogue/thread";
+import { useSettingsStore } from "../shell/settings";
 
 export interface RailThread {
   id: string;
@@ -248,6 +249,14 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
     onOpenHelp,
     onSignOut,
   } = props;
+  // Task 032 U1: the settings store addresses pages (openSettings takes a
+  // section), so Shortcuts needs no owner prop — it falls back to opening
+  // Settings on the shortcuts page. The optional prop stays as an override.
+  const handleOpenShortcuts: () => void =
+    onOpenShortcuts ??
+    (() => {
+      useSettingsStore.getState().openSettings("shortcuts");
+    });
   const { state, toggleSidebar } = useSidebar();
   const collapsed = state === "collapsed";
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -649,14 +658,8 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
                   Settings
                 </DropdownMenuItem>
                 <DropdownMenuItem
-                  disabled={onOpenShortcuts === undefined}
-                  title={
-                    onOpenShortcuts === undefined
-                      ? "Not wired yet: shortcuts dialog has no owner"
-                      : undefined
-                  }
                   onSelect={() => {
-                    onOpenShortcuts?.();
+                    handleOpenShortcuts();
                   }}
                 >
                   Shortcuts

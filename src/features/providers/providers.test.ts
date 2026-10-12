@@ -126,24 +126,26 @@ describe("invoke wire keys", () => {
 
 describe("provider dialog contract", () => {
   // The add/edit dialog (ProvidersView) validates client-side before any
-  // invoke runs (B23): name required, http(s) URL, key required except
-  // ollama. Anthropic rides the host's fixed URL, so its base URL is
-  // optional. The stored key is never echoed — the dialog only collects a
-  // replacement, so the schema never needs the old key.
+  // invoke runs (B23): name required, http(s) URL always required, key
+  // required except ollama. The stored key is never echoed — the dialog only
+  // collects a replacement, so the schema never needs the old key.
   it("presets autofill name and endpoint root per type", () => {
-    expect(PROVIDER_PRESETS.openai.baseUrl).toBe("https://api.openai.com/v1");
     expect(PROVIDER_PRESETS.openrouter.baseUrl).toBe("https://openrouter.ai/api/v1");
-    expect(PROVIDER_PRESETS.ollama.baseUrl).toBe("http://localhost:11434");
+    expect(PROVIDER_PRESETS.agentrouter.baseUrl).toBe("https://agentrouter.org/v1");
+    expect(PROVIDER_PRESETS.ollama.baseUrl).toBe("http://localhost:11434/v1");
+    expect(PROVIDER_PRESETS.google.baseUrl).toBe(
+      "https://generativelanguage.googleapis.com/v1beta/openai",
+    );
     expect(PROVIDER_PRESETS.custom.baseUrl).toBe("");
-    expect(PROVIDER_PRESETS.anthropic.name).toBe("Anthropic");
+    expect(PROVIDER_PRESETS.google.name).toBe("Google");
   });
 
   it("accepts a complete hosted-provider form", () => {
     expect(
       isProviderFormValid({
-        type: "openai",
-        name: "OpenAI",
-        baseUrl: "https://api.openai.com/v1",
+        type: "openrouter",
+        name: "OpenRouter",
+        baseUrl: "https://openrouter.ai/api/v1",
         key: "sk-live",
       }),
     ).toBe(true);
@@ -152,9 +154,9 @@ describe("provider dialog contract", () => {
   it("rejects a blank name", () => {
     expect(
       isProviderFormValid({
-        type: "openai",
+        type: "agentrouter",
         name: "   ",
-        baseUrl: "https://api.openai.com/v1",
+        baseUrl: "https://agentrouter.org/v1",
         key: "sk-live",
       }),
     ).toBe(false);
@@ -179,18 +181,28 @@ describe("provider dialog contract", () => {
     ).toBe(true);
   });
 
-  it("lets anthropic skip the base URL — the host pins its fixed endpoint", () => {
+  it("requires a base URL for every type — no fixed-endpoint exception", () => {
+    for (const type of ["openrouter", "agentrouter", "ollama", "google", "custom"] as const) {
+      expect(
+        isProviderFormValid({ type, name: "X", baseUrl: "", key: "sk-live" }),
+      ).toBe(false);
+    }
     expect(
-      isProviderFormValid({ type: "anthropic", name: "Anthropic", baseUrl: "", key: "sk-ant" }),
+      isProviderFormValid({
+        type: "google",
+        name: "Google",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+        key: "sk-live",
+      }),
     ).toBe(true);
   });
 
   it("requires a key except for ollama", () => {
     expect(
       isProviderFormValid({
-        type: "openai",
-        name: "OpenAI",
-        baseUrl: "https://api.openai.com/v1",
+        type: "google",
+        name: "Google",
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
         key: "  ",
       }),
     ).toBe(false);
@@ -198,7 +210,7 @@ describe("provider dialog contract", () => {
       isProviderFormValid({
         type: "ollama",
         name: "Ollama (local)",
-        baseUrl: "http://localhost:11434",
+        baseUrl: "http://localhost:11434/v1",
         key: "",
       }),
     ).toBe(true);
@@ -208,19 +220,19 @@ describe("provider dialog contract", () => {
     // Edit mode sends a blank key as "keep the stored one" (never echoed).
     expect(
       isProviderFormValid(
-        { type: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", key: "" },
+        { type: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", key: "" },
         { allowBlankKey: true },
       ),
     ).toBe(true);
     expect(
       isProviderFormValid(
-        { type: "openai", name: "OpenAI", baseUrl: "not-a-url", key: "" },
+        { type: "openrouter", name: "OpenRouter", baseUrl: "not-a-url", key: "" },
         { allowBlankKey: true },
       ),
     ).toBe(false);
     expect(
       isProviderFormValid(
-        { type: "openai", name: "", baseUrl: "https://api.openai.com/v1", key: "" },
+        { type: "openrouter", name: "", baseUrl: "https://openrouter.ai/api/v1", key: "" },
         { allowBlankKey: true },
       ),
     ).toBe(false);
