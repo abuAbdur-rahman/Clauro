@@ -18,9 +18,10 @@
  * - **notice** — dropped thinking, unmappable provider events, ignored stream
  *   events. Never the compaction itself.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ContentBlock, RenderRow } from "./types";
 import { renderMarkdown } from "./markdown";
+import { enhanceCodeBlocks } from "./codeblocks";
 
 export interface TranscriptViewProps {
   rows: RenderRow[];
@@ -42,8 +43,9 @@ export interface TranscriptViewProps {
  * parse that resolves after the text moved on — otherwise a fast stream
  * renders stale HTML, which is worse than rendering late.
  */
-function Markdown({ text }: { text: string }) {
+export function Markdown({ text }: { text: string }) {
   const [html, setHtml] = useState<string | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let current = true;
@@ -55,10 +57,20 @@ function Markdown({ text }: { text: string }) {
     };
   }, [text]);
 
+  // Code headers + syntax highlighting land after every parse (idempotent —
+  // streaming re-renders never stack them). Highlighting is async (shiki loads
+  // lazily), so this awaits; a re-render moving the DOM on is handled inside
+  // via the `isConnected` guard.
+  useEffect(() => {
+    if (hostRef.current !== null) {
+      void enhanceCodeBlocks(hostRef.current);
+    }
+  }, [html]);
+
   if (html === null) {
     return <p className="whitespace-pre-wrap text-neutral-300">{text}</p>;
   }
-  return <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={hostRef} className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 export function TranscriptView({ rows, streaming, onQuestionAnswer }: TranscriptViewProps) {
@@ -277,14 +289,19 @@ export function QuestionCard({
 }
 
 function UserRow({ row, text }: { row: RenderRow; text: string }) {
+  // Fenced messages render through the shared markdown pipeline so the
+  // sender's own code block looks like every other block (language label,
+  // Copy). Plain text stays a literal pre-wrap bubble — single newlines and
+  // all — because marked without `breaks` would collapse them to spaces.
+  const fenced = text.includes("```");
   return (
     <div className="flex justify-end">
       <div
         data-testid={`row-${row.id}`}
         data-framed="true"
-        className="max-w-[80%] rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100"
+        className="max-w-[80%] overflow-hidden rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100"
       >
-        <p className="whitespace-pre-wrap">{text}</p>
+        {fenced ? <Markdown text={text} /> : <p className="whitespace-pre-wrap">{text}</p>}
       </div>
     </div>
   );

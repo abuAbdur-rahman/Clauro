@@ -222,6 +222,27 @@ html {
   color: inherit;
   white-space: pre;
 }
+/* Code-block header (language label + Copy), added by enhanceCodeBlocks. */
+.codeblock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.codeblock-copy {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.codeblock-copy:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
 /* Quoted spec blocks (shot 05): elevated card, not an indent. */
 .markdown-body blockquote {
   margin: 0 0 0.75em;
@@ -319,6 +340,11 @@ textarea,
   outline: 2px solid var(--ring);
   outline-offset: 1px;
 }
+/* Composer textarea: focus is the card ring (focus-within), never an
+   outline on the field itself — the global rule above would win otherwise. */
+textarea[aria-label="Message"]:focus-visible {
+  outline: none;
+}
 
 /* Size guards (§10 parity). The shell never crushes below 900px — narrower
    viewports clip instead of collapsing the rail/column grid. Chat column is
@@ -356,5 +382,160 @@ textarea,
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* ===== Task 032 U4 page-frame rhythm (tokens + utilities only) =====
+   Html truth: docs/references/ui/index.html §projects (lines 239-249, 505-512).
+   px-exact on purpose: the 17px root makes rem utilities drift from the html
+   px figures (e.g. gap-3 = 12.75px vs html 12px), so the box rhythm lives
+   here. Unlayered so one class fully normalizes a shadcn Card (whose
+   py-6/gap-6/px-6 is the drift being corrected) without touching components/ui.
+   Borders always go through --border: the definite 1px border token. */
+:root {
+  --page-pad: 24px; /* html .pv padding */
+  --page-col-max: 760px; /* html .col */
+  --page-grid-gap: 12px; /* html .grid gap */
+  --page-grid-mt: 14px; /* html .grid margin-top */
+  --page-grid-min: 230px; /* html .grid minmax floor */
+  --page-cols-gap: 20px; /* html .pcols gap */
+  --page-cols-max: 1000px; /* html .pcols max-width */
+  --page-side-w: 320px; /* html .pcols side column */
+  --page-stack: 12px; /* html .pmain / .pside column gap */
+  --page-card-pad: 12px; /* html .card padding */
+  --page-card-radius: 8px; /* html .card / .pchat radius */
+  --page-card-gap: 6px; /* html .pcard inner gap / .pchat stack step */
+  --page-section-above: 8px; /* html Chats h3 margin-top inside the 12px stack:
+    20px above vs 12px below — more above than below, the impeccable floor */
+}
+
+/* Page shell. The App host gives every view p-4 (1rem); the negative margin
+   cancels exactly that so the page always lands on --page-pad (html .pv),
+   even though U4 may not touch App.tsx. */
+.page-frame {
+  margin: -1rem;
+  padding: var(--page-pad);
+}
+
+/* Centered narrow column for single-column pages (html .col). */
+.page-col {
+  width: 100%;
+  max-width: var(--page-col-max);
+  margin: 0 auto;
+}
+
+/* Auto-fill project grid (html .grid). The top margin carries the
+   search→grid rhythm, so the search input takes no bottom margin. */
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--page-grid-min), 1fr));
+  gap: var(--page-grid-gap);
+  margin-top: var(--page-grid-mt);
+}
+
+/* Grid project card (html .card.pcard): definite 1px border-token frame,
+   8px radius, 12px pad, 6px inner stack, 120px floor. */
+.project-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--page-card-gap);
+  min-height: 120px;
+  padding: var(--page-card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--page-card-radius);
+}
+
+/* CardHeader inside a project-card: the frame already pads, so the header
+   contributes only the stack (flex-1 pins meta to the bottom). */
+.project-card-head {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--page-card-gap);
+  padding: 0;
+}
+
+/* Two-column detail layout (html .pcols). */
+.detail-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--page-side-w);
+  gap: var(--page-cols-gap);
+  width: 100%;
+  max-width: var(--page-cols-max);
+  margin: 0 auto;
+}
+
+/* Detail main / side stacks (html .pmain / .pside). */
+.detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--page-stack);
+  min-width: 0;
+}
+
+.detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--page-stack);
+  width: var(--page-side-w);
+  min-width: 0;
+}
+
+/* Side panel card (html .pside .card): same frame as project-card, 8px stack. */
+.side-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: var(--page-card-pad);
+  border: 1px solid var(--border);
+  border-radius: var(--page-card-radius);
+}
+
+.side-card-head,
+.side-card-body {
+  padding: 0;
+}
+
+.side-card-body {
+  display: grid;
+  gap: 8px;
+}
+
+/* Section heading (html Chats h3): 8px own margin + 12px stack gap = 20px
+   above, 12px below. More above than below, always. */
+.section-heading {
+  margin: var(--page-section-above) 0 0;
+}
+
+/* Chat row (html .pchat): full-width bordered row on the 6px step. */
+.chat-row {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--page-card-radius);
+}
+
+/* Empty state frame: the same 1px token border so "nothing here" still
+   reads as a deliberate panel, centered like html .empty. */
+.empty-frame {
+  padding: var(--page-pad);
+  text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: var(--page-card-radius);
+}
+
+.empty-frame > :last-child {
+  margin-bottom: 0;
+}
+
+/* Narrow viewports stack the detail columns instead of crushing them. */
+@media (max-width: 52rem) {
+  .detail-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .detail-side {
+    width: 100%;
   }
 }

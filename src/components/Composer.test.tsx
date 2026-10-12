@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Composer from "./Composer";
+import { continueList, fenceLanguage, isInsideFence } from "./Composer";
 import { useThreadStore } from "../features/catalogue/thread";
 
 // The embedded ModelPicker loads from the providers bridge; an empty list
@@ -33,6 +34,12 @@ window.HTMLElement.prototype.releasePointerCapture = function releasePointerCapt
 
 const THREAD = "composer-t1";
 
+function messageBox(): HTMLTextAreaElement {
+  const el = screen.getByLabelText(/message/i);
+  if (!(el instanceof HTMLTextAreaElement)) throw new Error("expected textarea");
+  return el;
+}
+
 beforeEach(() => {
   cleanup();
   useThreadStore.getState().reset();
@@ -56,23 +63,47 @@ describe("Composer", () => {
   // under full-suite parallel load (passes in isolation in ~1s).
   30000);
 
-  it("attach button calls onAttach, memory toggle calls onMemoryToggle", async () => {
+  it("attach opens a real file picker and forwards files to onAttach", async () => {
     const user = userEvent.setup();
-    const onAttach = vi.fn();
+    const onAttach = vi.fn<(files: File[]) => void>();
     const onMemoryToggle = vi.fn();
-    render(
-      <Composer
-        threadId={THREAD}
-        
-        onSend={vi.fn()}
-        onAttach={onAttach}
-        onMemoryToggle={onMemoryToggle}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: /attach/i }));
-    expect(onAttach).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole("button", { name: /memory/i }));
-    expect(onMemoryToggle).toHaveBeenCalledOnce();
+    const clickSpy = vi
+      .spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(() => {});
+    try {
+      render(
+        <Composer
+          threadId={THREAD}
+
+          onSend={vi.fn()}
+          onAttach={onAttach}
+          onMemoryToggle={onMemoryToggle}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: /attach/i }));
+      expect(clickSpy).toHaveBeenCalled();
+      const input = screen.getByTestId("attach-input");
+      expect(input instanceof HTMLInputElement).toBe(true);
+      if (!(input instanceof HTMLInputElement)) throw new Error("expected file input");
+      expect(input.type).toBe("file");
+      const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+      fireEvent.change(input, { target: { files: [file] } });
+      expect(onAttach).toHaveBeenCalledOnce();
+      expect(onAttach.mock.calls[0]?.[0].map((f) => f.name)).toEqual(["notes.txt"]);
+      await user.click(screen.getByRole("button", { name: /memory/i }));
+      expect(onMemoryToggle).toHaveBeenCalledOnce();
+    } finally {
+      clickSpy.mockRestore();
+    }
+  });
+
+  it("attach renders disabled with its reason when onAttach is missing", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const btn = screen.getByRole("button", { name: /attach/i });
+    expect(btn.hasAttribute("disabled")).toBe(true);
+    await user.hover(btn);
+    expect(await screen.findByText(/attachments are not available here yet/i)).toBeTruthy();
   });
 
   it("effort select is a thinking-level indicator writing thread effort", async () => {
@@ -276,5 +307,449 @@ describe("Composer", () => {
     fireEvent.keyDown(box, { key: "e", ctrlKey: true });
     expect(box.value).toBe("`***hello***`");
   });
+});
 
+describe("Composer code fences (Task 032 follow-up)", () => {
+  it("fenceLanguage accepts bare + valid langs, rejects the rest", () => {
+    expect(fenceLanguage("```")).toBe("");
+    expect(fenceLanguage("```rust")).toBe("rust");
+    expect(fenceLanguage("```c++  ")).toBe("c++");
+    expect(fenceLanguage("```<img>")).toBeNull();
+    expect(fenceLanguage("hello ```")).toBeNull();
+    expect(fenceLanguage("```rust extra words")).toBeNull();
+  });
+
+  it("isInsideFence counts fences before the caret", () => {
+    expect(isInsideFence("```js\ncode", 10)).toBe(true);
+    expect(isInsideFence("```js\ncode\n```\n", 100)).toBe(false);
+    expect(isInsideFence("plain", 5)).toBe(false);
+    expect(isInsideFence("```<img>", 7)).toBe(false);
+  });
+
+  it("```lang + Enter opens a fence with the cursor inside and a closing fence", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "```rust");
+    await user.keyboard("{Enter}");
+    expect(box.value).toBe("```rust\n\n```");
+    expect(box.selectionStart).toBe("```rust\n".length);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("does not double-close when a closing fence already lies ahead", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "```rust\n\n```");
+    // Move caret to the end of the opener line, then Enter.
+    box.setSelectionRange("```rust".length, "```rust".length);
+    await user.keyboard("{Enter}");
+    expect(box.value).toBe("```rust\n\n\n```");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("Enter inside an open fence is a newline, Ctrl+Enter sends", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "```py");
+    await user.keyboard("{Enter}");
+    await user.keyboard("x");
+    await user.keyboard("{Enter}");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box.value).toContain("```py\nx\n");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(onSend).toHaveBeenCalled();
+  });
+
+  it("Tab inside a fence inserts two spaces", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "```js");
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Tab}");
+    expect(box.value).toBe("```js\n  \n```");
+  });
+
+  it("pasting code-like multi-line text wraps it as text", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    expect(box.value).toBe("```text\nfunction a() {\n  return 1;\n};\nconst b = () => 2;\n```");
+  });
+
+  it("pasting ordinary multi-line prose is left to the browser", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    const evt = fireEvent.paste(box, {
+      clipboardData: { getData: () => "first line\nsecond line" },
+    });
+    // jsdom performs no default paste, so assert the handler stood down —
+    // no preventDefault means the browser inserts the text verbatim.
+    expect(evt).toBe(true);
+  });
+
+  it("pasting code into a pre-filled draft keeps the draft and fences at the caret", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    // Type so the caret lands at the end the way a real paste does — the
+    // handler reads React's caret state, which a bare setSelectionRange
+    // would leave stale at 0.
+    await user.type(box, "Explain this:");
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    // The pre-existing draft text must survive; the fence splices after it.
+    expect(box.value).toBe(
+      "Explain this:```text\nfunction a() {\n  return 1;\n};\nconst b = () => 2;\n```",
+    );
+  });
+
+  it("pasting code over a selection replaces only the selected span", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "keep-before keep-me keep-after");
+    // Select just "keep-me" (chars 12..19). The paste handler reads the DOM
+    // selection directly, so setSelectionRange is sufficient and deterministic.
+    box.setSelectionRange(12, 19);
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    // Text either side of the selection survives; only the span is replaced.
+    expect(box.value).toBe(
+      "keep-before ```text\nfunction a() {\n  return 1;\n};\nconst b = () => 2;\n``` keep-after",
+    );
+  });
+
+  it("shows a 'Wrapped in code block · Undo' toast when it wraps a paste", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    const toast = await screen.findByTestId("paste-toast");
+    expect(toast.textContent).toContain("Wrapped in code block");
+    expect(within(toast).getByRole("button", { name: /undo/i })).toBeTruthy();
+    // Dismiss it so the test does not leak a timer into the next one.
+    await user.click(within(toast).getByRole("button", { name: /undo/i }));
+  });
+
+  it("Undo on the toast reverts the fenced wrap to the raw pasted text", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    const toast = await screen.findByTestId("paste-toast");
+    await user.click(within(toast).getByRole("button", { name: /undo/i }));
+    expect(box.value).toBe("function a() {\n  return 1;\n};\nconst b = () => 2;");
+    expect(screen.queryByTestId("paste-toast")).toBeNull();
+  });
+
+  it("shows no toast for a plain prose paste (handler stands down)", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "first line\nsecond line" },
+    });
+    expect(screen.queryByTestId("paste-toast")).toBeNull();
+  });
+
+  it("invalid fence language sends normally (no block opens)", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "```<img>");
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("```<img>");
+  });
+});
+
+describe("Composer list continuation (Task 032 follow-up)", () => {
+  it("continueList increments numbers, keeps bullets, indent and delimiter", () => {
+    expect(continueList("1. one", 6)).toEqual({ kind: "continued", text: "1. one\n2. ", caret: 10 });
+    expect(continueList("- one", 5)).toEqual({ kind: "continued", text: "- one\n- ", caret: 8 });
+    expect(continueList("  3) two", 8)).toEqual({ kind: "continued", text: "  3) two\n  4) ", caret: 14 });
+    expect(continueList("plain", 5)).toBeNull();
+    expect(continueList("1. one\n2. ", 9)).toEqual({ kind: "finished", text: "1. one\n", caret: 7 });
+  });
+
+  it("Shift+Enter on a numbered line continues the list instead of sending", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "1. first");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(box.value).toBe("1. first\n2. ");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("Shift+Enter on an empty item ends the list", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "1. first");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(box.value).toBe("1. first\n");
+  });
+
+  it("plain Enter on a list line continues instead of sending", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "1. first");
+    await user.keyboard("{Enter}");
+    expect(box.value).toBe("1. first\n2. ");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("plain Enter on the trailing empty marker strips it and exits; next Enter sends", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "1. first");
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Enter}");
+    // Spec B: the empty marker is removed, the list exits, nothing sends.
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box.value).toBe("1. first\n");
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("1. first");
+  });
+});
+
+describe("Composer spec B — list Tab mechanics (COMPOSER_MARKDOWN_SPEC)", () => {
+  it("Tab on a list line indents 2 spaces, restarting numbers at 1", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "3. third");
+    await user.keyboard("{Tab}");
+    expect(box.value).toBe("  1. third");
+  });
+
+  it("Shift+Tab outdents a list line", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "  - item");
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(box.value).toBe("- item");
+  });
+
+  it("Tab on a non-list line outside a fence moves focus (not intercepted)", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "plain text");
+    const before = box.value;
+    await user.keyboard("{Tab}");
+    expect(box.value).toBe(before);
+  });
+
+  it("continues task lists, unchecking the next item", () => {
+    expect(continueList("- [x] done", 10)).toEqual({
+      kind: "continued",
+      text: "- [x] done\n- [ ] ",
+      caret: 17,
+    });
+    expect(continueList("- [ ] todo", 10)).toEqual({
+      kind: "continued",
+      text: "- [ ] todo\n- [ ] ",
+      caret: 17,
+    });
+  });
+
+  it("continues block quotes and two-digit numbers", () => {
+    expect(continueList("> quoted", 8)).toEqual({
+      kind: "continued",
+      text: "> quoted\n> ",
+      caret: 11,
+    });
+    expect(continueList("9. nine", 7)).toEqual({
+      kind: "continued",
+      text: "9. nine\n10. ",
+      caret: 12,
+    });
+  });
+});
+
+describe("Composer spec A — fence edge keys (COMPOSER_MARKDOWN_SPEC)", () => {
+  it("Space on an opener line auto-closes the block", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "```js");
+    await user.keyboard(" ");
+    expect(box.value).toBe("```js\n\n```");
+    expect(box.selectionStart).toBe("```js\n".length);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("Enter on the closing fence line sends (leaves the block)", async () => {
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    // Focus first: fireEvent.change does not focus, so a bare user.keyboard
+    // would deliver Enter to the body, not the textarea.
+    await user.click(box);
+    // Set the closed-block state directly (typing \n would fire Enter keys).
+    fireEvent.change(box, { target: { value: "```ts\nconst a = 1;\n```" } });
+    // Caret sits at the end of the closing fence line — that Enter leaves.
+    box.setSelectionRange(box.value.length, box.value.length);
+    await user.keyboard("{Enter}");
+    expect(onSend).toHaveBeenCalledWith("```ts\nconst a = 1;\n```");
+  });
+
+  it("Enter inside a fence keeps the current line indent", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "```py");
+    await user.keyboard("{Enter}");
+    // keyboard, not type: user.type re-focuses and resets the restored caret.
+    await user.keyboard("  x = 1");
+    await user.keyboard("{Enter}");
+    expect(box.value).toBe("```py\n  x = 1\n  \n```");
+  });
+
+  it("Shift+Tab inside a fence removes up to 2 leading spaces", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "```js");
+    await user.keyboard("{Enter}");
+    await user.keyboard("    deep");
+    box.setSelectionRange("```js\n".length, "```js\n".length);
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(box.value).toBe("```js\n  deep\n```");
+  });
+
+  it("Backspace on an empty fenced block removes the whole block", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "```rust");
+    await user.keyboard("{Enter}");
+    // Caret on the empty middle line; closing fence lies ahead.
+    await user.keyboard("{Backspace}");
+    expect(box.value).toBe("");
+  });
+
+  it("a backtick with a selection wraps it", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.change(box, { target: { value: "selected" } });
+    box.setSelectionRange(0, 8);
+    fireEvent.keyDown(box, { key: "`" });
+    expect(box.value).toBe("`selected`");
+  });
+
+  it("Ctrl+Shift+K puts the caret on the language line", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.change(box, { target: { value: "let x = 1;" } });
+    box.setSelectionRange(0, 10);
+    fireEvent.keyDown(box, { key: "k", ctrlKey: true, shiftKey: true });
+    expect(box.value).toBe("```\nlet x = 1;\n```");
+    expect(box.selectionStart).toBe(3);
+  });
+
+  it("Ctrl+Shift+K with a partial selection keeps the text outside it", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "before after");
+    // Select only "after" (chars 7..12); fireEvent.select is what notifies
+    // React's onSelect (and thus the caret state the handler reads).
+    box.setSelectionRange(7, 12);
+    fireEvent.select(box);
+    fireEvent.keyDown(box, { key: "k", ctrlKey: true, shiftKey: true });
+    expect(box.value).toBe("before ```\nafter\n```");
+    expect(box.selectionStart).toBe(10);
+  });
+});
+
+describe("Composer spec A — fence status label", () => {
+  it("shows 'Code block · Ctrl+Enter to send' while inside a fence", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    expect(screen.queryByTestId("fence-hint")).toBeNull();
+    await user.type(box, "```rust");
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("fence-hint").textContent).toBe("Code block · Ctrl+Enter to send");
+    // Closing the block hides it again. keyboard, not type (see above); the
+    // braces are escaped so user-event treats them as literal characters.
+    await user.keyboard("fn main() {{}}");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(screen.queryByTestId("fence-hint")).toBeNull();
+  });
+});
+
+describe("Composer spec E — live preview", () => {
+  it("is off by default", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "# Hello");
+    expect(screen.queryByTestId("composer-preview")).toBeNull();
+  });
+
+  it("Ctrl+Shift+P toggles a rendered preview above the textarea", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "**bold**");
+    await user.keyboard("{Control>}{Shift>}P{/Shift}{/Control}");
+    const preview = await screen.findByTestId("composer-preview");
+    // Rendered markdown: a <strong> holds "bold", the raw asterisks are gone.
+    expect(preview.querySelector("strong")?.textContent).toBe("bold");
+    expect(preview.textContent).not.toContain("**");
+    // The textarea keeps the raw markdown (what gets sent).
+    expect(box.value).toBe("**bold**");
+  });
+
+  it("the eye toggle turns preview on and off", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "- one");
+    const eye = screen.getByRole("button", { name: /toggle live preview/i });
+    expect(eye.getAttribute("aria-pressed")).toBe("false");
+    await user.click(eye);
+    expect((await screen.findByTestId("composer-preview")).textContent).toContain("one");
+    expect(screen.getByRole("button", { name: /toggle live preview/i }).getAttribute("aria-pressed")).toBe("true");
+    await user.click(screen.getByRole("button", { name: /toggle live preview/i }));
+    expect(screen.queryByTestId("composer-preview")).toBeNull();
+  });
+
+  it("preview updates live as text changes", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    const eye = screen.getByRole("button", { name: /toggle live preview/i });
+    await user.click(eye);
+    await user.type(box, "hi");
+    const preview = await screen.findByTestId("composer-preview");
+    expect(preview.textContent).toContain("hi");
+  });
 });

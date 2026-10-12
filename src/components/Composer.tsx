@@ -18,13 +18,15 @@
 import {
   ArrowUpIcon,
   BrainIcon,
+  EyeIcon,
   GlobeIcon,
   MicIcon,
   PlusIcon,
   SquareIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useThreadStore, type Effort } from "../features/catalogue/thread";
+import { Markdown } from "../features/transcript";
 import ModelPicker from "./ModelPicker";
 import { Button } from "./ui/button";
 import {
@@ -52,6 +54,91 @@ const SLASH_COMMANDS: { name: string; hint: string }[] = [
   { name: "settings", hint: "Open settings" },
 ];
 
+const FENCE_RE = /^```([A-Za-z0-9+#_-]*)\s*$/;
+
+/**
+ * Fence-opener language for a full line, or null when the line is not an
+ * opener. `""` = bare fence (renders as text). Anything outside the allowlist
+ * stays literal text — never a block, never a throw.
+ */
+export function fenceLanguage(line: string): string | null {
+  const m = line.match(FENCE_RE);
+  return m ? m[1] : null;
+}
+
+/** Odd fence count before the caret = the caret sits inside an open fence.
+ *  Lines that look like an opener but fail the language allowlist (e.g.
+ *  ` ```<img> `) are literal text and never count — Enter there sends. */
+export function isInsideFence(text: string, caret: number): boolean {
+  let n = 0;
+  for (const line of text.slice(0, caret).split("\n")) {
+    const marks = line.match(/```/g) ?? [];
+    if (marks.length === 0) continue;
+    if (/^\s*```/.test(line) && fenceLanguage(line.trim()) === null) continue;
+    n += marks.length;
+  }
+  return n % 2 === 1;
+}
+
+/** A closing ``` line already lies at or after the caret. */
+function hasClosingFenceAhead(after: string): boolean {
+  return /(^|\n)```[ \t]*(\n|$)/.test(after);
+}
+
+const LIST_RE = /^(\s*)(?:(>)|([-*+])(?:\s(\[[ x]\]))?|(\d+)([.)]))\s/;
+
+/**
+ * List continuation for a newline keypress (COMPOSER_MARKDOWN_SPEC B): caret
+ * on a list/quote line + newline → next marker with the same indent
+ * (`2. ` after `1. `, `- ` after `- `, `10. ` after `9. `, `- [x] ` →
+ * unchecked `- [ ] `, `> ` stays `> `). An empty item (marker alone)
+ * finishes the list — the marker line is stripped so the caller exits the
+ * list without sending. Null when the line is not a list item.
+ */
+export function continueList(
+  draft: string,
+  caret: number,
+): { kind: "continued" | "finished"; text: string; caret: number } | null {
+  const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
+  const lineEndRel = draft.indexOf("\n", caret);
+  const lineEnd = lineEndRel === -1 ? draft.length : lineEndRel;
+  const line = draft.slice(lineStart, lineEnd);
+  const m = line.match(LIST_RE);
+  if (m === null) return null;
+  // (noUncheckedIndexedAccess is off: groups type as string, so narrow
+  // through explicitly-undefined locals instead of ?? / !== undefined.)
+  const indent: string = m[1];
+  const quote = m[2] as string | undefined;
+  const bullet = m[3] as string | undefined;
+  const task = m[4] as string | undefined;
+  const num = m[5] as string | undefined;
+  const delim = m[6] as string | undefined;
+  let marker: string;
+  let next: string;
+  if (quote !== undefined) {
+    marker = quote;
+    next = "> ";
+  } else if (bullet !== undefined) {
+    marker = task !== undefined ? `${bullet} ${task}` : bullet;
+    next = task !== undefined ? "- [ ] " : `${bullet} `;
+  } else if (num !== undefined && delim !== undefined) {
+    marker = `${num}${delim}`;
+    next = `${String(Number(num) + 1)}${delim} `;
+  } else {
+    return null;
+  }
+  if (line.trim() === marker) {
+    // Marker alone: finish — strip the marker line, exit the list, no send.
+    return { kind: "finished", text: draft.slice(0, lineStart) + draft.slice(lineEnd), caret: lineStart };
+  }
+  const insert = `\n${indent}${next}`;
+  return {
+    kind: "continued",
+    text: draft.slice(0, caret) + insert + draft.slice(caret),
+    caret: caret + insert.length,
+  };
+}
+
 export default function Composer({
   threadId,
   memoryOff,
@@ -74,7 +161,9 @@ export default function Composer({
   running?: boolean;
   onSend: (text: string) => void;
   onStop?: () => void;
-  onAttach?: () => void;
+  /** Files picked through the hidden input. Absent = attach stays disabled
+   *  with its reason (never a silent noop). */
+  onAttach?: (files: File[]) => void;
   onMemoryToggle?: () => void;
   /** /compact lands here as a noop default — the real binding is 023's. */
   onCompact?: () => void;
@@ -82,25 +171,44 @@ export default function Composer({
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [composing, setComposing] = useState(false);
+  // Caret mirror for the fence hint: updated on input/keyup/select so the
+  // "Code block" label tracks where the caret actually is.
+  const [caret, setCaret] = useState(0);
   const [slashIdx, setSlashIdx] = useState(0);
   const [slashOff, setSlashOff] = useState(false);
   // Web search is composer-local request-parameter state (031 T7): visual
   // only, no wire shape changes. On by default per the html reference.
   const [webOn, setWebOn] = useState(true);
+  // Live preview (spec E): off by default; a read-only rendered pane rides
+  // above the textarea. Raw markdown stays in the textarea — that is sent.
+  const [previewOn, setPreviewOn] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const pendingSel = useRef<{ start: number; end: number } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const effort = useThreadStore((s) => s.threads[threadId]?.effort ?? "medium");
   const setEffort = useThreadStore((s) => s.setEffort);
   const empty = draft.trim() === "";
+  // Desired caret after a programmatic markdown edit (see the layout effect).
+  const pendingSel = useRef<number | null>(null);
 
-  // Re-apply the caret after a markdown wrap re-renders with a new value.
-  useEffect(() => {
-    if (pendingSel.current && taRef.current) {
-      taRef.current.selectionStart = pendingSel.current.start;
-      taRef.current.selectionEnd = pendingSel.current.end;
-      pendingSel.current = null;
-    }
-  });
+  function setCaretTo(at: number) {
+    pendingSel.current = at;
+    setCaret(at);
+  }
+
+  // Re-apply the caret after a markdown edit commits a new value into the
+  // controlled textarea. A layout effect keyed on the value itself: React has
+  // already written the DOM value, so selection positions set here survive
+  // (the browser resets selection when it replaces value in the commit phase,
+  // which is why an ordinary effect loses the race). Guarded to edits made
+  // through setCaretTo so the browser's own caret advance on plain typing is
+  // never stomped.
+  useLayoutEffect(() => {
+    if (pendingSel.current === null || taRef.current === null) return;
+    const at = pendingSel.current;
+    pendingSel.current = null;
+    taRef.current.selectionStart = at;
+    taRef.current.selectionEnd = at;
+  }, [draft]);
 
   function send() {
     if (running) return;
@@ -108,7 +216,19 @@ export default function Composer({
     if (text === "") return;
     onSend(text);
     setDraft("");
+    setCaret(0);
     setSlashIdx(0);
+  }
+
+  function pickFiles() {
+    fileRef.current?.click();
+  }
+
+  function onFilesChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    // Reset so picking the same file twice still fires a change.
+    e.target.value = "";
+    if (files.length > 0) onAttach?.(files);
   }
 
   function runSlash(command: string) {
@@ -125,8 +245,9 @@ export default function Composer({
     const suf = suffix ?? prefix;
     const s = el.selectionStart;
     const e = el.selectionEnd;
-    setDraft(draft.slice(0, s) + prefix + draft.slice(s, e) + suf + draft.slice(e));
-    pendingSel.current = { start: s + prefix.length, end: e + prefix.length };
+    const next = draft.slice(0, s) + prefix + draft.slice(s, e) + suf + draft.slice(e);
+    setDraft(next);
+    setCaretTo(s + prefix.length);
   }
 
   const slashQuery = draft.match(/^\/(\w*)$/)?.[1].toLowerCase();
@@ -142,7 +263,135 @@ export default function Composer({
     setSlashOff(false);
   }, [slashQuery]);
 
+  /**
+   * Fence opener (COMPOSER_MARKDOWN_SPEC A): caret at the end of a ```lang
+   * line + Enter/Space converts to an open block — newline, cursor on the
+   * empty line inside, closing fence appended iff none lies ahead. A ``` line
+   * reached with an odd fence count above it is the CLOSER of an existing
+   * block — leaving it, not opening a new one. Returns true when handled.
+   */
+  function openFence(el: HTMLTextAreaElement, insertText: string): boolean {
+    const caret = el.selectionStart;
+    if (el.selectionEnd !== caret) return false;
+    const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
+    if (isInsideFence(draft, lineStart)) return false;
+    if (fenceLanguage(draft.slice(lineStart, caret)) === null) return false;
+    // No close ahead: newline + empty line + closing fence, cursor inside.
+    // Close ahead: single newline — the existing fence closes the block.
+    const insert = hasClosingFenceAhead(draft.slice(caret)) ? insertText : `${insertText}\n\`\`\``;
+    const next = draft.slice(0, caret) + insert + draft.slice(caret);
+    setDraft(next);
+    setCaretTo(caret + 1);
+    return true;
+  }
+
+  /** Leading whitespace of the line containing the caret (fence indent). */
+  function lineIndent(caret: number): string {
+    const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
+    const m = draft.slice(lineStart, caret).match(/^[ \t]*/);
+    return m === null ? "" : m[0];
+  }
+
+  /** Tab/Shift+Tab: fence → indent spaces; list line → indent/outdent. */
+  function handleTab(e: React.KeyboardEvent<HTMLTextAreaElement>): boolean {
+    const el = e.currentTarget;
+    const caret = el.selectionStart;
+    const inside = isInsideFence(draft, caret);
+    const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
+    const lineEndRel = draft.indexOf("\n", caret);
+    const lineEnd = lineEndRel === -1 ? draft.length : lineEndRel;
+    const line = draft.slice(lineStart, lineEnd);
+    const isList = line.match(LIST_RE) !== null;
+    if (!inside && !isList) return false; // plain Tab: focus traversal
+    e.preventDefault();
+    if (!e.shiftKey) {
+      // Fence: 2 spaces at the caret. List: indent the line 2 spaces and
+      // restart a numbered marker at 1 (spec B).
+      if (inside) {
+        const next = draft.slice(0, caret) + "  " + draft.slice(el.selectionEnd);
+        setDraft(next);
+        setCaretTo(caret + 2);
+      } else {
+        const indented = `  ${line.replace(/^(\d+)([.)])/, "1$2")}`;
+        const next = draft.slice(0, lineStart) + indented + draft.slice(lineEnd);
+        setDraft(next);
+        setCaretTo(lineStart + indented.length);
+      }
+    } else {
+      // Outdent: strip up to 2 leading spaces of the current line.
+      const lead = line.match(/^ +/);
+      const strip = Math.min(2, lead === null ? 0 : lead[0].length);
+      const next = draft.slice(0, lineStart) + line.slice(strip) + draft.slice(lineEnd);
+      setDraft(next);
+      setCaretTo(Math.max(lineStart, caret - strip));
+    }
+    return true;
+  }
+
   function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    const el = e.currentTarget;
+    const caret = el.selectionStart;
+
+    // Spec D: inline shortcuts. Ctrl+Shift+K puts the caret on the language
+    // line of a fresh fenced block around the selection.
+    if (e.ctrlKey && !e.metaKey && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === "b" && !e.shiftKey) {
+        e.preventDefault();
+        wrapSelection("**");
+        return;
+      }
+      if (k === "i" && !e.shiftKey) {
+        e.preventDefault();
+        wrapSelection("*");
+        return;
+      }
+      if (k === "e" && !e.shiftKey) {
+        e.preventDefault();
+        wrapSelection("`");
+        return;
+      }
+      if (k === "k" && e.shiftKey) {
+        e.preventDefault();
+        const start = caret;
+        const end = Math.max(el.selectionEnd, start);
+        // Fence just the selected span. The draft either side of the selection
+        // is preserved: building the whole value from `inner` alone deleted
+        // everything outside it.
+        const next = draft.slice(0, start) + "```\n" + draft.slice(start, end) + "\n```" + draft.slice(end);
+        setDraft(next);
+        setCaretTo(start + 3);
+        return;
+      }
+      // Spec E: Ctrl+Shift+P toggles the live preview.
+      if (k === "p" && e.shiftKey) {
+        e.preventDefault();
+        setPreviewOn((v) => !v);
+        return;
+      }
+    }
+    // Spec A: a single backtick typed over a selection wraps it. Nothing
+    // else auto-pairs.
+    if (e.key === "`" && caret !== el.selectionEnd) {
+      e.preventDefault();
+      wrapSelection("`");
+      return;
+    }
+    // Spec A: Backspace on an empty fenced block removes the whole block.
+    if (e.key === "Backspace" && caret === el.selectionEnd) {
+      const m = draft.match(/^(```[A-Za-z0-9+#_-]*)\n[ \t]*\n```$/);
+      const midStart = m === null ? -1 : m[1].length + 1;
+      if (m !== null && caret === midStart) {
+        e.preventDefault();
+        setDraft("");
+        setCaretTo(0);
+        return;
+      }
+    }
+    if (e.key === "Tab") {
+      handleTab(e);
+      return;
+    }
     if (slashItems !== null) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -166,32 +415,49 @@ export default function Composer({
         return;
       }
     }
-    if (e.ctrlKey && !e.metaKey && !e.altKey) {
-      const k = e.key.toLowerCase();
-      if (k === "b" && !e.shiftKey) {
+    // Spec A: ```lang + Enter/Space on the opener line builds the block.
+    if (
+      (e.key === "Enter" || e.key === " ") &&
+      !composing &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey
+    ) {
+      if (openFence(el, "\n")) {
         e.preventDefault();
-        wrapSelection("**");
-        return;
-      }
-      if (k === "i" && !e.shiftKey) {
-        e.preventDefault();
-        wrapSelection("*");
-        return;
-      }
-      if (k === "e" && !e.shiftKey) {
-        e.preventDefault();
-        wrapSelection("`");
-        return;
-      }
-      if (k === "k" && e.shiftKey) {
-        e.preventDefault();
-        wrapSelection("```\n", "\n```");
         return;
       }
     }
     if (e.key === "Enter" && !composing) {
-      const go = sendWith === "ctrl" ? e.ctrlKey : !e.shiftKey;
-      if (go) {
+      // Spec C priority: Ctrl+Enter always sends (1: menus handled above)…
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        send();
+        return;
+      }
+      // 2: inside a fence, Enter is a newline that keeps the line indent.
+      if (isInsideFence(draft, caret)) {
+        e.preventDefault();
+        const insert = `\n${lineIndent(caret)}`;
+        const next = draft.slice(0, caret) + insert + draft.slice(el.selectionEnd);
+        setDraft(next);
+        setCaretTo(caret + insert.length);
+        return;
+      }
+      // 3: a list/quote line continues (or an empty marker exits the list —
+      // it is stripped and nothing sends; the next Enter on the plain line
+      // sends, per spec B).
+      if (caret === el.selectionEnd) {
+        const cont = continueList(draft, caret);
+        if (cont !== null) {
+          e.preventDefault();
+          setDraft(cont.text);
+          setCaretTo(cont.caret);
+          return;
+        }
+      }
+      // 4: otherwise Enter sends, Shift+Enter is a newline.
+      if (sendWith !== "ctrl" && !e.shiftKey) {
         e.preventDefault();
         send();
       }
@@ -200,9 +466,11 @@ export default function Composer({
 
   // Honest estimate, labelled as one: character count over words-per-token.
   const tokens = Math.ceil(draft.length / 4);
+  // Spec A: a muted hint rides the right edge while the caret sits in a fence.
+  const inFence = isInsideFence(draft, caret);
 
   return (
-    <div className="relative min-w-0 rounded-2xl border border-neutral-800 bg-neutral-950 p-3">
+    <div className="relative min-w-0 rounded-2xl border border-neutral-800 bg-neutral-950 p-3 focus-within:border-ring">
       {slashItems !== null && (
         <div
           role="listbox"
@@ -236,6 +504,14 @@ export default function Composer({
           )}
         </div>
       )}
+      {previewOn && draft !== "" && (
+        <div
+          data-testid="composer-preview"
+          className="markdown-body max-h-56 overflow-y-auto rounded-md border border-border bg-black/20 px-3 py-2"
+        >
+          <Markdown text={draft} />
+        </div>
+      )}
       <Textarea
         ref={taRef}
         aria-label="Message"
@@ -243,6 +519,36 @@ export default function Composer({
         value={draft}
         onChange={(e) => {
           setDraft(e.target.value);
+          setCaret(e.target.selectionStart);
+        }}
+        onSelect={(e) => {
+          setCaret(e.currentTarget.selectionStart);
+        }}
+        onKeyUp={(e) => {
+          setCaret(e.currentTarget.selectionStart);
+        }}
+        onPaste={(e) => {
+          // Spec F: multi-line plain text pastes as-is; text that LOOKS like
+          // code (every non-empty line indented 2+/tab, or code characters on
+          // 3+ lines) wraps in a text fence. Existing fences pass through.
+          const pasted = e.clipboardData.getData("text");
+          if (!pasted.includes("\n") || pasted.includes("```")) return;
+          const lines = pasted.split("\n");
+          const nonEmpty = lines.filter((l) => l.trim() !== "");
+          const indented = nonEmpty.length > 0 && nonEmpty.every((l) => /^(\s\s|\t)/.test(l));
+          const codeLines = nonEmpty.filter((l) => /(\{|};|=>)/.test(l)).length;
+          if (!indented && codeLines < 3) return;
+          e.preventDefault();
+          const body = pasted.replace(/\n$/, "");
+          // Splice the fence into the existing draft at the caret/selection —
+          // never rebuild the value from the pasted text alone, which destroyed
+          // whatever was already typed or selected around the insertion point.
+          const start = e.currentTarget.selectionStart;
+          const end = e.currentTarget.selectionEnd;
+          const fenced = `\`\`\`text\n${body}\n\`\`\``;
+          const next = draft.slice(0, start) + fenced + draft.slice(end);
+          setDraft(next);
+          setCaretTo(start + fenced.length);
         }}
         onCompositionStart={() => {
           setComposing(true);
@@ -254,21 +560,42 @@ export default function Composer({
         className="max-h-48 min-h-12 w-full min-w-0 resize-none overflow-y-auto border-0 bg-transparent shadow-none focus-visible:ring-0"
       />
       <div className="mt-2 flex min-w-0 items-center gap-1.5">
+        {/* The real file picker: the icon button opens it, the change event
+            carries the files to onAttach. No onAttach = disabled + reason. */}
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          className="hidden"
+          data-testid="attach-input"
+          tabIndex={-1}
+          onChange={onFilesChosen}
+        />
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Attach a file"
-              onClick={() => {
-                onAttach?.();
-              }}
-            >
-              <PlusIcon />
-            </Button>
+            {onAttach === undefined ? (
+              <span className="inline-flex">
+                <Button type="button" variant="ghost" size="icon" aria-label="Attach a file" disabled>
+                  <PlusIcon />
+                </Button>
+              </span>
+            ) : (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Attach a file"
+                onClick={pickFiles}
+              >
+                <PlusIcon />
+              </Button>
+            )}
           </TooltipTrigger>
-          <TooltipContent>Attach a file (copied into the workspace, D47)</TooltipContent>
+          <TooltipContent>
+            {onAttach === undefined
+              ? "Attachments are not available here yet"
+              : "Attach a file (copied into the workspace, D47)"}
+          </TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -304,13 +631,37 @@ export default function Composer({
           </TooltipTrigger>
           <TooltipContent>{webOn ? "Web search on" : "Web search off"}</TooltipContent>
         </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant={previewOn ? "secondary" : "ghost"}
+              size="icon"
+              aria-label="Toggle live preview"
+              aria-pressed={previewOn}
+              onClick={() => {
+                setPreviewOn((v) => !v);
+              }}
+            >
+              <EyeIcon />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {previewOn ? "Live preview on" : "Live preview (Ctrl+Shift+P)"}
+          </TooltipContent>
+        </Tooltip>
         <div className="flex-1" />
+        {inFence && (
+          <span data-testid="fence-hint" className="text-xs text-neutral-500">
+            Code block · Ctrl+Enter to send
+          </span>
+        )}
         <span
           data-testid="token-hint"
           className="text-xs text-neutral-400"
           title="Approximate input size: characters ÷ 4"
         >
-          ≈{tokens} token{tokens === 1 ? "" : "s"} · estimate
+          {tokens} token{tokens === 1 ? "" : "s"} · estimate
         </span>
         <Select
           value={effort}
@@ -371,7 +722,9 @@ export default function Composer({
                   size="icon"
                   aria-label="Send"
                   disabled={empty}
-                  onClick={send}
+                  onClick={() => {
+                    send();
+                  }}
                   className="rounded-full"
                 >
                   <ArrowUpIcon />

@@ -51,6 +51,21 @@ describe("TranscriptView", () => {
     expect(assistant.getAttribute("data-framed")).toBe("false");
   });
 
+  it("renders a code block in the user's own message (fence parity)", async () => {
+    render(
+      <TranscriptView
+        rows={[text("```rust\nfn main() {}\n```", { id: "u", seq: 0, role: "user" })]}
+      />,
+    );
+    const user = screen.getByTestId("row-u");
+    // Markdown is async (purifier loads lazily): wait for the rendered block,
+    // then assert the raw fence markers did not survive as literal text.
+    const label = await within(user).findByText("rust");
+    expect(label.tagName).toBe("SPAN");
+    expect(within(user).getByRole("button", { name: /copy rust code/i }).tagName).toBe("BUTTON");
+    expect(user.textContent).not.toContain("```");
+  });
+
   it("renders every block kind without throwing", () => {
     const rows: RenderRow[] = [
       text("hi", { id: "1", seq: 0 }),
