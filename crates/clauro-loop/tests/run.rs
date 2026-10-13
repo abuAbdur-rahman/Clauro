@@ -655,13 +655,13 @@ fn resent_requests_carry_prior_tool_results() {
 
 /// The wire shape both adapters require, proven on the stored transcript.
 ///
-/// The Anthropic Messages API takes a `tool_result` back **in a subsequent
-/// user message** — never inside the assistant message that made the call
-/// (platform.claude.com/docs/en/api/messages: tool results "return ... in a
-/// subsequent `user` message"). The OpenAI-compatible adapter needs the same
-/// separation to map onto `role: "tool"`. `assemble_messages` groups blocks by
-/// their stored message, and results persist into the assistant message that
-/// held the `tool_use`, so the split has to happen at assembly time.
+/// The Anthropic Messages API takes a `tool_result` back in a later user
+/// message — never inside the assistant message that made the call
+/// (platform.claude.com/docs/en/api/messages). The OpenAI-compatible adapter
+/// needs the same separation to map onto `role: "tool"`. `assemble_messages`
+/// groups blocks by their stored message, and results persist into the
+/// assistant message that held the `tool_use`, so the split has to happen at
+/// assembly time.
 #[test]
 fn tool_results_ride_the_next_user_message_not_the_assistant() {
     let dir = TestDir::fresh();
