@@ -32,11 +32,12 @@ is in progress; `Tasks/001`–`033` exist, with `029`–`032` recorded in the Ph
   answer path at `run.rs:407` — answer persistence is wired, not test-only.
   `D26` holds twice over — denied tools are absent from the request *and*
   refused if emitted.
-- **`src-tauri` registers 20 commands and one of them drives the loop.** The shell depends on
-  `clauro-loop` (`src-tauri/Cargo.toml:37`) and `turn.rs` is the turn driver — `turn::turn_start`
+- **`src-tauri` registers 21 commands and one of them drives the loop.** The shell depends on
+  `clauro-loop` (`src-tauri/Cargo.toml:47`) and `turn.rs` is the turn driver — `turn::turn_start`
   reaches `run_turn`/`continue_turn` through `prepare_loop` (`turn.rs:1121-1151`), so a turn is
-  driven from the UI. (Review 41 cited "22 commands at lib.rs:212-235"; the block is
-  `lib.rs:223-244` with 20 entries.)
+  driven from the UI. (Review 41 cited "22 commands at lib.rs:212-235"; the block was
+  `lib.rs:223-244` with 20 entries, and is now `lib.rs:260-282` with 21 — `Tasks/020` added
+  `summon::summon_hotkey_status`, pinned by the summon wiring test at `lib.rs:734`.)
 - **Three silent `let _ =` drops** were on the exact paths `D65`/`D68` guarantee
   (`run.rs:493,716,732`; `PHASES.md` previously cited the stale `290,513,529` — corrected
   in the same change that fixed them). **Fixed by `Tasks/028` (O1):** `insert_tool_block`,
@@ -298,19 +299,21 @@ window), and SPEC M5 now reads on-demand-first per D95 with threshold as the fal
 |---|---|---|---|
 | `Tasks/018-projects-and-memory-ui.md` | ✅ scoping + rail + controls green 2026-10-06 (`features/projects/`, store schema + `set_thread_memory_off` D9) | §1 | D8, D9, D32, D35, D36, D37, D52 |
 | `Tasks/019-incognito-export-and-retention.md` | ✅ export builders + delete rows/files + confirm + telemetry audit green 2026-10-06 (`features/retention/`, `clauro-store/tests/retention.rs:3`, `clauro-fs/tests/retention.rs:1`) | §1 | D10, D19, D37, D38, D57, D67 |
-| `Tasks/020-themes-hotkey-and-command-palette.md` | ◐ palette + themes + in-app hotkey green (`features/shell/`); global shortcut + single-instance need Tauri plugins (follow-up) | — | D42, D44, D66 |
+| `Tasks/020-themes-hotkey-and-command-palette.md` | ✅ palette + themes + global summon + second instance green 2026-10-13 (`features/shell/`, `src-tauri/src/summon.rs`, single-instance + global-shortcut plugins, records §4.7/§4.8) | — | D42, D44, D66 |
 | `Tasks/024-frontend-feature-layout.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 | `Tasks/025-vendored-shadcn-ui.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 | `Tasks/026-chat-ui-batch.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 | `Tasks/027-composer-shell.md` | ✅ (pre-existing 2026-10-06) | — (structure) | D112 |
 
-**Gate status: ◐ substantially met 2026-10-07.** End-to-end task + delete-every-byte proven at unit/integration level
+**Gate status: ✅ met 2026-10-13.** End-to-end task + delete-every-byte proven at unit/integration level
 (store rows zero, real-fs subtree gone, export self-contained HTML/MD + JSON round-trip, confirm names
-target); the surfaces are now wired into the shell (`src/app/App.tsx`: home greeting + centered composer,
+target); the surfaces are wired into the shell (`src/app/App.tsx`: home greeting + centered composer,
 projects grid, project detail with Instructions/Memory/Context rail, nested rail threads, palette with
 search + tabs + recents, `src/app/shell.test.tsx` navigation proof) with all labels our own wording
-(**D39**). What remains is visual confirmation in the running app. Telemetry audit: `rg`
-zero hits source + manifests.
+(**D39**). Visual confirmation in the running app landed 2026-10-13 — registered status line, palette
+render + action, cross-window summon with an OS-level key witness, second instance settling 2→1,
+appearance live-switch in a real engine (evidence in `Tasks/020` Status; one density defect found
+live and fixed with a pinning test). Telemetry audit: `rg` zero hits source + manifests.
 
 **Gate:** a user completes a real task end to end and can delete every byte.
 

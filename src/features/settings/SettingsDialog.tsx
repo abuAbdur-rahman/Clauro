@@ -40,6 +40,7 @@ import { exportThreadDownload } from "../retention/export";
 import { useThreadStore } from "../catalogue/thread";
 import { providerList, providerModelsEnriched, type EnrichedModel } from "../providers/providers";
 import { useTheme } from "../shell/usetheme";
+import { summonHotkeyStatus, type SummonStatus } from "../shell/hotkey";
 import { DEFAULT_DISPLAY_NAME, useSettingsStore, type SettingsSection } from "../shell/settings";
 
 export { rowToExportBlock } from "../retention/export";
@@ -1060,6 +1061,20 @@ function DataPane({
 }
 
 function ShortcutsPane(): React.JSX.Element {
+  // Task 020: the host's global registration outcome, reported below the
+  // table — a conflict degrades to the in-app chord and SAYS why (020's
+  // "conflicts … saying so" clause), never to silence. It is a line, not a
+  // table row: the eight-row table contract stays pinned by its own test.
+  const [status, setStatus] = useState<SummonStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void summonHotkeyStatus().then((s) => {
+      if (alive) setStatus(s);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
   return (
     <div data-testid="settings-page-shortcuts">
       <h2 className="mb-4 text-xl font-semibold">Shortcuts</h2>
@@ -1082,6 +1097,16 @@ function ShortcutsPane(): React.JSX.Element {
           ))}
         </tbody>
       </table>
+      <p
+        data-testid="global-summon-status"
+        className="mt-3 text-[13px] text-muted-foreground"
+      >
+        {status === null
+          ? "Global summon: checking the host…"
+          : status.global
+            ? `Global summon: ${status.combo} registered globally. Press it from anywhere to bring Clauro forward and open the palette.`
+            : `Global summon: unavailable — in-app only. ${status.combo} still opens the palette while Clauro is running. Reason: ${status.reason ?? "unknown"}`}
+      </p>
     </div>
   );
 }

@@ -87,6 +87,11 @@ export function invoke(cmd: string, args?: Record<string, unknown>): Promise<unk
   switch (cmd) {
     case "webview_status":
       return Promise.resolve({ kind: "present", version: "browser-harness" });
+    case "summon_hotkey_status":
+      // Task 020: no host in the browser harness — there is no OS hotkey
+      // registry to register with, so the honest answer is the same shape a
+      // Windows conflict produces: the pane shows "in-app only" + this reason.
+      return Promise.reject(new Error("browser harness: no host hotkey registry"));
     case "provider_list":
       if (bare) return Promise.resolve([]);
       return Promise.resolve(

@@ -8,9 +8,11 @@ mod csp;
 mod keyring_store;
 mod platform;
 mod providers;
+mod summon;
 mod turn;
 
 use tauri::Manager;
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 use catalogue::{
     is_fresh, read_cache, resolve, write_cache, CatalogueError, CATALOGUE_TTL_SECS, MODELS_DEV_URL,
@@ -192,6 +194,17 @@ fn webview_status() -> WebviewStatus {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Task 020: single-instance FIRST — the plugin requires it (the
+        // second instance must hand off before any other plugin's setup
+        // runs). A second launch focuses this instance's main window and
+        // exits; it never reaches `run`.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            summon::focus_main(app);
+        }))
+        // Task 020: the shortcut *plugin* installs here; the shortcut itself
+        // registers in setup below, where its outcome can be recorded for
+        // `summon_hotkey_status`.
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // D123/D124: the artifact documents live on their own `artifact`
         // scheme, registered here through Tauri's public hook. Note what
         // that does and does not buy (tauri-2.12.1 `webview/mod.rs:1961-2002`):
@@ -227,6 +240,21 @@ pub fn run() {
             // Published artifact documents live as long as the app does; the
             // registry is bounded, and a re-render republishes (D123).
             app.manage(artifact_doc::DocRegistry::default());
+            // Task 020: register the global summon hotkey and record WHY. A
+            // conflict (another app already owns Ctrl+K) degrades to the
+            // in-app listener and the Shortcuts pane says so — it must never
+            // fail the launch. `on_shortcut` binds the press handler too:
+            // the OS ate the keydown, so summon.rs re-delivers it as an
+            // event after focusing the window.
+            let outcome = app
+                .global_shortcut()
+                .on_shortcut(summon::REGISTER_SOURCE, |app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        summon::on_global(app);
+                    }
+                })
+                .map_err(|e| e.to_string());
+            summon::record(outcome);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -249,7 +277,8 @@ pub fn run() {
             providers::provider_set_key,
             providers::provider_models,
             providers::provider_models_enriched,
-            providers::provider_refresh
+            providers::provider_refresh,
+            summon::summon_hotkey_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -691,5 +720,63 @@ mod tests {
             "invoke ↔ handler contract broken:\n  {}",
             violations.join("\n  ")
         );
+    }
+
+    // Task 020 (global summon): the host registers the single-instance guard
+    // and the global shortcut in the builder, records the registration
+    // outcome so the status command can report it, and the command joins the
+    // handler list — the UI says *why* the global path is missing instead of
+    // silently falling back (020's "conflicts … saying so" clause).
+    //
+    // Needles are assembled at runtime so this test's own source cannot
+    // satisfy them (the `command_is_async` trick).
+    #[test]
+    fn summon_hotkey_and_single_instance_are_wired_in_the_builder() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let lib_src = std::fs::read_to_string(dir.join("lib.rs")).expect("lib.rs is readable");
+        let single = format!(".plugin(tauri_plugin_{}", "single_instance");
+        let global = format!(".plugin(tauri_plugin_{}", "global_shortcut");
+        let record = format!("{}::record(", "summon");
+        assert!(
+            lib_src.contains(&single),
+            "single-instance plugin registered in the builder"
+        );
+        assert!(
+            lib_src.contains(&global),
+            "global-shortcut plugin registered in the builder"
+        );
+        assert!(
+            lib_src.contains(&record),
+            "setup records the registration outcome through summon::record"
+        );
+        let registered: BTreeSet<String> = registered_commands(&lib_src).into_iter().collect();
+        assert!(
+            registered.contains("summon_hotkey_status"),
+            "status command in the handler list: {registered:?}"
+        );
+        let summon_src =
+            std::fs::read_to_string(dir.join("summon.rs")).expect("summon.rs is readable");
+        let cmd = format!("pub fn {}(", "summon_hotkey_status");
+        assert!(
+            summon_src.contains(&cmd),
+            "status command implemented in summon.rs"
+        );
+    }
+
+    /// The status command maps the *recorded* registration outcome: a
+    /// registered shortcut resolves to the displayed combo, a conflict
+    /// rejects with the host's reason, and an unfilled slot (a host that
+    /// skipped setup) rejects too — the UI must never claim a global path
+    /// that was not proven.
+    #[test]
+    fn summon_status_payload_carries_the_recorded_outcome() {
+        assert_eq!(
+            summon::status_payload(Some(Ok(()))).expect("registered"),
+            summon::combo()
+        );
+        let err = summon::status_payload(Some(Err("hotkey in use".to_string())))
+            .expect_err("conflict must reject");
+        assert!(err.contains("hotkey in use"), "{err}");
+        summon::status_payload(None).expect_err("never attempted must reject");
     }
 }

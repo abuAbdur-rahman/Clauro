@@ -33,6 +33,17 @@ html {
   font-size: 17px;
 }
 
+/* Density scale (theme.ts writes data-density; this is what consumes it).
+   Compact drops the root two notches — every rem-based row, gap, and glyph
+   follows together. Unlayered and next to the base size on purpose: both
+   rules must share a cascade context, or the unlayered 17px rule above
+   outranks this one from inside `@layer base` regardless of specificity and
+   the compact setting writes its attribute without changing anything
+   (real-engine proof 2026-10-13; pinned by src/styles.test.ts). */
+html[data-density="compact"] {
+  font-size: 15px;
+}
+
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
@@ -164,12 +175,6 @@ html {
   }
   body {
     @apply bg-background text-foreground;
-  }
-  /* Density scale (theme.ts writes data-density; this is what consumes it).
-     Compact drops the root two notches — every rem-based row, gap, and glyph
-     follows together. */
-  html[data-density="compact"] {
-    font-size: 15px;
   }
 }
 

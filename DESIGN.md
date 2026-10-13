@@ -210,7 +210,9 @@ to, and voice renders disabled with its reason — both deliberate (`Tasks/027`)
 
 ### 2.8 Command palette
 
-Opens on Ctrl/Cmd+K (in-app; the Tauri global-shortcut plugin is a recorded follow-up). Blocked
+Opens on Ctrl/Cmd+K — registered globally by the host, with the in-app keydown listener kept as the
+fallback when a conflict prevents registration (Settings → Shortcuts says which of the two is live).
+Blocked
 with a reason while a turn runs; `/compact` unavailable mid-turn; `bash` approval and `attach`
 never live here. Search box, section tabs (All · Chats · Projects · Actions), recent items, and a
 hint footer — all labels ours. Recents + type filter ship now; full-text chat search is v3.

@@ -33,8 +33,15 @@ vi.mock("../turn/turn", () => ({
   transcriptRead: vi.fn(),
 }));
 
+// Task 020: the Shortcuts pane asks the host whether the global summon
+// hotkey registered — without this mock the real `invoke` would reach for
+// `window.__TAURI_INTERNALS__` and the pane could not be steered into the
+// registered-vs-conflict branches.
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
 import { providerList } from "../providers/providers";
 import { transcriptRead } from "../turn/turn";
+import { invoke } from "@tauri-apps/api/core";
 
 function threadText(id: string, text: string): RenderRow {
   return { block: { kind: "text", text }, role: "assistant", id, seq: 0, generation: 0 };
@@ -239,6 +246,33 @@ describe("SettingsDialog", () => {
     // Multi-key combos join chips with a bare "+" separator, never one chip.
     const combo = within(page).getByText("Toggle artifact panel").closest("tr");
     expect(combo?.querySelectorAll("kbd")).toHaveLength(3);
+  });
+
+  // Task 020 (global summon): the host reports the registration outcome and
+  // the pane says *why* the global path is missing — a conflict degrades to
+  // the in-app chord with the host's reason, never to silence (020's
+  // "conflicts … saying so" clause). The status is a line below the table,
+  // so the eight-row table contract above stays pinned.
+  it("reports a registered global hotkey on its own status line", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("Ctrl+K");
+    useSettingsStore.getState().openSettings("shortcuts");
+    render(<SettingsDialog threadId="t1" />);
+    const status = await screen.findByTestId("global-summon-status");
+    expect(status.textContent).toMatch(/registered globally/i);
+    expect(status.textContent).toContain("Ctrl+K");
+    expect(status.tagName).toBe("P");
+    // The status line is not a ninth row.
+    const page = screen.getByTestId("settings-page-shortcuts");
+    expect(within(page).getAllByRole("row")).toHaveLength(8);
+  });
+
+  it("falls back to the in-app chord and shows the host's reason on conflict", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce("hotkey already in use");
+    useSettingsStore.getState().openSettings("shortcuts");
+    render(<SettingsDialog threadId="t1" />);
+    const status = await screen.findByTestId("global-summon-status");
+    expect(status.textContent).toMatch(/in-app only/i);
+    expect(status.textContent).toContain("hotkey already in use");
   });
 
   it("export downloads markdown with thinking stripped", async () => {

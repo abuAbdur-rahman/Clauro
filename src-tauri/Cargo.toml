@@ -24,6 +24,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # D19-adjacent: secrets live in the OS keychain. Never SQLite, never a file.
 keyring = "4"
+# Task 020: single-instance guard + the global summon hotkey. Both are thin
+# wrappers over OS facilities we must not hand-roll (§5a — records in
+# docs/dependencies.md): a named-mutex / D-Bus-name / Unix-socket handoff,
+# and the RegisterHotKey + main-thread dispatch rules respectively. Unlike
+# `tauri` above these float on "2": D92's exact pin exists because
+# IPC-injection behaviour is version-dependent, and neither plugin exposes
+# an IPC surface we call from JS (their commands are unused — the shortcut
+# is registered host-side in `summon.rs`).
+tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
 # Transport (D24): hand-rolled SSE over reqwest with rustls — no OpenSSL system
 # dependency for cross-distro packaging. 003 uses it for the catalogue fetch;
 # streaming arrives with 005.
