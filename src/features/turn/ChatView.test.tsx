@@ -38,6 +38,21 @@ vi.mock("./turn", () => ({
   }),
 }));
 
+/**
+ * The D45 gate reads the host's user agent, and jsdom derives its UA from the
+ * OS: on the linux runner it reports "(linux)", the gate fail-closes, and the
+ * producer this view owns sets a notice instead of driving the drawer — one
+ * case here, red on CI and green on a Windows box (2026-10-13). Pin the ambient
+ * detection so the suite proves the view and not the machine; the gate's own
+ * refusal path is covered in `live.test.ts` with an explicit gate.
+ */
+const ENGINE = vi.hoisted(() => ({ platform: "windows" as const, opaqueProven: true }));
+
+vi.mock("../artifact/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../artifact/store")>();
+  return { ...actual, detectEngineGate: () => ENGINE };
+});
+
 import { artifactLatest, questionAnswer, turnStart, turnStop, transcriptRead } from "./turn";
 import { useDrawerStore } from "../artifact/store";
 import { useArtifactContent } from "../artifact/live";
