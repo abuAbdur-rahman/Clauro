@@ -64,13 +64,25 @@ defaults), lucide icons one stroke/weight (never unicode/emoji), all states
       detail / settings / palette** (`031-t8-*-ours.png`), reference **home +
       projects** (`031-t8-*-ref.png`), and two side-by-side stitches
       (`031-t8-sidebyside-{home,projects}.png`).
-      **The visual comparison was NOT performed — this agent has no image input.**
-      The artefacts exist for a human to compare; what is recorded here is a
-      *structural* comparison read from the accessibility trees (text, not pixels).
+      **The visual comparison was run 2026-10-13 (vision MCP, gemini-3.1-flash-lite),
+      after the first write-up wrongly reported it as impossible. Findings:**
+      our screens verify visually — the settings dialog lists all 8 sections
+      (General…About) plus the search box and the Providers route; the palette
+      shows an **ACTIONS** group with the 6 builtins and the
+      "Search chats, projects, settings, actions…" placeholder; the composer
+      carries the model chip, a "Medium" thinking control and the
+      `0 tokens · estimate` hint (T7 in place, `ModelPicker.tsx:231`).
+      **But the `031-t8-*-ref.png` captures are NOT the reference's home or
+      projects screen — they are its onboarding carousel** ("Welcome to Clauro",
+      *Bring your own keys / Private by default / Works with any provider*, Skip
+      / Next, four pagination dots), which renders over the shell on first load.
+      **So the side-by-side pairs are invalid and the reference match is still
+      unproven.** To finish T8: dismiss the reference onboarding (Skip), re-capture
+      its home and projects screens, then re-run the comparison.
       **Not captured:** the reference's chat and settings screens — its rail
       entries are not buttons with matching text and its cmdk-style palette does
       not select on synthetic click — so the pair set is 2 screens, not every one.
-      **Structural differences (home):** ours carries `Memory`, `Toggle live
+      **Structural differences (home), read from the a11y trees:** ours carries `Memory`, `Toggle live
       preview` and `Voice` controls plus a `Thinking level` combobox reading
       "Medium"; the reference has a plain `Thinking` button and none of the other
       three. Our model control is `aria-label="Model"`, the reference's is
