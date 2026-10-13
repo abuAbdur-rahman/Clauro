@@ -171,3 +171,92 @@ describe("thread staged drafts (Task 031 T8)", () => {
     expect(useThreadStore.getState().consumeDraft("t1")).toBeNull();
   });
 });
+
+describe("thread rail-menu overrides (review 31: Delete/Pin/Rename)", () => {
+  it("renameThread sets a title override; openThread preserves it", () => {
+    const s = useThreadStore.getState();
+    s.openThread("t1");
+    s.renameThread("t1", "Study notes");
+    expect(thread("t1").title).toBe("Study notes");
+    // Re-opening (the rail click path) must not clobber the override.
+    useThreadStore.getState().openThread("t1");
+    expect(thread("t1").title).toBe("Study notes");
+  });
+
+  it("renameThread upserts on an unknown id and never throws", () => {
+    expect(() => {
+      useThreadStore.getState().renameThread("ghost", "Ghost title");
+    }).not.toThrow();
+    expect(thread("ghost").title).toBe("Ghost title");
+  });
+
+  it("setPinned flips the pin override in both directions", () => {
+    const s = useThreadStore.getState();
+    s.openThread("t1");
+    expect(thread("t1").pinned).toBeNull();
+    s.setPinned("t1", true);
+    expect(thread("t1").pinned).toBe(true);
+    useThreadStore.getState().setPinned("t1", false);
+    expect(thread("t1").pinned).toBe(false);
+  });
+
+  it("removeThread marks removed without deleting the row (never throws)", () => {
+    const s = useThreadStore.getState();
+    s.openThread("t1");
+    expect(() => {
+      useThreadStore.getState().removeThread("ghost");
+    }).not.toThrow();
+    s.removeThread("t1");
+    expect(thread("t1").removed).toBe(true);
+    // openThread preserves removal so a stale opener cannot resurrect it.
+    useThreadStore.getState().openThread("t1");
+    expect(thread("t1").removed).toBe(true);
+  });
+
+  it("reset clears overrides with everything else", () => {
+    const s = useThreadStore.getState();
+    s.openThread("t1");
+    s.renameThread("t1", "Renamed");
+    s.setPinned("t1", true);
+    s.removeThread("t1");
+    useThreadStore.getState().reset();
+    expect(useThreadStore.getState().threads["t1"]).toBeUndefined();
+  });
+});
+
+describe("per-thread composer drafts (review 30: draft survives thread switch)", () => {
+  it("stores one draft per thread, read back by id", () => {
+    const s = useThreadStore.getState();
+    s.setComposerDraft("t1", "half-typed in t1");
+    s.setComposerDraft("t2", "half-typed in t2");
+    expect(s.composerDraft("t1")).toBe("half-typed in t1");
+    expect(s.composerDraft("t2")).toBe("half-typed in t2");
+  });
+
+  it("blank deletes the key instead of storing it; never throws", () => {
+    const s = useThreadStore.getState();
+    s.setComposerDraft("t1", "hello");
+    expect(() => {
+      useThreadStore.getState().setComposerDraft("t1", "   ");
+    }).not.toThrow();
+    expect(useThreadStore.getState().composerDraft("t1")).toBeNull();
+  });
+
+  it("unknown thread reads null, never throws", () => {
+    expect(useThreadStore.getState().composerDraft("ghost")).toBeNull();
+  });
+
+  it("stays separate from the one-shot home staging draft", () => {
+    const s = useThreadStore.getState();
+    s.setDraft("t1", "staged");
+    s.setComposerDraft("t1", "typed");
+    expect(s.consumeDraft("t1")).toBe("staged");
+    expect(s.composerDraft("t1")).toBe("typed");
+  });
+
+  it("reset clears composer drafts with everything else", () => {
+    useThreadStore.getState().setComposerDraft("t1", "typed");
+    useThreadStore.getState().reset();
+    expect(useThreadStore.getState().composerDraft("t1")).toBeNull();
+  });
+});

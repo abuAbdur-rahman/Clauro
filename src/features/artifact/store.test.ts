@@ -3,7 +3,10 @@ import {
   useDrawerStore,
   sandboxAttr,
   artifactGate,
+  detectEngineGate,
+  recordOpaqueOriginProbe,
   SANDBOX_TOKENS,
+  DRAWER_MAX_THREADS,
 } from "./store";
 
 beforeEach(() => {
@@ -57,6 +60,72 @@ describe("sandbox tokens (D2)", () => {
 
   it("refuses allow-same-origin", () => {
     expect(() => sandboxAttr(["allow-same-origin"])).toThrow(/opaque origin/);
+  });
+
+  it("refuses any token outside the fixed sandbox — no widening at all (D108)", () => {
+    // The refusal list used to be one token: `allow-popups` or
+    // `allow-top-navigation` would have been appended verbatim.
+    for (const token of ["allow-popups", "allow-forms", "allow-modals", "allow-top-navigation"]) {
+      expect(() => sandboxAttr([token]), token).toThrow(/allowlist|fixed sandbox/i);
+    }
+    expect(sandboxAttr()).toBe("allow-scripts");
+    expect(sandboxAttr([])).toBe("allow-scripts");
+  });
+});
+
+describe("drawer store bound (audit 14, IMPORTANT: never-evicted maps)", () => {
+  it("evicts the oldest thread beyond its bound", () => {
+    const s = useDrawerStore.getState();
+    for (let i = 0; i < DRAWER_MAX_THREADS + 4; i += 1) {
+      s.setLive(`t${String(i)}`, `a${String(i)}`, 1);
+    }
+    const drawers = useDrawerStore.getState().drawers;
+    expect(Object.keys(drawers).length).toBeLessThanOrEqual(DRAWER_MAX_THREADS);
+    expect(drawers["t0"]).toBeUndefined();
+    expect(drawers[`t${String(DRAWER_MAX_THREADS + 3)}`]).toBeDefined();
+  });
+
+  it("keeps a touched thread instead of evicting it", () => {
+    const s = useDrawerStore.getState();
+    for (let i = 0; i < DRAWER_MAX_THREADS; i += 1) {
+      s.setLive(`t${String(i)}`, `a${String(i)}`, 1);
+    }
+    // Re-setting a key must refresh its recency, or the store is FIFO and a
+    // thread the user is actively looking at is the first thing evicted.
+    useDrawerStore.getState().setLive("t0", "a0", 2);
+    useDrawerStore.getState().setLive("extra", "aX", 1);
+    const drawers = useDrawerStore.getState().drawers;
+    expect(drawers["t0"]).toBeDefined();
+    expect(drawers["extra"]).toBeDefined();
+    expect(drawers["t1"]).toBeUndefined();
+  });
+});
+
+describe("engine gate derived from this runtime (D45)", () => {
+  beforeEach(() => {
+    recordOpaqueOriginProbe(false);
+  });
+
+  it("reports this platform and starts unproven", () => {
+    const gate = detectEngineGate();
+    expect(["windows", "linux", "mac", "other"]).toContain(gate.platform);
+    // No 021 probe result exists yet, so nothing is proven: the gate stays
+    // closed on Linux until the probe records a verdict.
+    expect(gate.opaqueProven).toBe(false);
+  });
+
+  it("reads back the 021 probe verdict", () => {
+    recordOpaqueOriginProbe(true);
+    expect(detectEngineGate().opaqueProven).toBe(true);
+    recordOpaqueOriginProbe(false);
+    expect(detectEngineGate().opaqueProven).toBe(false);
+  });
+
+  it("still fails closed for unproven Linux", () => {
+    const gate = detectEngineGate();
+    const verdict = artifactGate({ ...gate, platform: "linux" });
+    expect(verdict.enabled).toBe(false);
+    expect(verdict.notice).toMatch(/Linux/);
   });
 });
 

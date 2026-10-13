@@ -18,7 +18,7 @@
  * - **notice** — dropped thinking, unmappable provider events, ignored stream
  *   events. Never the compaction itself.
  */
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { ContentBlock, RenderRow } from "./types";
 import { renderMarkdown } from "./markdown";
 import { enhanceCodeBlocks } from "./codeblocks";
@@ -26,13 +26,13 @@ import { enhanceCodeBlocks } from "./codeblocks";
 export interface TranscriptViewProps {
   rows: RenderRow[];
   /** Streamed text for the turn in flight, rendered as a trailing ghost row. */
-  streaming?: string;
+  streaming?: string | undefined;
   /**
    * Answer one question card. Resolves when the answer is accepted; rejects
    * with the user-visible reason otherwise. Absent in read-only contexts —
    * the card then renders its options disabled with the reason inline.
    */
-  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
+  onQuestionAnswer?: ((toolCallId: string, answer: string) => Promise<unknown>) | undefined;
 }
 
 /**
@@ -68,15 +68,15 @@ export function Markdown({ text }: { text: string }) {
   }, [html]);
 
   if (html === null) {
-    return <p className="whitespace-pre-wrap text-neutral-300">{text}</p>;
+    return <p className="whitespace-pre-wrap text-foreground">{text}</p>;
   }
   return <div ref={hostRef} className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-export function TranscriptView({ rows, streaming, onQuestionAnswer }: TranscriptViewProps) {
+function TranscriptViewImpl({ rows, streaming, onQuestionAnswer }: TranscriptViewProps) {
   if (rows.length === 0 && !streaming) {
     return (
-      <p data-testid="transcript-empty" className="text-neutral-500">
+      <p data-testid="transcript-empty" className="text-muted-foreground">
         No messages yet.
       </p>
     );
@@ -95,12 +95,20 @@ export function TranscriptView({ rows, streaming, onQuestionAnswer }: Transcript
   );
 }
 
-function Row({
+/**
+ * Memoised (review 32): ChatView re-renders per coalesced frame while
+ * streaming, and a stable transcript must not re-reconcile every row — each
+ * row carries a Markdown parse. Shallow prop compare is enough: `rows` are
+ * state identities, and ChatView passes a stable `onQuestionAnswer`.
+ */
+export const TranscriptView = memo(TranscriptViewImpl);
+
+const Row = memo(function Row({
   row,
   onQuestionAnswer,
 }: {
   row: RenderRow;
-  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
+  onQuestionAnswer?: ((toolCallId: string, answer: string) => Promise<unknown>) | undefined;
 }) {
   const { block } = row;
   switch (block.kind) {
@@ -135,10 +143,10 @@ function Row({
           data-framed="false"
           className={
             block.level === "error"
-              ? "text-red-400"
+              ? "text-destructive"
               : block.level === "warn"
-                ? "text-amber-400"
-                : "text-neutral-500"
+                ? "text-warning"
+                : "text-muted-foreground"
           }
         >
           {block.text}
@@ -146,14 +154,14 @@ function Row({
       );
     case "summary":
       return (
-        <details data-testid={`row-${row.id}`} data-framed="false" className="text-neutral-400">
-          <summary className="cursor-pointer text-neutral-500">Earlier context — replayed</summary>
+        <details data-testid={`row-${row.id}`} data-framed="false" className="text-muted-foreground">
+          <summary className="cursor-pointer text-foreground">Earlier context — replayed</summary>
           <p className="mt-2 whitespace-pre-wrap">{block.text}</p>
         </details>
       );
     case "compaction":
       return (
-        <p data-testid={`row-${row.id}`} data-framed="false" className="text-neutral-500">
+        <p data-testid={`row-${row.id}`} data-framed="false" className="text-muted-foreground">
           This part of the conversation was compacted by the provider.
         </p>
       );
@@ -165,7 +173,7 @@ function Row({
       );
     case "artifact_ref":
       return (
-        <p data-testid={`row-${row.id}`} data-framed="false" className="text-neutral-400">
+        <p data-testid={`row-${row.id}`} data-framed="false" className="text-muted-foreground">
           {block.title}
         </p>
       );
@@ -174,10 +182,15 @@ function Row({
       // silently dropped.
       return assertNever(block);
   }
-}
+});
 
 function assertNever(x: never): React.ReactElement {
-  return <p className="text-red-400">Unrenderable block: {JSON.stringify(x)}</p>;
+  // D27 — bounded on the way out. The dump exists to identify the schema
+  // drift, not to replay the row: a drifted block can be arbitrarily large,
+  // and the transcript is not where the whole payload belongs (review 15).
+  const dump = JSON.stringify(x);
+  const bounded = dump.length > 240 ? `${dump.slice(0, 240)}…` : dump;
+  return <p className="text-destructive">Unrenderable block: {bounded}</p>;
 }
 
 /**
@@ -192,17 +205,21 @@ export function QuestionCard({
   onQuestionAnswer,
 }: {
   block: Extract<ContentBlock, { kind: "question_card" }>;
-  onQuestionAnswer?: (toolCallId: string, answer: string) => Promise<unknown>;
+  onQuestionAnswer?: ((toolCallId: string, answer: string) => Promise<unknown>) | undefined;
 }): React.JSX.Element {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Review 15 NIT: an Enter that commits a CJK composition must not send a
+  // half-typed answer. Same guard as Composer.tsx — composition state is
+  // tracked explicitly rather than read off the event.
+  const [composing, setComposing] = useState(false);
 
   if (block.resolved !== null && block.resolved !== undefined) {
     return (
-      <div className="rounded border border-neutral-800 p-3">
-        <p className="text-neutral-200">{block.prompt}</p>
-        <p className="mt-2 text-sm text-neutral-400">Answered: {block.resolved}</p>
+      <div className="rounded border border-border p-3">
+        <p className="text-foreground">{block.prompt}</p>
+        <p className="mt-2 text-sm text-muted-foreground">Answered: {block.resolved}</p>
       </div>
     );
   }
@@ -231,8 +248,8 @@ export function QuestionCard({
   }
 
   return (
-    <div className="rounded border border-neutral-800 p-3">
-      <p className="text-neutral-200">{block.prompt}</p>
+    <div className="rounded border border-border p-3">
+      <p className="text-foreground">{block.prompt}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         {options.map((o) => (
           <button
@@ -242,7 +259,7 @@ export function QuestionCard({
             onClick={() => {
               void answer(o.id);
             }}
-            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-accent disabled:opacity-50"
           >
             {o.label}
           </button>
@@ -259,13 +276,21 @@ export function QuestionCard({
             onChange={(e) => {
               setDraft(e.target.value);
             }}
+            onCompositionStart={() => {
+              setComposing(true);
+            }}
+            onCompositionEnd={() => {
+              setComposing(false);
+            }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && draft.trim() !== "") {
+              // `composing`: the Enter that commits an IME composition lands
+              // here mid-composition — it must not answer (review 15).
+              if (e.key === "Enter" && !composing && draft.trim() !== "") {
                 void answer(draft.trim());
               }
             }}
             placeholder="Or write your own answer…"
-            className="min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1.5 text-sm text-neutral-200"
+            className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1.5 text-sm text-foreground"
           />
           <button
             type="button"
@@ -273,14 +298,14 @@ export function QuestionCard({
             onClick={() => {
               void answer(draft.trim());
             }}
-            className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground hover:bg-accent disabled:opacity-50"
           >
             Send answer
           </button>
         </div>
       )}
       {error && (
-        <p role="alert" className="mt-2 text-xs text-amber-400">
+        <p role="alert" className="mt-2 text-xs text-warning">
           {error}
         </p>
       )}
@@ -293,13 +318,15 @@ function UserRow({ row, text }: { row: RenderRow; text: string }) {
   // sender's own code block looks like every other block (language label,
   // Copy). Plain text stays a literal pre-wrap bubble — single newlines and
   // all — because marked without `breaks` would collapse them to spaces.
-  const fenced = text.includes("```");
+  // A fence is a line that STARTS with one (review 33 NIT): a stray inline
+  // triple-backtick must not drag the whole message through markdown.
+  const fenced = /^```/m.test(text);
   return (
     <div className="flex justify-end">
       <div
         data-testid={`row-${row.id}`}
         data-framed="true"
-        className="max-w-[80%] overflow-hidden rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100"
+        className="max-w-[80%] overflow-hidden rounded-lg border border-border bg-secondary px-3 py-2 text-foreground"
       >
         {fenced ? <Markdown text={text} /> : <p className="whitespace-pre-wrap">{text}</p>}
       </div>
@@ -322,13 +349,13 @@ export function ThinkingRegion({ block }: { block: Extract<ContentBlock, { kind:
         onClick={() => {
           setOpen((v) => !v);
         }}
-        className="flex w-full items-center gap-2 text-left text-neutral-500 hover:text-neutral-400"
+        className="flex w-full items-center gap-2 text-left text-muted-foreground hover:text-foreground"
       >
         <span aria-hidden="true">{open ? "▾" : "▸"}</span>
         <span className="truncate">{firstLine || "Thinking"}</span>
       </button>
       {open && (
-        <div className="mt-1 border-l border-neutral-800 pl-3 whitespace-pre-wrap text-neutral-500">
+        <div className="mt-1 border-l border-border pl-3 whitespace-pre-wrap text-muted-foreground">
           {block.text}
         </div>
       )}
@@ -337,10 +364,10 @@ export function ThinkingRegion({ block }: { block: Extract<ContentBlock, { kind:
 }
 
 const STATUS_CLASS: Record<string, string> = {
-  ok: "text-neutral-500",
-  error: "text-amber-400",
-  aborted: "text-neutral-500 italic",
-  rejected: "text-neutral-400 italic",
+  ok: "text-muted-foreground",
+  error: "text-warning",
+  aborted: "text-muted-foreground italic",
+  rejected: "text-muted-foreground italic",
 };
 
 /**
@@ -352,8 +379,8 @@ export function ToolRow({
   toolUse,
   result,
 }: {
-  toolUse?: Extract<ContentBlock, { kind: "tool_use" }>;
-  result?: Extract<ContentBlock, { kind: "tool_result" }>;
+  toolUse?: Extract<ContentBlock, { kind: "tool_use" }> | undefined;
+  result?: Extract<ContentBlock, { kind: "tool_result" }> | undefined;
 }) {
   const [open, setOpen] = useState(false);
   const callId = toolUse?.id ?? result?.tool_use_id ?? "unknown";
@@ -370,23 +397,23 @@ export function ToolRow({
         className="flex w-full items-center gap-2 text-left"
       >
         <span aria-hidden="true">{open ? "▾" : "▸"}</span>
-        <span className="text-neutral-300">{name}</span>
-        {status && <span className={STATUS_CLASS[status] ?? "text-neutral-500"}>{status}</span>}
+        <span className="text-foreground">{name}</span>
+        {status && <span className={STATUS_CLASS[status] ?? "text-muted-foreground"}>{status}</span>}
       </button>
       {open && (
         <div className="mt-1 pl-4">
           {result?.preview && (
             <>
-              <pre className="whitespace-pre-wrap text-neutral-500">{result.preview}</pre>
+              <pre className="whitespace-pre-wrap text-muted-foreground">{result.preview}</pre>
               {result.preview_path && (
                 // D27: the bounded preview is not the whole output. The path is
                 // how the model re-reads it, so it is shown, not hidden.
-                <p className="mt-1 text-xs text-neutral-600">full output: {result.preview_path}</p>
+                <p className="mt-1 text-xs text-muted-foreground">full output: {result.preview_path}</p>
               )}
             </>
           )}
           {toolUse && (
-            <pre className="whitespace-pre-wrap text-xs text-neutral-600">{toolUse.input_json}</pre>
+            <pre className="whitespace-pre-wrap text-xs text-muted-foreground">{toolUse.input_json}</pre>
           )}
         </div>
       )}

@@ -197,6 +197,108 @@ fn the_cap_reports_the_status_that_was_actually_seen() {
     );
 }
 
+/// Audit 12/finding 5 — a 2xx stream that dies before `Stop` is truncated,
+/// not a success (RED). Mid-body server death must not silently produce a
+/// truncated transcript (D80).
+#[test]
+fn a_stream_that_ends_without_stop_is_truncated() {
+    let bytes = b"data: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n".to_vec();
+    let mut source = Replay::bytes(bytes, 64);
+    let (_seen, outcome) = drive(&mut source);
+
+    assert!(
+        matches!(outcome, Err(SendError::Truncated)),
+        "a 2xx body that never reached Stop is a typed truncation: {outcome:?}"
+    );
+}
+
+/// Audit 12/finding 6 — an `Ok` attempt still carries a status, and a
+/// non-2xx one must not be framed as transcript (RED). The `ByteSource`
+/// contract says a non-2xx is an error, but a buggy source returning 500
+/// HTML as `Ok` must not be trusted.
+#[test]
+fn ok_attempt_with_a_non_2xx_status_is_not_framed_as_transcript() {
+    let mut source = OkAttempt {
+        status: 400,
+        retry_after: None,
+        chunks: Vec::new(),
+        calls: std::cell::Cell::new(0),
+    };
+    let (_seen, outcome) = drive(&mut source);
+
+    assert!(
+        matches!(outcome, Err(SendError::Status { status: 400, .. })),
+        "non-2xx in Ok is still a status failure: {outcome:?}"
+    );
+    assert_eq!(source.calls.get(), 1, "400 is not retryable");
+}
+
+/// Audit 12/finding 6, retryable half — a 429 delivered as `Ok` still backs
+/// off and retries through `retry_delay` (RED).
+#[test]
+fn ok_attempt_with_a_retryable_status_is_retried() {
+    let bytes = fixture("omitted_thinking.sse");
+    let mut source = OneOkThenRest {
+        first: Some(Attempt {
+            status: 429,
+            retry_after: Some("0".to_string()),
+            chunks: Vec::new().into_iter(),
+        }),
+        rest: Replay::bytes(bytes, 128),
+        calls: std::cell::Cell::new(0),
+    };
+
+    let mut framer = SseFramer::new();
+    let mut parser = AnthropicParser::new();
+    let mut seen: Vec<NormalisedEvent> = Vec::new();
+    let mut sink: StepSink = &mut |e| seen.push(e);
+    let outcome =
+        clauro_transport::send::stream_step(&mut source, &mut framer, &mut parser, &mut sink, 0);
+
+    assert!(
+        outcome.is_ok(),
+        "the retried attempt must succeed: {outcome:?}"
+    );
+    assert_eq!(source.calls.get(), 2, "429 then the real body");
+    assert!(!seen.is_empty(), "the retried attempt streamed events");
+}
+
+/// A source returning one canned `Ok` attempt, then a `Replay` for the rest.
+struct OneOkThenRest {
+    first: Option<Attempt>,
+    rest: Replay,
+    calls: std::cell::Cell<usize>,
+}
+
+impl ByteSource for OneOkThenRest {
+    fn attempt(&mut self) -> Result<Attempt, SendError> {
+        self.calls.set(self.calls.get() + 1);
+        match self.first.take() {
+            Some(a) => Ok(a),
+            None => self.rest.attempt(),
+        }
+    }
+}
+
+/// A source whose every attempt is an `Ok` carrying a non-2xx status.
+struct OkAttempt {
+    status: u16,
+    retry_after: Option<String>,
+    chunks: Vec<Vec<u8>>,
+    calls: std::cell::Cell<usize>,
+}
+
+impl ByteSource for OkAttempt {
+    fn attempt(&mut self) -> Result<Attempt, SendError> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(Attempt {
+            status: self.status,
+            retry_after: self.retry_after.clone(),
+            chunks: std::mem::take(&mut self.chunks).into_iter(),
+        })
+    }
+}
+
 /// Two sources in one test file: a 429 then a success, and a permanent failure.
 struct Flaky {
     first: Replay,

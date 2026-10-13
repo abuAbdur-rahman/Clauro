@@ -16,13 +16,22 @@ re-inventing a wheel, and we are also not copying one.
 | **MIRRORED** | Behaviour observed in a shipped product. No code, no wording — we rebuild the *behaviour* because the pattern is proven and we want the same user-visible result. | Clean, as long as no text is reused (D39). |
 | **ORIGINAL** | No precedent. We designed it. | Ours. |
 
-**Sources we may port from: OpenCode (MIT), DeepSeek Harness (MIT), LibreChat (MIT).**
+**Sources we may port from: OpenCode (MIT), DeepSeek Harness (MIT), LibreChat (MIT), shadcn/ui
+(MIT — component code only, D127).**
 **LobeHub is NOT open source** — its licence requires a commercial agreement for any derivative
 work. It was read for observation only and nothing was taken from it (D59, D60).
 **Anthropic and Google material is proprietary** — behaviour may be mirrored, wording may not.
 **Open WebUI is inspiration only** — custom licence with a branding clause, incompatible with our MIT
 lineage. Behaviour may be mirrored in our own words and implementation; no code or wording crosses
 over (D103).
+
+> **Provenance restated 2026-10-12 (audit 43).** The three Anthropic help-centre quotes that used to
+> sit verbatim in §2 and §2.3 are paraphrased; only the source URL is kept, because Anthropic's
+> wording is never reusable (D39) and a quoted line in a shipped repo doc is the exact exposure that
+> rule exists to prevent. Nothing else in this file changed meaning — the CALLED / PORTED / MIRRORED /
+> ORIGINAL classification of every row was re-checked against its source and stands. The fourth
+> portable source (shadcn/ui, D127) is added to the list above; it is a component-code source, so no
+> non-UI row gains a PORTED tag from it.
 
 ---
 
@@ -32,7 +41,7 @@ over (D103).
 
 | # | Tool | What it does | Tag | What we're specifically mirroring |
 |---|---|---|---|---|
-| 1 | **`memory`** | The model writes and edits its own persistent notes. Six commands: `view`, `create`, `str_replace`, `insert`, `delete`, `rename`. Lives under `/memories/<path>` → SQLite `key`; `category` **is** the topic. | MIRRORED (behaviour) · ORIGINAL (tool) | **Behaviour** from claude.ai Memory: it saves *"a set of individual topics as you chat, rather than summarizing conversations after they end."* That single line is why there is no extractor in Clauro. **Command set** is the documented Anthropic primitive — but D51 means **we define our own tool** so it works on every provider, not just Anthropic's `memory_20250818` server type. |
+| 1 | **`memory`** | The model writes and edits its own persistent notes. Six commands: `view`, `create`, `str_replace`, `insert`, `delete`, `rename`. Lives under `/memories/<path>` → SQLite `key`; `category` **is** the topic. | MIRRORED (behaviour) · ORIGINAL (tool) | **Behaviour** from claude.ai Memory: it accumulates a set of discrete topics *as* the conversation runs, rather than producing an after-the-fact summary once the conversation ends (paraphrased — Anthropic's wording is never reusable, D39; source: https://support.claude.com/en/articles/11817273-use-claude-s-chat-search-and-memory-to-build-on-previous-context). That design point is why there is no extractor in Clauro. **Command set** is the documented Anthropic primitive — but D51 means **we define our own tool** so it works on every provider, not just Anthropic's `memory_20250818` server type. |
 | 2 | **`artifact`** | The model emits a live page into the right-hand drawer. Input is `{ title, mediaType, source }`. | ORIGINAL | **The concept** — a live page built from full session context — is claude.ai's. **The schema is ours** (D1): we ask via a tool call and never parse an `<antArtifact>` fence. That decision deleted the single largest unknown in the project. Rendering technique (Sucrase in-browser, predefined Tailwind classes only) is PORTED from the React-artifact runner. |
 | 3 | **`web-search`** | Query the web, return results. | CALLED | Anthropic's `web_search_*` server tool on Anthropic. Elsewhere, our own adapter calls the provider's search facility or degrades visibly (D48). One prompt line worth more than the rest: **pass the current year explicitly** — PORTED from OpenCode's search prompt. |
 | 4 | **`web-fetch`** | Fetch a URL to text. | CALLED / ORIGINAL | Documented fetch tools where the provider has them. The **tool-selection heuristic** is PORTED from OpenCode: *"if another tool is present that offers better web fetching capabilities, is more targeted, or has fewer restrictions, prefer that tool instead."* Most clients get this wrong by describing the tool instead of steering selection. |
@@ -46,9 +55,9 @@ over (D103).
 | Feature | What it does | Tag | What we're mirroring |
 |---|---|---|---|
 | **Projects** | Named container: instructions, files, its own memory space, its own workspace directory. | MIRRORED | claude.ai Projects, whose own docs make the case for us — per-project memory isolation is what makes memory useful rather than a flat notepad. **Gemini's Gems are folded in** (D35): a Gem is a named set of instructions plus reference files, which is a project with no storage. One concept, not two. |
-| **Memory Topics UI** | Settings → list of topics, each readable / editable / deletable. | MIRRORED | claude.ai's Topics list. Its help centre states the authority plainly: *"Fix something in one topic and the change applies to every conversation from then on."* |
+| **Memory Topics UI** | Settings → list of topics, each readable / editable / deletable. | MIRRORED | claude.ai's Topics list. Its help centre states the authority plainly: editing a topic retro-applies to every conversation from that point forward (paraphrased — Anthropic's wording is never reusable, D39; source: https://support.claude.com/en/articles/11817273-use-claude-s-chat-search-and-memory-to-build-on-previous-context). |
 | **Pause / reset / per-chat off** | Three separate memory controls, never one toggle. | MIRRORED | claude.ai, exactly. Collapsing them is the classic mistake: someone wanting a break does not mean to lose their memory. The per-chat toggle **locks after the first message** and shows a crossed-out icon — and *no icon at all* when memory is on. Absence as signal. |
-| **Sensitive topics** | Off by default; a review notice above the composer on every save. | MIRRORED | claude.ai, including the "never stored even if asked" list. |
+| **Sensitive topics** | Off by default; a review notice above the composer on every save. | MIRRORED | claude.ai, including its list of topics that are never stored, even when asked directly (paraphrased — Anthropic's wording is never reusable, D39). |
 | **Incognito chats** | Ghost icon. Excluded from history, search, and memory. | MIRRORED | claude.ai — and it's the only feature on their **free** tier. ~15 lines of code, the highest trust-per-line in the whole catalogue. |
 | **Artifact drawer** | Right-hand pane, collapsible, per-thread. | ORIGINAL | No first-party reference image exists anywhere. claude.ai's current artifacts are **hosted, versioned, org-scoped, and cannot be made public** — a different product. Our drawer is the local complement: zero network egress, no org, no hosting. |
 | **Thinking effort** | Reasoning control per turn. | CALLED | Anthropic's `thinking.effort`. **Middleware normalisation is ours**: Anthropic thinking blocks and OpenAI reasoning tokens both become one `Thinking` shape (D54), because the transcript cannot branch on provider. |
@@ -65,7 +74,7 @@ over (D103).
 
 | Path | When | Tag | Mirroring |
 |---|---|---|---|
-| **On-demand** | **Primary on Anthropic** (`D95`; the docs say *"use on-demand compaction wherever it is available"*). Runs in the background, supports keep-recent-turns and our own `instructions` (≤16,384 chars, `D75`), which is what `D16` wanted.
+| **On-demand** | **Primary on Anthropic** (`D95`; Anthropic's own docs recommend on-demand compaction wherever the model supports it — paraphrased, their wording is never reusable, D39; source: https://platform.claude.com/docs/en/build-with-claude/compaction). Runs in the background, supports keep-recent-turns and our own `instructions` (≤16,384 chars, `D75`), which is what `D16` wanted.
 | **Threshold** | **Fallback on Anthropic** (`D95`) — where on-demand is unavailable. `compact_20260112`, one parameter on an ordinary request. | CALLED | Anthropic's own. Simplest path: no separate request builder, no strict swap protocol, none of the reject-set pitfalls. |
 | *(merged into the row above)* | `/compact` maps here, and so does supplying our own summarisation instructions (≤16,384 chars) — which is how our checkpoint format reaches the server-side path. Beta header `compact-2026-09-04`. | | |
 | **Client-side** | **Non-Anthropic providers only** (`D15`). *Not* as overflow recovery on Anthropic — a client-side summariser rewrites history mid-conversation, which is what the thinking prefix check rejects with HTTP 400, and BYOK means account age varies per user so it cannot be tested away. | PORTED | Trigger arithmetic and the two-trigger split are PORTED from DeepSeek. The **prefix-cache replay** is PORTED from DeepSeek's bug fix: the summarisation directive must be a *trailing user message*, not a system prompt, or the first token differs and the entire cached prefix is invalidated — paying prompt cost twice exactly when the conversation is largest. `tools` ride along even though the summariser never calls one. |
@@ -172,6 +181,8 @@ merge order. **Not** the structural-boundary traversal — D61 was corrected to 
 with a landing-site legality check, because the `tool_call_id`-edge approach originates in
 LobeHub, which D59 forbids porting from. LibreChat — the boundary marker, the
 separate summary accounting channel, the pre-invoke marker, and the token-limits resolution shape.
+shadcn/ui — **component code only** (D127): the vendored primitives under `src/components/ui` are
+copied and adapted in place, and nothing from that source informed any non-UI decision.
 
 **Mirrored (observed behaviour, rebuilt):** Projects · the Topics memory model and its three
 controls · the crossed-out memory icon · incognito chats · chat export · thinking effort · the

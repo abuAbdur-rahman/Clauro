@@ -1,12 +1,14 @@
 //! `clauro-core` depends on nothing but `serde` (`TECH_STACK.md` §2).
 //!
 //! Mechanical, not conventional: this test reads the crate's own manifest at
-//! `CARGO_MANIFEST_DIR` and asserts on the `[dependencies]` section. Zero new
+//! `CARGO_MANIFEST_DIR` and asserts on the dependency sections. Zero new
 //! dependencies to do it — a string scan is honest about what it checks.
 //!
 //! Scope notes:
-//! - Only `[dependencies]` is constrained. `[dev-dependencies]` and
-//!   `[build-dependencies]` are test/build tooling, not the shipped graph.
+//! - In-deps means `[dependencies]`, a dotted `[dependencies.x]` subtable,
+//!   and a `[target.'…'.dependencies]` table — every form that ships in the
+//!   built artifact. `[dev-dependencies]` and `[build-dependencies]` are
+//!   test/build tooling, not the shipped graph.
 //! - `serde` with any features is still `serde`.
 
 use std::collections::BTreeSet;
@@ -18,10 +20,15 @@ fn normal_deps(manifest: &str) -> BTreeSet<String> {
     for raw in manifest.lines() {
         let line = raw.trim();
         if line.starts_with('[') {
-            // `[dependencies]` opens the constrained section; any other
-            // section — including `[dev-dependencies]` and
-            // `[build-dependencies]` — closes it.
-            in_deps = line == "[dependencies]";
+            // A dependency section is `[dependencies]`, a dotted subtable
+            // `[dependencies.x]`, or a target table ending in
+            // `.dependencies]` — all three ship. Every other section —
+            // including `[dev-dependencies]` and `[build-dependencies]` —
+            // closes it. Dev/build sections never end in `.dependencies]`
+            // (no dot before the name), so the rule cannot misfire on them.
+            in_deps = line == "[dependencies]"
+                || line.starts_with("[dependencies.")
+                || line.ends_with(".dependencies]");
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {
@@ -67,5 +74,38 @@ mod unit {
         let deps = normal_deps(manifest);
         assert!(deps.contains("reqwest"));
         assert_ne!(deps, BTreeSet::from(["serde".to_string()]));
+    }
+
+    #[test]
+    fn parser_sees_a_violation_in_a_dotted_subtable() {
+        // `[dependencies.reqwest]` is a dependency table, not a section
+        // break: a dep declared there still ships.
+        let manifest =
+            "[dependencies]\nserde = \"1\"\n\n[dependencies.reqwest]\nreqwest = \"0.13\"\n";
+        let deps = normal_deps(manifest);
+        assert!(
+            deps.contains("reqwest"),
+            "a dotted dependency table is in-deps: {deps:?}"
+        );
+        assert_ne!(deps, BTreeSet::from(["serde".to_string()]));
+    }
+
+    #[test]
+    fn parser_sees_a_violation_in_a_target_dependencies_table() {
+        // `[target.'cfg(windows)'.dependencies]` ships on its target and is
+        // exactly the shape that hid a dependency from the scan.
+        let manifest =
+            "[dependencies]\nserde = \"1\"\n\n[target.'cfg(windows)'.dependencies]\nwinapi = \"0.3\"\n";
+        let deps = normal_deps(manifest);
+        assert!(
+            deps.contains("winapi"),
+            "a target dependencies table is in-deps: {deps:?}"
+        );
+    }
+
+    #[test]
+    fn parser_still_excludes_dev_and_build_subtables() {
+        let manifest = "[dependencies]\nserde = \"1\"\n\n[dev-dependencies]\ntoml = \"1\"\n\n[build-dependencies]\ncc = \"1\"\n\n[dev-dependencies.extra]\nextra = \"1\"\n";
+        assert_eq!(normal_deps(manifest), BTreeSet::from(["serde".to_string()]));
     }
 }

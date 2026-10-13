@@ -61,6 +61,13 @@ fn ok_text(out: ToolOutcome) -> String {
     }
 }
 
+fn err_text(out: ToolOutcome) -> String {
+    match out {
+        ToolOutcome::Error { message } => message,
+        other => panic!("expected error, got: {other:?}"),
+    }
+}
+
 fn fake_ok(body: &'static str) -> Handler {
     Arc::new(move |_| {
         Ok(HttpResponse {
@@ -264,4 +271,128 @@ fn empty_results_are_a_typed_error() {
     let (reg, epoch) = host_with(get);
     let out = call(&reg, epoch, "web-search", json!({"query": "q"}));
     assert!(matches!(out, ToolOutcome::Error { .. }), "{out:?}");
+}
+
+// ── SSRF + bounded body (audit 10) ──────────────────────────────────────────
+
+fn recorder() -> (Handler, Arc<Mutex<Vec<String>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_in = seen.clone();
+    let get: Handler = Arc::new(move |req| {
+        seen_in.lock().expect("lock").push(req.url.clone());
+        Ok(HttpResponse {
+            status: 200,
+            headers: vec![("content-type".to_string(), "text/html".to_string())],
+            body_bytes: b"<html><body>hi</body></html>".to_vec(),
+        })
+    });
+    (get, seen)
+}
+
+#[test]
+fn private_and_loopback_targets_never_hit_the_getter() {
+    // audit 10: fetch performed no host resolution at all — only a
+    // same-scheme/localhost check — so loopback, RFC1918 and the cloud
+    // metadata endpoint were one `web-fetch` away, on the initial URL and on
+    // every redirect hop. The getter must NEVER see these URLs.
+    let (get, seen) = recorder();
+    let (reg, epoch) = host_with(get);
+    for evil in [
+        "http://127.0.0.1:11434/api/tags",
+        "http://10.1.2.3/admin",
+        "http://192.168.1.1/router",
+        "http://172.16.0.1/internal",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]:8080/",
+        "http://[fe80::1]/",
+        "http://0.0.0.0/",
+        "http://localhost:11434/api",
+    ] {
+        let out = call(&reg, epoch, "web-fetch", json!({"url": evil}));
+        let msg = err_text(out);
+        assert!(
+            msg.contains("refused"),
+            "{evil} must be refused as private, got: {msg}"
+        );
+    }
+    assert!(
+        seen.lock().expect("lock").is_empty(),
+        "the getter must never be called for a private target: {:?}",
+        seen
+    );
+}
+
+#[test]
+fn redirect_to_private_is_refused() {
+    // The classic pivot: first hop looks public, redirect lands on the
+    // metadata endpoint. Each hop is guarded before the getter is called.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen_in = seen.clone();
+    let get: Handler = Arc::new(move |req| {
+        seen_in.lock().expect("lock").push(req.url.clone());
+        if req.url.contains("x.example") {
+            Ok(HttpResponse {
+                status: 302,
+                headers: vec![(
+                    "location".to_string(),
+                    "http://169.254.169.254/latest/meta-data/".to_string(),
+                )],
+                body_bytes: Vec::new(),
+            })
+        } else {
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body_bytes: b"should never render".to_vec(),
+            })
+        }
+    });
+    let (reg, epoch) = host_with(get);
+    let out = call(
+        &reg,
+        epoch,
+        "web-fetch",
+        json!({"url": "http://x.example/"}),
+    );
+    let msg = err_text(out);
+    assert!(msg.contains("refused"), "private hop refused: {msg}");
+    let reqs = seen.lock().expect("lock");
+    assert_eq!(
+        reqs.len(),
+        1,
+        "only the first hop may reach the getter: {reqs:?}"
+    );
+    assert!(reqs[0].contains("x.example"));
+}
+
+#[test]
+fn public_literal_ip_still_fetches() {
+    // The guard must not over-refuse: a public literal IP needs no DNS and
+    // stays fetchable.
+    let (get, seen) = recorder();
+    let (reg, epoch) = host_with(get);
+    let text = ok_text(call(
+        &reg,
+        epoch,
+        "web-fetch",
+        json!({"url": "http://93.184.216.34/"}),
+    ));
+    assert!(text.contains("hi"), "{text}");
+    assert_eq!(seen.lock().expect("lock").len(), 1);
+}
+
+#[test]
+fn body_read_is_capped_before_buffering() {
+    // audit 10: `res.bytes()` buffered the WHOLE response before truncation
+    // — only a 30s timeout bounded the allocation. `bound_body` refuses a
+    // declared oversize and reads at most cap+1 bytes off the wire.
+    use std::io::Cursor;
+    let cursor = Cursor::new(vec![7u8; 100]);
+    let body = clauro_tools::bound_body(None, 10, cursor).expect("capped read");
+    assert!(body.len() <= 11, "cap+1 at most, got {}", body.len());
+    let over = clauro_tools::bound_body(Some(10_000_000), 10, Cursor::new(vec![7u8; 20]));
+    let msg = over
+        .expect_err("declared oversize must be refused")
+        .to_string();
+    assert!(msg.contains("exceeds"), "{msg}");
 }

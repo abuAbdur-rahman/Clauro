@@ -136,7 +136,13 @@ pub fn create_artifact(
 pub fn register_artifact(reg: &mut Registry, host: Arc<crate::FsHost>) {
     let _ = reg.set_handler("artifact", move |input: &Value, ctx: &ToolContext| {
         let store_guard = host.store_handle();
-        let store = store_guard.lock().expect("store lock must hold");
+        // D55: nothing throws across the tool boundary — a poisoned mutex
+        // (audit 10 NIT) is a typed retryable error, never a host panic.
+        let Ok(store) = store_guard.lock() else {
+            return ToolOutcome::Error {
+                message: "store busy, retry the call".to_string(),
+            };
+        };
         match create_artifact(&store, host.session_root(), &ctx.thread_id, input) {
             Ok(meta) => ToolOutcome::Ok {
                 preview: format!("artifact {} v{}", meta.title, meta.version),

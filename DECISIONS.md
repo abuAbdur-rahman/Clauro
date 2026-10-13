@@ -1,8 +1,8 @@
 # Clauro — DECISIONS.md
 
-**A lightweight, local-first, BYOK desktop client for Claude.**
-Status: **pre-plan.** This document is the input to a build plan. Everything here is decided unless
-it appears in §8.
+**A lightweight, local-first, BYOK desktop chat client.**
+Status: **build-in-progress.** This document is the input to the build plan (`PLAN.md`, executed by
+`PHASES.md` — eight phases, thirty-three tasks). Everything here is decided unless it appears in §8.
 
 **Stack:** Tauri v2 (Rust) · React 19 · TypeScript 6 · Tailwind 4 · `lucide-react` (shell only, D96) · SQLite (`rusqlite`) · Zustand
 **Platforms:** **Linux and Windows only.** Two webviews, two very different problems — WebView2 on Windows (Edge runtime) and WebKitGTK on Linux.
@@ -28,16 +28,16 @@ and it is not trying to become one.
                │ Tauri IPC                    │ MessageChannel
 ┌──────────────▼──────────────┐   ┌───────────▼──────────────┐
 │ Rust core                   │   │ Artifact iframe           │
-│ · SQLite (threads, msgs,    │   │ srcdoc                   │
+│ · SQLite (threads, msgs,    │   │ served document (D123)   │
 │   projects, memory,         │   │ sandbox="allow-scripts"   │
 │   tool results)             │   │ NO allow-same-origin      │
 │ · keyring (API keys)        │   │ CSP built in Rust         │
 │ · SSE transport (reqwest)   │   │ connect-src 'none'       │
-│ · tool host / bash runner   │   │ NO Tauri internals       │
+│ · tool host / bash runner   │   │ invoke rejected (D124)    │
 └──────────────┬──────────────┘   └──────────────────────────┘
                │
       ┌────────▼─────────┐
-      │ provider API     │  Anthropic · OpenAI · Google · local
+      │ provider API     │  OpenRouter · AgentRouter · Ollama · Google · custom
       └──────────────────┘
 ```
 
@@ -115,6 +115,20 @@ the artifact can run every command the app can.
 > be separated. If anyone adds `allow-same-origin` back for any reason, `event.origin` silently
 > becomes the parent origin instead of `null`, and the D6 `event.origin` validation breaks at the same
 > moment. **`srcdoc` is a transport choice; `sandbox` is the security boundary.**
+>
+> **Superseded in part by D123 (2026-10-12).** The `srcdoc` half no longer holds: a `srcdoc` document
+> inherits the shell's response-header CSP through the policy container, and the shell's
+> `script-src 'self'` forbids inline scripts — so no artifact script could ever execute under
+> `srcdoc`. The transport is now a document served from the app-origin `artifact` scheme with
+> `artifact_csp(nonce)` as a header (D123). The security half — `sandbox="allow-scripts"`, never
+> `allow-same-origin` — is unchanged and is still the reason the frame sits on an opaque origin.
+>
+> **Also qualified by D124 (2026-10-12).** "The only reason it cannot read
+> `window.__TAURI_INTERNALS__`" is no longer the mechanism: on Windows wry injects the object into
+> every frame, so literal absence is unachievable. What D124 proves instead is that the document
+> host is **remote by construction** — zero remote capability grants — so anything the frame reaches
+> with the injected object fails closed at the host ACL. Opaque origin (D2) plus host-side closure
+> (D124) together are the guarantee.
 
 **D3 — An artifact's network surface is closed by CSP, for fetch and every subresource.**
 `connect-src 'none'` blocks `fetch`/XHR/WebSocket; `default-src 'none'` (`D83`) blocks remote scripts,
@@ -198,9 +212,11 @@ tested away. Triggers: `/compact` command, the 0.8 pressure check, and overflow 
 server-side compaction and context editing.
 
 **D16 — Summary is a fixed-section checkpoint.** Ordered sections, empty sections kept, terse
-bullets, exact paths and identifiers preserved, and *"Do not mention the summary process or that
-context was compacted."* Two extra rules in the trailing instruction: do not mention the
-summarisation request, and output only the checkpoint text without calling a tool.
+bullets, exact paths and identifiers preserved, and a trailing instruction that keeps the checkpoint
+silent about its own production — it must not allude to the summarisation or to the compaction that
+produced it (the provider's wording for this rule is not reproduced here; §4). Two more rules in the
+trailing instruction: the summarisation request itself stays invisible, and the reply is the
+checkpoint text alone, with no tool call.
 
 **D17 — Anti-thrash: a compaction that does not change the surface generation is not a compaction.**
 If the context refills to the limit within a few turns of the last compact, repeatedly, stop and tell
@@ -235,8 +251,8 @@ history — edits are applied server-side before the prompt reaches the model, s
 copy to sync.
 
 > **Corrected 2026-10-03 (audit C2).** `compaction` and `context_management` are **mutually exclusive
-> on a single request** — *"You can't combine `compaction` with `context_management` on one
-> request."* The two beta *headers* may coexist; the two request *parameters* may not. So on an
+> on a single request** — the provider's docs state it directly (paraphrased; §4). The two beta
+> *headers* may coexist; the two request *parameters* may not. So on an
 > Anthropic thread the request builder branches: either a compaction request carrying `compaction`,
 > or a normal request carrying `context_management.edits[]`. Never both.
 
@@ -434,6 +450,11 @@ Nothing is lost: LobeHub's approach is the weakest of the four implementations f
 
 **D60 — Only three implementations may be ported: OpenCode (MIT), DeepSeek Harness (MIT), LibreChat
 (MIT).** The three were compared on compaction and are the only permissively licensed sources.
+
+> **Amended 2026-10-12 by D127.** The portable-source set is now four: **shadcn/ui (MIT)** joins the
+> three above, for component code only. D60's "three" was written when the set was exactly the three
+> compaction implementations compared below; it was never a claim that no other MIT source could ever
+> qualify. Nothing in the compaction comparison changes.
 
 | | OpenCode | DeepSeek Harness | LibreChat | LobeHub *(D59 — read only)* |
 |---|---|---|---|---|
@@ -833,8 +854,9 @@ a hard limit.
 
 **D80 — The SSE parser has an explicit unknown-event branch.** `ping` is a keepalive. `error`
 terminates the stream with a typed error surfaced in the transcript. **Anything unrecognised is
-ignored, not fatal.** Anthropic's own guidance: *"your code should handle unknown event types
-gracefully."* A hand-rolled parser (D24) that assumes it knows the full event set breaks the first
+ignored, not fatal.** Anthropic's own guidance says the same (paraphrased, not quoted — §4): unknown
+event types are a normal case a client must absorb, not a failure to raise. A hand-rolled parser
+(D24) that assumes it knows the full event set breaks the first
 time a new event ships. It must fail **open on the stream** — ignore the event, keep reading — and
 **closed on the transcript**, never rendering a partial or misordered turn as complete.
 
@@ -1022,41 +1044,46 @@ MCP server reached through the MCP connector. The older `mid-conversation-tool-c
 works on the Claude API, Amazon Bedrock and Google Cloud but only for changes that name a tool *by
 reference*.
 
-Verbatim: *"Editing the tools array mid-session invalidates preserved thinking blocks. Leave the array
-as you first sent it, and change which tools the model can use by appending a `role: "system"` message
-that carries `tool_addition` or `tool_removal` blocks."*
+The rule, in our words (source URL above; no Anthropic doc text is quoted anywhere in this entry —
+§4): mutating the top-level `tools` array between requests breaks preserved thinking, so the array
+stays byte-identical to what the first request carried. Availability is changed instead by *appending*
+a `role: "system"` message holding `tool_addition` / `tool_removal` blocks — new tools are added
+that way, removed ones taken away that way, never by editing `tools` itself.
 
-**`defer_loading: true` is the primitive that makes this work.** Verbatim: *"Declare every tool up
-front. Put every tool the session might need in `tools` on the first request, with `defer_loading:
-true` on any the model shouldn't see yet. Then turn tools on and off with `tool_addition` and
-`tool_removal` blocks that name them."* And: *"the prefix check ignores a deferred tool until a
-`tool_addition` block references it. Adding a tool without `defer_loading: true` changes the prefix
-and invalidates earlier thinking."*
+**`defer_loading: true` is the primitive that makes this work.** Declare up front — every tool the
+session might need goes into the first request's `tools`, each not-yet-available one flagged
+`defer_loading: true` — and from then on move the effective set only with `tool_addition` /
+`tool_removal` blocks that name declared tools. The asymmetry the whole mechanism rests on: a
+deferred tool stays out of the prefix check until a `tool_addition` block names it, whereas adding a
+tool that was never declared shifts the prefix and kills the thinking produced before it.
 
 **So D67 is wrong on the Claude API.** "Enabling `bash` opens a fresh thread" was a consequence of
 D19's frozen-tools rule, and D19's rule is exactly what this supersedes. The correct shape is: declare
 all eight tools on the first request, mark the not-yet-available ones `defer_loading: true`, and let
 per-thread permission state select which are `tool_addition`-ed. **No fresh thread, and no per-thread
 `tools_frozen` hash.** `D76`'s claim that thinking effort may vary mid-thread is confirmed by the same
-page: top-level `output_config.effort` *"restarts the cache, doesn't affect thinking."*
+page: `output_config.effort` is a top-level field, and moving it forces a cache rebuild without
+changing whether the model thinks.
 
-**The constraint that remains, and it is new.** Verbatim: *"The `role: "system"` messages that carry
-these blocks join the prefix for later thinking, so don't move, reword, or delete them afterward."* The
+**The constraint that remains, and it is new.** The `role: "system"` messages that hold these blocks
+join the prefix for every later thinking block, so they inherit the transcript's own rule: once a
+message is in the prefix its position and wording are fixed for the life of the thread. The
 tool-change messages are themselves **append-only** — they enter the prefix retroactively. That is
 consistent with `D19`'s append-only discipline, so it survives; the frozen-`tools` half does not.
 
 **Fallback, and it is the honest one.** Mid-conversation system messages and tool changes are **not
-available on every model**. Verbatim: *"If your code serves several models, keep editing the top-level
-system prompt for the models that don't accept them."* So frozen `tools` is not deleted, it is
+available on every model**. On a model that will not accept them, tool changes have to be folded back
+into the top-level system prompt between requests. So frozen `tools` is not deleted, it is
 **demoted to the non-Anthropic path** — which is the whole second adapter (`D48`). Anthropic gets
 `defer_loading` plus `tool_addition`; the OpenAI-compatible adapter gets the frozen array it needs
 anyway. Both paths are tested; neither is the default for both.
 
 **D95 — on-demand compaction is primary, threshold is the fallback.**
-Verified verbatim on `platform.claude.com/docs/en/build-with-claude/compaction`: *"Use on-demand
-compaction wherever it is available"* and *"Compaction on demand covers more common use cases."* The
-docs also state that on-demand *"Runs in the background: Yes"*, whereas threshold *"runs inside the
-request that reaches the trigger."* **D81 is superseded.** My reasoning for preferring threshold — no
+Verified on `platform.claude.com/docs/en/build-with-claude/compaction` (our words; no doc text
+quoted — §4): on-demand compaction is the recommended default wherever the model exposes it and
+covers the common cases. The behavioural difference that matters for us is where the work happens —
+on-demand runs as a background operation, whereas threshold runs inline, inside the very request that
+tripped the limit. **D81 is superseded.** My reasoning for preferring threshold — no
 separate request builder, no `D74` reject set, no `D69` swap protocol — optimised for the least work
 in our client rather than for what the user experiences. It also gave away the two things on-demand
 uniquely offers and that `D16` actually wanted: keep-recent-turns, and our own `instructions`
@@ -1115,6 +1142,21 @@ path implicit — observed gap. Behaviour, in our own words: any model or tool H
 transcript DOM passes the purifier first; long generations reparse at most once per animation frame;
 long code blocks collapse with a hidden-line count. Zero new security surface beyond the existing
 purifier. Owned by `Tasks/006`.
+
+> **Amended 2026-10-12 (audit 41).** The purifier config is a strict **allowlist**, not a blocklist
+> (`src/features/transcript/markdown.ts`). The earlier `FORBID_TAGS` config could only be as strong
+> as its last omission — svg, math, video, base, meta, details and live `<img src="https://…">` all
+> stayed. Now: `ALLOWED_TAGS` lists the transcript's whole surface (29 tags, exactly Marked's GFM
+> output plus text semantics); `ALLOWED_ATTR` is seven attributes (`href`, `title`, `class`,
+> `align`, `start`, `colspan`, `rowspan`); `ALLOW_DATA_ATTR: false` because `data-*` is the host's
+> namespace (`codeblocks.ts` treats `data-codeblock`/`data-highlighted` as trusted state). Two
+> deliberate absences, each argued in the source: **`img` is not listed** — the transcript fetches
+> nothing, so no tracking pixel and no IP leak, extending D3's no-egress rule to the transcript, and
+> `data:` images are render bombs; a future image feature needs a proxy, a size cap and its own
+> D-number. And **`ALLOWED_URI_REGEXP` is deliberately unset** — setting it moves DOMPurify 3.x to a
+> config path that drops camelCase attributes (the trap `features/artifact/sanitize.ts`
+> documents); the default regexp already refuses `javascript:` and `data:` on `href`, asserted
+> directly in `markdown.test.ts` rather than trusted.
 
 **D101 — A second `question` call in one assistant turn is refused as a typed `tool_result`.**
 
@@ -1286,6 +1328,10 @@ that make them meaningful. `D50` is unchanged — a floor failure is still a rel
 but an unrun floor blocks nothing; it merely stays open. Windows primary + Windows floor are
 the CI gate until then.
 
+> **Superseded by D126 (2026-10-12).** Linux CI is restored to `ci.yml` with the cache and timeout
+> budget D114 itself named as the restore condition. The parked definitions were restored verbatim
+> and `.github/workflows/linux-matrix.yml.disabled` deleted.
+
 **D115 — All Linux work moves to Phase 7 (post-deployment); Phases 0–6 close Windows-only.**
 
 Decided 2026-10-07 by direct order. `D114` parked Linux CI "until 021 re-enables it", but 021
@@ -1298,6 +1344,12 @@ to "Phase 7". `D45` (runtime gate), `D50` (floor failure blocks release), and `D
 secondary, never blocks a Windows release) are untouched — Phase 7 is post-deployment
 sequencing, not a scope cut. v1's definition of done (`SPEC.md` §6) reads "both floors" as
 the two Windows jobs until Phase 7 lands.
+
+> **Partly superseded by D126 (2026-10-12).** Only the CI clause: Phases 0–6 no longer close
+> Windows-only, because the Linux primary and floor jobs are back in `ci.yml` and gate every
+> change. What remains of D115 is intact and unchanged — the Phase 7 items that were never CI:
+> the pinned WebKitGTK install and the `Tasks/021` Linux gate proof. `D45`, `D50` and `D89` are
+> untouched, as D115 itself says.
 
 **D116 — The picker shows only configured providers' models; model lists are per-provider with a 3-day TTL.**
 
@@ -1423,6 +1475,35 @@ the *dispatch* closure is the cited host code plus the two pinned premises — n
 rejection. Any future `remote` capability must revisit this decision first; the test fails
 until it does.
 
+> **Amended 2026-10-12 by the sentinel-effect probe (audit 13 closeout; verdict block was in
+> `docs/reviews/13-security-tauri-host.md` — the reviews tree was deleted at audit closeout
+> 2026-10-13, findings folded into the closeout report).** Three corrections, none of which moves the decision
+> itself — the frame's `invoke` still fails closed on the verified floor, and layer 2 is untouched.
+>
+> 1. **The layer-1 mechanism clause above is wrong about the registration route and right about the
+>    outcome.** The `artifact` scheme is registered through `Builder::register_uri_scheme_protocol`,
+>    so it *does* land in Tauri's protocol map — "registered at the wry level, never through Tauri's
+>    protocol map" and "scheme unknown to the map" are not what holds the boundary (tauri-2.12.1
+>    `app.rs:2279→2424`, `manager/mod.rs:297`). What holds it on Windows is that branch 3's test is
+>    rebound in `webview/mod.rs:1988-1998` to `scheme == tauri_protocol_url(uses_https).scheme()` —
+>    `"http" == "tauri"` is FALSE no matter what the protocol map contains. So no artifact document
+>    resolves `Origin::Local` on Windows: the frame arrives `Remote`, no remote capability is
+>    granted, and dispatch is denied at the ACL gate (`webview/mod.rs:2044-2050`). Layer 2 (zero
+>    `remote` grants, `no_capability_grants_a_remote_context`) stands exactly as written.
+> 2. **The hedge in the last paragraph is discharged: there is now an observed rejection, not just a
+>    missing response.** The effect-based probe this entry asked for was run twice against the final
+>    exe — `pnpm proofs` claim 1, sessions `42c54fd511e4d6ef0661f01328fe991d` and
+>    `ed94a5ede836c0f155bfc590d662a51d`, report `target/webdriver/proofs-report.json`, 8/8 green both
+>    times (run/re-run 2026-10-11–12). The frame receives a callable `invoke` and a live `ipc` (the
+>    injection claim above stands), attempts a privileged sentinel command, and produces **no effect
+>    and no resolved callback** while the shell's own IPC resolves in the same run. The hang the probe
+>    reads is that rejection being evaluated in the main frame only — the dead-letter accident the
+>    paragraph above names, now observed rather than inferred.
+> 3. **§8a: the verdict is Windows-only, and the Linux floor stays open.** The non-Windows arm of the
+>    same classifier is `protocols.contains_key("artifact")`, which WOULD match — statically
+>    `Origin::Local` on that floor — so "remote-by-construction" in the heading above is verified for
+>    Windows only, and a Linux-floor run of claim 1 remains open (review 13's Top risk 1).
+
 **D125 — The builtin provider set is OpenRouter, AgentRouter, Ollama, and Google; Ollama is keyless.**
 
 Decided 2026-10-11 (task 033). The original three builtins (Anthropic, OpenAI,
@@ -1442,6 +1523,95 @@ keys accepted at set/refresh/turn, auth header omitted, never sent as empty `Bea
 it, not papered over: AgentRouter's live-turn quirks (client fingerprinting,
 malformed `data: null` SSE chunk) are documented, not handled; AgentRouter models
 without models.dev coverage stay unselectable under D117's no-zero-guess rule.
+
+**D126 — Linux CI is restored to `ci.yml` as primary + floor; the parking in D114/D115 is lifted.**
+
+Decided 2026-10-12 (audit 42 / review 42 closeout; the `ci.yml` comments carry the same record).
+D114 parked the Linux jobs for one reason — cold builds hit a 35-minute wall against a 30-minute
+job limit with no cargo cache — and named its own restore condition: re-enable *together with* the
+cargo cache and timeout budget. Both now exist, so the condition is met and the parking lifts:
+`Swatinem/rust-cache` caches `target/` between runs and `timeout-minutes: 60` replaces the
+30-minute default. The Linux matrix entries and the webview-deps apt step are restored verbatim
+from the now-deleted `.github/workflows/linux-matrix.yml.disabled`, and `ci.yml` runs four jobs —
+windows primary, windows floor, linux primary, linux floor — on every change. `D50` regains its
+literal meaning on both platforms: a floor failure is a release blocker, and the floors actually
+run. The Linux floor records its WebKitGTK runtime the way the Windows floor records WebView2 —
+via `pkg-config --modversion webkit2gtk-4.1`, asserted at or above D50's **2.40** floor, a floor
+failure below it (`ci.yml`, "Record the Linux floor WebKitGTK runtime version"). What this does
+**not** restore is D115's Phase 7 work items — the pinned WebKitGTK install and the `Tasks/021`
+Linux gate proof stay Phase 7 — and release.yml's Linux AppImage jobs were never parked at all.
+This supersedes D114 fully and D115's "Phases 0–6 close Windows-only" CI clause; both keep their
+supersession notes above.
+
+**D127 — shadcn/ui is a fourth portable source: MIT, component code only, amending D60's "three".**
+
+Decided 2026-10-12 (audit 43 / review 43 closeout). D60 named three MIT implementations —
+OpenCode, DeepSeek Harness, LibreChat — because those were the three compared on compaction; it
+was never a claim that no other permissively licensed source could qualify, but as written it read
+as one and blocked the `src/components/ui` work. shadcn/ui (https://github.com/shadcn-ui/ui, MIT)
+joins the set as a **fourth** source, scoped to **component code only**: its components are copied
+into `src/components/ui` and adapted in place, which is what its MIT licence and its own
+copy-into-your-repo distribution model permit. The scope is deliberately narrow — this is a
+UI-component source, not a behaviour source: nothing from it may inform compaction, transport,
+tooling, or any non-UI decision, where the D60 comparison table still rules. The usual provenance
+rules stand (FEATURES.md): each component is CALLED/PORTED with attribution in the file it lands
+in, and the §4 never-port list (LobeHub, Open WebUI) is unaffected. D60 carries an amendment note
+pointing here.
+
+**D128 — A staged replacement on Windows swaps with `ReplaceFileW`, so the target keeps its DACL, attributes and named streams; rename-over cannot express that.**
+
+Decided 2026-10-12 (audit 11, `stage_write` finding: rename-over discards the target's explicit
+DACL). D34 says "Replacement writes preserve the target's existing DACL" — the staging choice
+always earned that (`%TEMP%` never sees the bytes; a NEW file inherits `dirname(target)`'s DACL),
+but the final swap as implemented did not: `std::fs::rename` on Windows is
+`MoveFileExW(MOVEFILE_REPLACE_EXISTING)`, which deletes the replaced file and lets the staged file
+take its name carrying the staged file's own directory-inherited descriptor — an explicit, possibly
+narrower DACL, non-default attributes and named streams died with it. The swap over an EXISTING
+target is now `ReplaceFileW`, which merges the other way: the survivor keeps the replaced file's
+creation time, short name, object identifier, DACLs, security resource attributes, encryption,
+compression and named streams. A target that does not exist has no security state to preserve (and
+`ReplaceFileW` requires a target): plain rename, unchanged. No ignore-flags —
+`REPLACEFILE_IGNORE_ACL_ERRORS` would let the swap succeed while silently dropping the DACL, the
+exact lie this entry exists to stop; a merge failure surfaces as typed `FsError::Replace` carrying
+the `std::io::Error::last_os_error()` capture (D55). `windows-sys` 0.61.2 is adopted for the FFI
+(user-approved; `TECH_STACK.md` §6.2 records it with the rejected hand-rolled `extern "system"`
+bindings and the rejected in-place-write alternative, which would overturn D34 staging). Residual:
+`ReplaceFileW` requires replaced/replacement on one volume — satisfied by construction, staging
+lives in `dirname(target)` — and its partial-failure codes (1175/1176/1177) get guarded cleanup:
+the staged bytes are swept only when the target survived, moved into place when it vanished, so no
+failure path deletes the only remaining copy. Verified Windows-only (§8a): explicit-DACL read-back,
+HIDDEN attribute and named-stream tests in `crates/clauro-tools/tests/fs_dacl.rs`, each RED against
+the rename-over code before the fix.
+
+**D129 — Provider model chips are read-only until a host endpoint carries `models`; an edit the host would discard is a lie the UI must not tell.**
+
+Decided 2026-10-12 (review-closeout, ProvidersView edit dialog). The provider dialog collects name,
+URL and key, and every one of those has a `#[tauri::command]` that persists it — but no invoke
+carries a model list (`provider_models`/`provider_models_enriched` read; `provider_add_*` sets the
+builtin/initial list only). Making the chips editable would let a user add or remove models, Save
+successfully, and watch the change evaporate on the next fetch. So the chips render read-only with
+the reason stated in code (`ProvidersView.tsx` header), and adding/removing models waits on a host
+`provider_set_models`-style command (recorded as a cross-boundary TODO in the closeout). This is the
+UI-GUIDE §7 rule — a control that cannot work must be hidden or inert-with-explanation, never
+plausible-and-discardable — applied to data the host cannot yet write.
+
+**D130 — Vendored components with zero production callers are deleted, not wired; drift-free beats
+diversified.**
+
+Decided 2026-10-13 (review 32 IMPORTANT, lead). The Task 026 / D112 chat batch — `Bubble`,
+`Message`, `Avatar`, `Attachment`, `Alert`, `Badge`, `Spinner`, `Marker`, `Empty`, `ScrollArea` —
+was vendored fresh from the shadcn registry and never adopted: the transcript and composer
+hand-roll their own rows (`TranscriptView.tsx`, `Composer.tsx`), so the kit sat at "implemented,
+tested, no caller" — the AGENTS §7a trap — and guaranteed drift against the surfaces that actually
+ship. The review offered two closes; **wiring** the transcript to the kit was rejected because it
+is a design change (row semantics, contrast tokens locked by `contrast.test.ts`, D54 thinking
+layout) masquerading as an audit leftover, and **deleting** is the mechanical close that leaves the
+tree honest: 10 components removed, their smoke test trimmed to what ships (`ui-kit.test.tsx`), and
+the two orphaned Radix dependencies (`react-avatar`, `react-scroll-area`) dropped with them. The
+surviving kit (dialog, sidebar, select, dropdown-menu, card, button, input, label, textarea,
+progress, sheet, separator, tooltip, skeleton) stays under D127's component-code-only port. A
+future task that wants kit chat primitives vendors them again from the registry — a fresh copy, not
+a stale one.
 
 ## 5. Security posture — stated plainly
 

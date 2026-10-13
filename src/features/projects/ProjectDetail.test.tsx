@@ -132,11 +132,39 @@ describe("ProjectDetail", () => {
         {...base}
         files={[{ name: "a.pdf", sizeBytes: 1024 }]}
         capacityBytes={2048}
+        onDeleteFile={() => {}}
       />,
     );
     const del = screen.getByTestId("project-file-delete-0");
     expect(del.querySelector("svg")).not.toBeNull();
     expect(del.textContent.trim()).toBe("");
+  });
+
+  it("hides add-files and row delete when the shell passes no handlers", () => {
+    // Wired-or-hidden (UI-GUIDE §7): App has no knowledge-file store or host
+    // file-copy command yet, so the affordances must not render at all —
+    // a picker that accepts files and drops them is the same lie as the old
+    // home onAttach noop.
+    render(<ProjectDetail {...base} files={[{ name: "a.pdf", sizeBytes: 1024 }]} />);
+    expect(screen.queryByTestId("project-add-files")).toBeNull();
+    expect(screen.queryByTestId("project-file-input")).toBeNull();
+    expect(screen.queryByTestId("project-file-delete-0")).toBeNull();
+    // The listing itself stays: files are still shown read-only.
+    expect(screen.getByTestId("project-file-0").textContent).toBe("a.pdf");
+  });
+
+  it("an unhandled rename reverts; an unhandled instructions Save is disabled", async () => {
+    // No handler = nothing was saved, so the title must snap back instead of
+    // looking committed (review 31 #13), and Save must not sit there enabled.
+    const user = userEvent.setup();
+    render(<ProjectDetail {...base} />);
+    const input = screen.getByTestId<HTMLInputElement>("project-title");
+    await user.clear(input);
+    await user.type(input, "Renamed");
+    await user.tab();
+    expect(input.value).toBe(base.project.name);
+    const save = screen.getByTestId<HTMLButtonElement>("project-instructions-save");
+    expect(save.disabled).toBe(true);
   });
 
   it("labels sample capacity honestly when none is supplied", () => {

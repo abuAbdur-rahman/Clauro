@@ -130,7 +130,7 @@ not a restatement — the task file owns it.
 | M2 | The summary call is a genuine **prefix extension**: identical leading tokens, one trailing instruction, `tools` carried through even though the summariser never calls one (**D13**). | `016` |
 | M3 | A summariser that changes nothing yields `no-progress` and **cannot authorise a retry** (**D63**). This is what makes the anti-thrash breaker enforceable rather than heuristic. | `016`, `017` |
 | M4 | Usage after compaction is read from `usage.iterations`; the top-level fields are **zero** (**D70**). Summary tokens are a **separate channel** with a pre-invoke marker (**D57**). | `016`, `017` |
-| M5 | Three paths, chosen at runtime via `capabilities.compaction` — **threshold preferred** (**D81**), on-demand for `/compact` and our own instructions (**D75**), client-side for non-Anthropic (**D58**). | `016`, `017` |
+| M5 | Three paths, chosen at runtime via `capabilities.compaction` — **on-demand preferred** (**D95**; supersedes **D81**'s threshold preference), threshold as the fallback where on-demand is unavailable (**D81**), on-demand for `/compact` and our own instructions (**D75**), client-side for non-Anthropic (**D58**). | `016`, `017` |
 | M6 | **No client-side compaction on Anthropic models.** The prefix check returns 400 for accounts created on/after 2026-08-31, and BYOK means account age varies per user — it cannot be tested away (**D15**, **D20**). | `017` |
 | M7 | `compaction` and `context_management` are **mutually exclusive on one request** — combining them is a 400 (**D21**). `clear_at_least` has a real value (**D86**). | `017` |
 
@@ -171,11 +171,11 @@ v1 ships when:
    `crates/clauro-transport/tests/fixtures/`: omitted thinking, a compaction response, a dropped
    block, an unknown event.
 3. Both **platform floors** are green. A failure on a floor invalidates the sandbox guarantee on
-   that platform — it is a release blocker, not a warning (**D50**).
-   **Deferred 2026-10-06 (D114), owned by Phase 7 (D115):** Linux CI is parked until after full
-   development — the Linux jobs are preserved in
-   `.github/workflows/linux-matrix.yml.disabled`. Until Phase 7 lands, "both floors" reads as
-   the two Windows jobs.
+   that platform — it is a release blocker, not a warning (**D50**). Both floors run on every
+   change: windows primary, windows floor, linux primary, linux floor (**D126**, restored
+   2026-10-12). The Linux floor records its WebKitGTK runtime via `pkg-config` and fails below the
+   2.40 floor. Still owned by Phase 7 (**D115**'s surviving items, not its superseded CI clause):
+   the pinned WebKitGTK install and the `Tasks/021` Linux gate proof.
 4. Binary ≤ ~25 MB, measured from the empty shell recorded in `Tasks/002`.
 5. `Tasks/001` has produced a verdict, and the release matches it.
 6. Every ported change carries its attribution, and every prompt in the repo is our own wording

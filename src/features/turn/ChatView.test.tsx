@@ -9,7 +9,7 @@
  * streaming turn without a Tauri runtime.
  */
 import { afterEach, describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatView } from "./ChatView";
 import { useThreadStore } from "../catalogue/thread";
@@ -607,6 +607,117 @@ describe("ChatView", () => {
     // Never a silent noop: the pick surfaces as a view notice naming the file.
     await waitFor(() => {
       expect(screen.getByText(/notes\.txt/)).toBeTruthy();
+    });
+  });
+});
+
+describe("ChatView turn hygiene (review 30)", () => {
+  it("a second send cannot start a second turn while the first is pending", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    // Never resolves: the first turn stays in flight for the whole test, so
+    // the guard can only be the view's own — not a completed-turn reset.
+    vi.mocked(turnStart).mockReturnValue(new Promise<never>(() => {}));
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(turnStart).toHaveBeenCalledTimes(1);
+    // Running flips BEFORE the invoke resolves: the send button is already
+    // stop. If it somehow still renders, clicking it must not start turn two.
+    const again = screen.queryByRole("button", { name: /send/i });
+    if (again !== null) await user.click(again);
+    expect(turnStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("a late delta after done does not resurrect the streaming row", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalled();
+    });
+    const onEvent = listeners.events[listeners.events.length - 1];
+    const onDone = listeners.dones[listeners.dones.length - 1];
+    onEvent({ type: "text_delta", index: 0, text: "Hel" });
+    await waitFor(() => {
+      expect(screen.getByTestId("row-streaming")).toBeTruthy();
+    });
+    onDone({
+      thread_id: THREAD,
+      end: "EndTurn",
+      dispatched: [],
+      assistant_messages: 1,
+      pending_approvals: [],
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("row-streaming")).toBeNull();
+    });
+    // A buffered delta delivered after done (abort race) must be dropped.
+    onEvent({ type: "text_delta", index: 0, text: "late" });
+    await waitFor(() => {
+      expect(screen.queryByTestId("row-streaming")).toBeNull();
+    });
+  });
+
+  it("a synchronous delta burst renders once the frame fires, not per delta", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalled();
+    });
+    const onEvent = listeners.events[listeners.events.length - 1];
+    // Three deltas in one frame: none of them re-renders the view on its own
+    // (review 30: per-SSE-delta setStreaming re-rendered the whole ChatView).
+    act(() => {
+      onEvent({ type: "text_delta", index: 0, text: "Hel" });
+      onEvent({ type: "text_delta", index: 0, text: "lo " });
+      onEvent({ type: "text_delta", index: 0, text: "world" });
+    });
+    expect(screen.queryByTestId("row-streaming")).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByTestId("row-streaming").textContent).toContain("Hello world");
+    });
+  });
+
+  it("adopts the store's running flag when the thread switches mid-turn", async () => {
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    const { rerender } = render(<ChatView threadId="other-thread" />);
+    await waitFor(() => {
+      expect(transcriptRead).toHaveBeenCalledWith("other-thread");
+    });
+    // The turn bridge (turn.ts) owns the store flag; a view mounting on a
+    // running thread must show stop, not a dead send button.
+    useThreadStore.getState().openThread(THREAD);
+    useThreadStore.getState().setRunning(THREAD, true);
+    rerender(<ChatView threadId={THREAD} />);
+    expect(await screen.findByRole("button", { name: /stop/i })).toBeTruthy();
+  });
+
+  it("streams thinking deltas into the reasoning region instead of a stub", async () => {
+    const user = userEvent.setup();
+    selectModel();
+    vi.mocked(transcriptRead).mockResolvedValue([]);
+    vi.mocked(turnStart).mockResolvedValue({ thread_id: THREAD });
+    render(<ChatView threadId={THREAD} />);
+    await user.type(screen.getByLabelText(/message/i), "hello");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => {
+      expect(turnStart).toHaveBeenCalled();
+    });
+    const onEvent = listeners.events[listeners.events.length - 1];
+    onEvent({ type: "thinking_delta", index: 0, text: "mapping the tradeoffs" });
+    await waitFor(() => {
+      expect(screen.getByText(/mapping the tradeoffs/)).toBeTruthy();
     });
   });
 });

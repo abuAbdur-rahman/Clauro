@@ -11,102 +11,86 @@
  * live nodes, never reparsed as markup from a string. That keeps the purifier's
  * `FORBID_ATTR: ["style"]` posture (inline style is an XSS vector) intact for
  * everything the model emitted, while letting the trusted highlighter colourise
- * only its own generated spans. The highlighter loads lazily behind the first
- * code block (its grammars are not paid on every launch for a transcript that
- * is usually prose), and a failed load degrades to plaintext rather than
- * throwing.
+ * only its own generated spans. The highlighter (core, JS engine, theme and
+ * grammars) loads lazily behind the first code block — none of it sits in the
+ * entry bundle, so a transcript that is usually prose pays nothing for it at
+ * launch — and a failed load degrades to plaintext rather than throwing.
  */
 import type { HighlighterCore, LanguageInput } from "shiki";
-// The core API, JS engine, grammars and theme are imported **statically**. A
-// bare *dynamic* specifier — `await import("shiki/core")` or the template
-// `import(\`shiki/langs/${l}.mjs\`)` — is not resolvable by the browser in a
-// built bundle: Rollup emits it as a runtime glob the static host cannot serve,
-// so the import throws and highlighting silently degrades to plaintext (jsdom
-// hides this because vitest resolves specifiers itself). A static import gives
-// the bundler a real dependency edge. The cost is that the grammars join the
-// chunk graph, so this is a deliberate, recorded trade-off: a focused language
-// set keeps the bundle honest.
-import { createHighlighterCore } from "shiki/core";
-import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-import rust from "shiki/langs/rust.mjs";
-import typescript from "shiki/langs/typescript.mjs";
-import javascript from "shiki/langs/javascript.mjs";
-import tsx from "shiki/langs/tsx.mjs";
-import jsx from "shiki/langs/jsx.mjs";
-import python from "shiki/langs/python.mjs";
-import go from "shiki/langs/go.mjs";
-import java from "shiki/langs/java.mjs";
-import c from "shiki/langs/c.mjs";
-import cpp from "shiki/langs/cpp.mjs";
-import csharp from "shiki/langs/csharp.mjs";
-import ruby from "shiki/langs/ruby.mjs";
-import php from "shiki/langs/php.mjs";
-import swift from "shiki/langs/swift.mjs";
-import kotlin from "shiki/langs/kotlin.mjs";
-import json from "shiki/langs/json.mjs";
-import yaml from "shiki/langs/yaml.mjs";
-import toml from "shiki/langs/toml.mjs";
-import sql from "shiki/langs/sql.mjs";
-import bash from "shiki/langs/bash.mjs";
-import css from "shiki/langs/css.mjs";
-import html from "shiki/langs/html.mjs";
-import xml from "shiki/langs/xml.mjs";
-import markdown from "shiki/langs/markdown.mjs";
-import diff from "shiki/langs/diff.mjs";
-import docker from "shiki/langs/docker.mjs";
-import graphql from "shiki/langs/graphql.mjs";
-import githubDark from "shiki/themes/github-dark.mjs";
+// Every shiki **value** import here — core, JS regex engine, theme, grammars —
+// is a dynamic import with an explicit literal specifier, awaited inside
+// `loadHighlighter`. Literal specifiers are statically analysable, so Rollup
+// emits real async chunks and the whole highlighter graph (measured: ~84% of
+// the old entry chunk) leaves the boot path — parsed only behind the first
+// code block. What is *not* statically analysable is a template/glob
+// specifier like `import(\`shiki/langs/${l}.mjs\`)`: Rollup emits a runtime
+// glob the static host cannot serve and the import throws (jsdom hides this —
+// vitest resolves specifiers itself). So each grammar gets its own literal
+// thunk — shiki's own lazy-loader shape: `LanguageInput` accepts
+// `() => import("shiki/langs/rust.mjs")` and unwraps the module's `default`.
+// A failed load still degrades to plaintext rather than throwing.
 
 const ENHANCED_ATTR = "data-codeblock";
 const LANG_RE = /^[a-z0-9+#_-]+$/;
 
+const loadBash = () => import("shiki/langs/bash.mjs");
+const loadJavaScript = () => import("shiki/langs/javascript.mjs");
+const loadTypeScript = () => import("shiki/langs/typescript.mjs");
+const loadCss = () => import("shiki/langs/css.mjs");
+const loadXml = () => import("shiki/langs/xml.mjs");
+const loadMarkdown = () => import("shiki/langs/markdown.mjs");
+const loadDiff = () => import("shiki/langs/diff.mjs");
+
 /**
- * Grammar alias → the shiki module that colourises it. Anything absent renders
- * plaintext (never throws). Aliases collapse onto the grammar that already
- * covers them: `shell`→bash, `js`/`mjs`/`cjs`→javascript, etc.
+ * Grammar alias → a **lazy thunk** that imports the shiki module which
+ * colourises it. Anything absent renders plaintext (never throws). Aliases
+ * collapse onto the loader that already covers them: `shell`→bash,
+ * `js`/`mjs`/`cjs`→javascript, etc. Values are thunks (never loaded grammar
+ * objects) so no grammar module is evaluated until the first code block —
+ * `codeblocks.test.ts` pins that.
  */
-const GRAMMARS: Record<string, LanguageInput> = {
-  rust,
-  typescript,
-  javascript,
-  tsx,
-  jsx,
-  python,
-  go,
-  java,
-  c,
-  cpp,
-  csharp,
-  ruby,
-  php,
-  swift,
-  kotlin,
-  json,
-  yaml,
-  toml,
-  sql,
-  bash,
-  shell: bash,
-  sh: bash,
-  zsh: bash,
-  js: javascript,
-  mjs: javascript,
-  cjs: javascript,
-  ts: typescript,
-  node: javascript,
-  css,
-  scss: css,
-  html,
-  xml,
-  svg: xml,
-  markdown,
-  md: markdown,
-  diff,
-  patch: diff,
-  docker,
-  dockerfile: docker,
-  graphql,
-  gql: graphql,
+export const GRAMMARS: Record<string, LanguageInput> = {
+  rust: () => import("shiki/langs/rust.mjs"),
+  typescript: loadTypeScript,
+  javascript: loadJavaScript,
+  tsx: () => import("shiki/langs/tsx.mjs"),
+  jsx: () => import("shiki/langs/jsx.mjs"),
+  python: () => import("shiki/langs/python.mjs"),
+  go: () => import("shiki/langs/go.mjs"),
+  java: () => import("shiki/langs/java.mjs"),
+  c: () => import("shiki/langs/c.mjs"),
+  cpp: () => import("shiki/langs/cpp.mjs"),
+  csharp: () => import("shiki/langs/csharp.mjs"),
+  ruby: () => import("shiki/langs/ruby.mjs"),
+  php: () => import("shiki/langs/php.mjs"),
+  swift: () => import("shiki/langs/swift.mjs"),
+  kotlin: () => import("shiki/langs/kotlin.mjs"),
+  json: () => import("shiki/langs/json.mjs"),
+  yaml: () => import("shiki/langs/yaml.mjs"),
+  toml: () => import("shiki/langs/toml.mjs"),
+  sql: () => import("shiki/langs/sql.mjs"),
+  bash: loadBash,
+  shell: loadBash,
+  sh: loadBash,
+  zsh: loadBash,
+  js: loadJavaScript,
+  mjs: loadJavaScript,
+  cjs: loadJavaScript,
+  ts: loadTypeScript,
+  node: loadJavaScript,
+  css: loadCss,
+  scss: loadCss,
+  html: () => import("shiki/langs/html.mjs"),
+  xml: loadXml,
+  svg: loadXml,
+  markdown: loadMarkdown,
+  md: loadMarkdown,
+  diff: loadDiff,
+  patch: loadDiff,
+  docker: () => import("shiki/langs/docker.mjs"),
+  dockerfile: () => import("shiki/langs/docker.mjs"),
+  graphql: () => import("shiki/langs/graphql.mjs"),
+  gql: () => import("shiki/langs/graphql.mjs"),
 };
 
 /** Highlighted-language code must not be re-processed by a later pass. */
@@ -119,10 +103,17 @@ function loadHighlighter(): Promise<HighlighterCore | null> {
   if (highlighterPromise) return highlighterPromise;
   highlighterPromise = (async () => {
     try {
+      const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, { default: githubDark }] =
+        await Promise.all([
+          import("shiki/core"),
+          import("shiki/engine/javascript"),
+          import("shiki/themes/github-dark.mjs"),
+        ]);
       return await createHighlighterCore({
         themes: [githubDark],
-        // Every grammar the app can colourise, statically imported above.
-        langs: Object.values(GRAMMARS),
+        // Every grammar the app can colourise, as lazy thunks (see GRAMMARS).
+        // `Set` collapses the aliases that share one loader.
+        langs: [...new Set(Object.values(GRAMMARS))],
         engine: createJavaScriptRegexEngine(),
       });
     } catch {
@@ -144,7 +135,13 @@ export function codeBlockLanguage(code: Element): string {
 async function copyCode(code: HTMLElement, button: HTMLButtonElement): Promise<void> {
   try {
     const clipboard = (navigator as unknown as { clipboard?: { writeText: (t: string) => Promise<void> } }).clipboard;
-    await clipboard?.writeText(code.textContent);
+    if (clipboard === undefined) {
+      // No clipboard API (insecure context, locked-down embedding): the
+      // optional call would silently no-op and still flip the label —
+      // the button must not claim a write that never happened (review 33).
+      return;
+    }
+    await clipboard.writeText(code.textContent);
     button.textContent = "Copied";
     window.setTimeout(() => {
       if (button.isConnected) button.textContent = "Copy";

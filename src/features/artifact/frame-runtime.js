@@ -73,11 +73,37 @@
   }
 
   var SAFE_URL_SCHEMES = ["http:", "https:", "mailto:", "#"];
+  var MEDIA_URL_SCHEMES = ["data:", "blob:"];
 
-  function isSafeUrl(value) {
-    var text = String(value).trim().toLowerCase();
-    for (var i = 0; i < SAFE_URL_SCHEMES.length; i += 1) {
-      if (text.indexOf(SAFE_URL_SCHEMES[i]) === 0) return true;
+  /**
+   * Attributes that carry a URL. 0 = strict http(s)/mailto/fragment/relative;
+   * 1 = a data: or blob: URI is also allowed, because those slots load media
+   * the CSP already governs to data:/blob: (D3). Navigation and fetch slots
+   * (href, action, formaction, ping, object data) never take one.
+   */
+  var URL_ATTRS = {
+    href: 0,
+    src: 1,
+    action: 0,
+    formaction: 0,
+    ping: 0,
+    poster: 1,
+    data: 0,
+    srcset: 1,
+    "xlink:href": 0,
+  };
+
+  function isSafeUrl(value, allowDataUri) {
+    // The URL standard strips tab/LF/CR before it parses a scheme, so this
+    // test has to strip them too: "jav\tascript:" would otherwise read as a
+    // relative path — safe-looking, navigation-shaped (audit 14).
+    var text = String(value)
+      .replace(/[\t\n\r]/g, "")
+      .trim()
+      .toLowerCase();
+    var schemes = allowDataUri ? SAFE_URL_SCHEMES.concat(MEDIA_URL_SCHEMES) : SAFE_URL_SCHEMES;
+    for (var i = 0; i < schemes.length; i += 1) {
+      if (text.indexOf(schemes[i]) === 0) return true;
     }
     // Relative paths and fragments resolve against this document; anything
     // carrying a scheme we do not know (javascript:, data:, vbscript:) does not.
@@ -89,6 +115,9 @@
     Object.keys(props).forEach(function (key) {
       var value = props[key];
       if (value === null || value === undefined || value === false) return;
+      // Prototype keys are never legitimate attributes; dropping them keeps a
+      // JSON-shaped props object from taking the object-path route anywhere.
+      if (key === "__proto__" || key === "constructor" || key === "prototype") return;
       if (key === "class" || key === "className") {
         node.setAttribute("class", String(value));
         return;
@@ -103,11 +132,16 @@
         }
         return;
       }
-      if (key.indexOf("on") === 0 && key.length > 2 && typeof value === "function") {
-        node.addEventListener(key.slice(2).toLowerCase(), value);
+      if (key.indexOf("on") === 0 && key.length > 2) {
+        if (typeof value === "function") {
+          node.addEventListener(key.slice(2).toLowerCase(), value);
+        }
+        // A string where a handler belongs is an inline handler: dropped,
+        // never set as an attribute (audit 14).
         return;
       }
-      if ((key === "href" || key === "src" || key === "action") && !isSafeUrl(value)) {
+      var urlSlot = URL_ATTRS[key.toLowerCase()];
+      if (urlSlot !== undefined && !isSafeUrl(value, urlSlot === 1)) {
         // Dropped, not rewritten: a javascript: href that survives as text is
         // a way back in.
         return;
@@ -191,7 +225,9 @@
     if (target && ESCAPING_TARGETS.indexOf(target.toLowerCase()) >= 0) {
       return "blocked: target " + target;
     }
-    var href = (anchor.getAttribute("href") || "").trim();
+    // Stripped before the scheme test, exactly as the URL parser would
+    // (audit 14): "jav&#x09;ascript:" must read as javascript:, not as a path.
+    var href = (anchor.getAttribute("href") || "").replace(/[\t\n\r]/g, "").trim();
     if (href === "" || href.charAt(0) === "#") return null;
     if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.indexOf("//") === 0) {
       return "blocked: " + href.slice(0, 80) + " leaves the artifact frame (D102)";
@@ -202,7 +238,9 @@
   document.addEventListener(
     "click",
     function (event) {
-      var anchor = event.target && event.target.closest && event.target.closest("a");
+      // "a,area": an image map's <area> navigates exactly like an anchor and
+      // was outside the anchor-only guard (audit 14).
+      var anchor = event.target && event.target.closest && event.target.closest("a,area");
       if (!anchor) return;
       var note = blockedNavigationNote(anchor);
       if (!note) return;
@@ -227,6 +265,56 @@
     { capture: true },
   );
 
+  /* ---- self-navigation (audit 14, D102) ------------------------------- */
+
+  /**
+   * A meta refresh tag (`http-equiv` carrying `refresh`) navigates the frame
+   * away from the document this host built. `prepare.ts` strips it from the
+   * source; this is the same sweep one layer in, for whatever reaches the
+   * document whole.
+   */
+  function stripMetaRefresh() {
+    var metas = document.querySelectorAll("meta");
+    for (var i = 0; i < metas.length; i += 1) {
+      var meta = metas[i];
+      var equiv = (meta.getAttribute("http-equiv") || "").toLowerCase();
+      if (equiv === "refresh") {
+        post(FRAME_TO_HOST.log, { level: "warn", text: "blocked: meta refresh removed (D102)" });
+        if (meta.parentNode) meta.parentNode.removeChild(meta);
+      }
+    }
+  }
+  document.addEventListener("DOMContentLoaded", stripMetaRefresh);
+  if (document.readyState !== "loading") stripMetaRefresh();
+
+  // Popups are already refused by the sandbox flags; this turns the refusal
+  // into a report instead of an engine-side silence (audit 14).
+  Object.defineProperty(window, "open", {
+    configurable: true,
+    writable: true,
+    value: function () {
+      post(FRAME_TO_HOST.log, {
+        level: "warn",
+        text: "blocked: window.open is not available inside the artifact frame (D102)",
+      });
+      return null;
+    },
+  });
+
+  if (window.navigation && typeof window.navigation.addEventListener === "function") {
+    window.navigation.addEventListener("navigate", function (event) {
+      var destination = event && event.destination;
+      // Same-document navigation — fragments, history entries, pushState —
+      // stays allowed; everything else would replace the document wholesale
+      // with one this host never published (audit 14).
+      if (destination && destination.sameDocument) return;
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      post(FRAME_TO_HOST.nav, {
+        text: "blocked: cross-document navigation refused inside the artifact frame (D102)",
+      });
+    });
+  }
+
   /* ---- handshake (D6) -------------------------------------------------- */
 
   window.addEventListener("message", function (event) {
@@ -234,6 +322,10 @@
     // The host's window, and only the host's window. Anything else speaking
     // this frame gets no port.
     if (event.source !== window.parent) return;
+    // The origin half of the same check (D6): the shell is always a real
+    // origin — "null" is an opaque document and "" is nobody, and neither can
+    // be produced by the parent that hosts this frame.
+    if (event.origin === "null" || event.origin === "") return;
     if (!data || data.type !== "artifact.boot") return;
     if (!event.ports || event.ports.length !== 1) return;
     port = event.ports[0];
@@ -255,8 +347,15 @@
   // The first contact is the frame's, and it goes to the shell: the host has
   // no reason to speak until asked, and this frame has no port until it asks.
   // "*" is the only value available — an opaque origin cannot name anyone,
-  // which is the same reason the host's boot reply uses it (D122).
-  window.parent.postMessage({ type: FRAME_TO_HOST.hello }, "*");
+  // which is the same reason the host's boot reply uses it (D122). The render
+  // nonce the envelope wrote before this script ran rides along, and channel.ts
+  // checks it against the document it published (D6): a page this frame
+  // navigates to can say hello, but it cannot name that nonce.
+  var hello = { type: FRAME_TO_HOST.hello };
+  if (typeof window.__clauroHandshakeNonce === "string") {
+    hello.nonce = window.__clauroHandshakeNonce;
+  }
+  window.parent.postMessage(hello, "*");
 
   window.onerror = function (message) {
     post(FRAME_TO_HOST.error, { text: String(message) });

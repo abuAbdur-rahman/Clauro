@@ -25,6 +25,36 @@ interface Purifier {
   sanitize: (dirty: string, config?: unknown) => string;
 }
 
+const URL_TARGET = /url\(\s*(?:"([^"]*)"|'([^']*)'|((?:[^()]|\([^()]*\))*))\s*\)/gi;
+
+/**
+ * Rewrite every `url(...)` in a `style` attribute to `none` unless its target
+ * is a same-document fragment or a `data:`/`blob:` URI the CSP already allows.
+ *
+ * Two layers, not one (audit 14): the CSP in the frame would block a remote
+ * fetch anyway, but an egress-capable style should not depend on it — and a
+ * `javascript:` target is refused outright rather than left to the CSS parser.
+ * `url(#g)` — gradient and filter references — is the functionality case and
+ * survives untouched.
+ */
+function stripRemoteCssUrls(style: string): string {
+  return style.replace(URL_TARGET, (_match, dq?: string, sq?: string, bare?: string) => {
+    const target = (dq ?? sq ?? bare ?? "").trim().toLowerCase();
+    if (target.startsWith("data:") || target.startsWith("blob:") || target.startsWith("#")) {
+      return _match;
+    }
+    return "none";
+  });
+}
+
+function stripStyleAttributes(markup: string): string {
+  return markup.replace(
+    /(\sstyle=")([^"]*)(")/g,
+    (_match, open: string, value: string, close: string) =>
+      `${open}${stripRemoteCssUrls(value)}${close}`,
+  );
+}
+
 export async function sanitizeSvg(markup: string): Promise<SanitizeOutcome> {
   if (!/<\s*svg[\s>]/i.test(markup)) {
     return { kind: "error", message: "svg artifacts must be an <svg> document" };
@@ -44,10 +74,29 @@ export async function sanitizeSvg(markup: string): Promise<SanitizeOutcome> {
   // strictest configuration is also the one that renders.
   const svg = purifier.sanitize(markup, {
     USE_PROFILES: { svg: true, svgFilters: true, html: true },
-    FORBID_TAGS: ["script", "foreignObject", "iframe", "object", "embed", "link", "style"],
+    FORBID_TAGS: [
+      "script",
+      "foreignObject",
+      "iframe",
+      "object",
+      "embed",
+      "link",
+      "style",
+      // SMIL can rewire an attribute *after* the attribute filters ran —
+      // `<set attributeName="href" ...>` — so the animation elements go
+      // entirely rather than one-by-one as a DOMPurify allowlist shifts.
+      "animate",
+      "animateMotion",
+      "animateTransform",
+      "set",
+      // `<img>`/`srcset` are HTML in an svg document and an egress surface
+      // the CSP would otherwise be the only thing holding (audit 14).
+      "img",
+      "meta",
+    ],
     // No href at all: the nav guard drops external targets anyway (D102), and
     // an `xlink:href` is a fetch we would otherwise reason about per element.
-    FORBID_ATTR: ["href", "xlink:href"],
+    FORBID_ATTR: ["href", "xlink:href", "srcset"],
   });
-  return { kind: "ok", svg };
+  return { kind: "ok", svg: stripStyleAttributes(svg) };
 }

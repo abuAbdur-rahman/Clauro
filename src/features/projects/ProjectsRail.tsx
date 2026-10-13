@@ -59,7 +59,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { Project } from "./projects";
+import { projectColor as hashProjectColor, type Project } from "./projects";
 import type { ThreadStatus } from "@/features/catalogue/thread";
 import { useSettingsStore } from "../shell/settings";
 
@@ -75,9 +75,6 @@ export interface RailThread {
 
 export const DAY_MS = 86_400_000;
 
-/** Project color wheel ported from the prototype `PCOL` (index.html:335). */
-export const PROJECT_COLORS = ["#c96442", "#0067c0", "#0f7b0f", "#7a42d6", "#c239b3"] as const;
-
 export type ChatGroupLabel = "PINNED" | "TODAY" | "YESTERDAY" | "PREVIOUS 7 DAYS" | "OLDER";
 
 const GROUP_ORDER: readonly ChatGroupLabel[] = [
@@ -88,14 +85,19 @@ const GROUP_ORDER: readonly ChatGroupLabel[] = [
   "OLDER",
 ];
 
+/**
+ * Rail dot colour. Delegates to the shared djb2 hash in projects.ts, so
+ * colour is a property of the id alone — reordering the project list can
+ * no longer repaint every dot (review 31). Null and unknown ids stay
+ * dotless: a thread whose project is gone shows no colour.
+ */
 export function projectColor(
   projectId: string | null | undefined,
   projects: readonly Project[],
 ): string | undefined {
   if (projectId === null || projectId === undefined) return undefined;
-  const i = projects.findIndex((p) => p.id === projectId);
-  if (i < 0) return undefined;
-  return PROJECT_COLORS[i % PROJECT_COLORS.length];
+  if (!projects.some((p) => p.id === projectId)) return undefined;
+  return hashProjectColor(projectId);
 }
 
 function updatedMs(updated: number | string | undefined, now: number): number {
@@ -168,7 +170,7 @@ interface ProjectsRailProps {
   userName?: string;
   userPlan?: string;
   /** Reference clock for date grouping (tests inject; default now). */
-  now?: number;
+  now?: number | undefined;
   onSelectProject?: (id: string) => void;
   onSelectThread?: (id: string) => void;
   onNewChat?: () => void;
@@ -242,13 +244,18 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
     onOpenSettings = () => {},
     onPinThread = () => {},
     onRenameThread = () => {},
-    onMoveThread = () => {},
     onExportThread = () => {},
     onDeleteThread = () => {},
     onOpenShortcuts,
     onOpenHelp,
     onSignOut,
   } = props;
+  // Move-to-project is hidden, not placebo: no `moveThread` primitive exists
+  // in the thread store and no Tauri command backs it, so rendering the item
+  // would show a control that discards the user's intent (UI-GUIDE §7). The
+  // prop stays in the interface so the App can opt in the day a real handler
+  // lands; until then `onMoveThread === undefined` keeps it off the menu.
+  const showMove = props.onMoveThread !== undefined;
   // Task 032 U1: the settings store addresses pages (openSettings takes a
   // section), so Shortcuts needs no owner prop — it falls back to opening
   // Settings on the shortcuts page. The optional prop stays as an override.
@@ -329,28 +336,30 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
         >
           Rename
         </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuItem
-              onSelect={() => {
-                onMoveThread(thread.id, null);
-              }}
-            >
-              No project
-            </DropdownMenuItem>
-            {projects.map((p) => (
+        {showMove && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Move to project</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
               <DropdownMenuItem
-                key={p.id}
                 onSelect={() => {
-                  onMoveThread(thread.id, p.id);
+                  props.onMoveThread?.(thread.id, null);
                 }}
               >
-                {p.name}
+                No project
               </DropdownMenuItem>
-            ))}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+              {projects.map((p) => (
+                <DropdownMenuItem
+                  key={p.id}
+                  onSelect={() => {
+                    props.onMoveThread?.(thread.id, p.id);
+                  }}
+                >
+                  {p.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
         <DropdownMenuItem
           onSelect={() => {
             onExportThread(thread.id);
@@ -689,7 +698,7 @@ function RailBody(props: ProjectsRailProps): React.JSX.Element {
             </DropdownMenu>
           </div>
           {memoryOff && (
-            <span aria-label="memory off" className="p-2 text-neutral-500">
+            <span aria-label="memory off" className="p-2 text-muted-foreground">
               <Brain size={16} strokeWidth={1.75} />
             </span>
           )}

@@ -11,7 +11,7 @@
 
 use crate::registry::Registry;
 use clauro_core::{Effect, PermissionRule, ToolContext, ToolOutcome};
-use clauro_fs::runner::{run_command, RunLimits, RUN_DEFAULT_MAX_BYTES};
+use clauro_fs::runner::{run_command, RunLimits, RUN_DEFAULT_MAX_BYTES, RUN_DEFAULT_TIMEOUT_MS};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -62,6 +62,7 @@ impl crate::FsHost {
             &[],
             RunLimits {
                 max_bytes: RUN_DEFAULT_MAX_BYTES,
+                timeout_ms: RUN_DEFAULT_TIMEOUT_MS,
             },
         ) {
             Ok(out) => {

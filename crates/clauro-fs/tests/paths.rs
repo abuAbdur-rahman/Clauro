@@ -7,10 +7,39 @@
 //! `COM¹²³` / `LPT¹²³` (D79). Budget is `MAX_PATH` from the drive root (D79).
 
 use clauro_fs::{is_reserved_file_name, is_within, resolve_in_workspace, PathError};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Create a link that points `link` → `target`. On Windows this is a
+/// JUNCTION via `mklink /J`, which is **unprivileged** (unlike
+/// `symlink_file`, which needs Developer Mode / SeCreateSymbolicLinkPrivilege
+/// — the common-case host has neither). Junctions must exist (audit 40/11:
+/// the old privileged-symlink attempt degraded to a tautology and the real
+/// `OutsideTree` branch silently stopped running; a link that cannot be
+/// created is now a TEST FAILURE, never an early return).
+fn make_dir_link(link: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("mklink /J failed"))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+}
 
 struct TestRoot {
     path: PathBuf,
@@ -113,8 +142,8 @@ fn dotdot_and_encoded_escapes_rejected() {
         "..%2foutside.txt",
         "a/..\\b.txt",
     ] {
-        let err =
-            resolve_in_workspace(&root.path, evil).expect_err(&format!("{evil} must not escape"));
+        let msg = format!("{evil} must not escape");
+        let err = resolve_in_workspace(&root.path, evil).expect_err(&msg);
         assert!(
             matches!(err, PathError::Traversal | PathError::OutsideTree),
             "{evil} must fail as traversal, got: {err}"
@@ -161,37 +190,150 @@ fn containment_is_component_wise_not_prefix_text() {
 }
 
 #[test]
-fn symlink_pointing_outside_is_rejected_after_resolution() {
+fn link_escaping_the_tree_is_rejected_after_resolution() {
+    // audit 40 CRITICAL / 01 tier-7 / 11: the flagship escape test used a
+    // PRIVILEGED file symlink and, when that failed (Windows without
+    // Developer Mode — the common case), returned early asserting a
+    // tautology over two unrelated temp dirs. A junction is unprivileged, so
+    // the real assertion always runs, and link creation failing fails the
+    // test instead of green-lighting nothing.
     let root = TestRoot::fresh();
     let outside = TestRoot::fresh();
     std::fs::write(outside.path.join("secret.txt"), "x").expect("seed must write");
-    let link = root.path.join("link");
-    let target = outside.path.join("secret.txt");
-    let made = {
-        #[cfg(windows)]
-        {
-            std::os::windows::fs::symlink_file(&target, &link)
-        }
-        #[cfg(not(windows))]
-        {
-            std::os::unix::fs::symlink(&target, &link)
-        }
-    };
-    if made.is_err() {
-        // No privilege to create symlinks on this host (Windows needs
-        // Developer Mode). The containment half must still hold on its own:
-        // an already-resolved path outside the root never passes.
-        assert!(!is_within(&root.path, &target));
-        let resolved_outside = target.canonicalize().expect("target must resolve");
-        assert!(!is_within(&root.path, &resolved_outside));
-        return;
-    }
+    make_dir_link(&root.path.join("link"), &outside.path)
+        .expect("unprivileged junction/symlink must be creatable — the real branch must run");
     let err =
         resolve_in_workspace(&root.path, "link").expect_err("a link escaping the tree must fail");
     assert!(
         matches!(err, PathError::OutsideTree),
         "must fail AFTER resolution, got: {err}"
     );
+    // Same with a tail past the link: `link/secret.txt` still resolves out.
+    let err = resolve_in_workspace(&root.path, "link/secret.txt")
+        .expect_err("a tail through an escaping link must fail");
+    assert!(
+        matches!(err, PathError::OutsideTree),
+        "must fail AFTER resolution, got: {err}"
+    );
+}
+
+#[test]
+fn dangling_link_tail_is_refused_not_completed_lexically() {
+    // audit 11: a DANGLING link's `exists()` is false, so the tail walk used
+    // to step past it and rebuild `root/link/file` lexically — passing
+    // containment. A later write/read then followed the link if it ever
+    // retargeted (escape + retarget race). Refuse instead: a link entry that
+    // does not resolve never reaches `is_within`.
+    let root = TestRoot::fresh();
+    let outside = TestRoot::fresh();
+    make_dir_link(&root.path.join("link"), &outside.path)
+        .expect("unprivileged junction/symlink must be creatable");
+    std::fs::remove_dir_all(&outside.path).expect("target removed — the link now dangles");
+    let err = resolve_in_workspace(&root.path, "link/file.txt")
+        .expect_err("a dangling link tail must not complete lexically");
+    assert!(
+        matches!(err, PathError::Unresolvable(_)),
+        "must fail as an unresolvable link, got: {err}"
+    );
+}
+
+// ── lexical vectors the containment check cannot see (audit 11) ─────────────
+
+#[test]
+fn drive_relative_and_stream_components_rejected() {
+    let root = TestRoot::fresh();
+    for evil in [
+        // Mid-string `C:` gives the joined path a Windows prefix and std
+        // `join` DISCARDS the root → drive-relative against process cwd.
+        "a/C:/b",
+        "docs/sub/D:evil.txt",
+        // NTFS alternate data streams: bytes land in an invisible stream,
+        // bypassing every name-based rule (`report.txt:hidden`), including
+        // the reserved check (`NUL:stream` — device + stream, no dot).
+        "report.txt:hidden",
+        "NUL:stream",
+        "a/b.txt:ads:$DATA",
+    ] {
+        let msg = format!("{evil} must not resolve");
+        let err = resolve_in_workspace(&root.path, evil).expect_err(&msg);
+        assert!(
+            matches!(
+                err,
+                PathError::Invalid(_) | PathError::ReservedName(_) | PathError::Absolute
+            ),
+            "{evil} must fail as invalid/reserved/absolute, got: {err}"
+        );
+    }
+    // The reserved check itself sees through the stream suffix.
+    assert!(is_reserved_file_name("NUL:stream"));
+    assert!(is_reserved_file_name("con:stream"));
+    assert!(!is_reserved_file_name("report.txt:hidden"));
+}
+
+#[test]
+fn nul_bytes_rejected_after_decoding() {
+    let root = TestRoot::fresh();
+    for evil in ["%00evil.txt", "a%00b", "dir/%00"] {
+        let msg = format!("{evil} must not resolve");
+        let err = resolve_in_workspace(&root.path, evil).expect_err(&msg);
+        assert!(
+            matches!(err, PathError::Invalid(_)),
+            "{evil} must fail as invalid, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn dotdot_with_trailing_space_or_dot_is_still_traversal() {
+    // Windows trims trailing spaces/dots per component during path
+    // normalisation, so `.. ` IS `..` on the host — a lexical check on the
+    // raw form let it through and the OS resolved it as traversal.
+    let root = TestRoot::fresh();
+    for evil in [".. /x.txt", "a/.. /b.txt", ".. ", ".. .", "a/.."] {
+        let msg = format!("{evil:?} must not resolve");
+        let err = resolve_in_workspace(&root.path, evil).expect_err(&msg);
+        assert!(
+            matches!(err, PathError::Traversal),
+            "{evil:?} must fail as traversal, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn trailing_dot_component_stays_contained_never_collides_silently() {
+    // `file.txt.` and `file.txt` are the same file to PLAIN Win32 paths —
+    // but `resolve_in_workspace` hands back `\\?\`-rooted paths (the root is
+    // canonicalised), and the extended namespace DISABLES trailing-dot
+    // stripping: the literal `file.txt.` is a distinct name. Pin the
+    // security property (containment either way) and the no-silent-collapse
+    // behaviour, so a future change cannot reintroduce the collision.
+    let root = TestRoot::fresh();
+    std::fs::write(root.path.join("file.txt"), "x").expect("seed");
+    let got = resolve_in_workspace(&root.path, "file.txt.").expect("must resolve");
+    let want = resolve_in_workspace(&root.path, "file.txt").expect("must resolve");
+    assert!(is_within(&root.path, &got), "stays inside the root");
+    assert!(
+        got == want || got.ends_with("file.txt."),
+        "either normalised to the same file or kept literal, got: {:?}",
+        got.display()
+    );
+}
+
+#[test]
+fn near_misses_stay_inside_the_root() {
+    // 8.3 short names and fullwidth homoglyphs are ordinary components:
+    // never reserved, never silently remapped, and containment holds (8.3
+    // expands under `canonicalise`, so a short name cannot smuggle an
+    // escape; fullwidth `ＮＵＬ` is not the `NUL` device).
+    let root = TestRoot::fresh();
+    assert!(!is_reserved_file_name("NUL~1"));
+    assert!(!is_reserved_file_name("ＮＵＬ"));
+    assert!(!is_reserved_file_name("ＣＯＮ"));
+    for ordinary in ["NUL~1/file.txt", "ＲＥＳＵＭＥ~1", "ｎｕｌ.txt", "CON¹~1"] {
+        let got = resolve_in_workspace(&root.path, ordinary)
+            .unwrap_or_else(|e| panic!("{ordinary} must resolve: {e}"));
+        assert!(is_within(&root.path, &got), "{ordinary} stays inside");
+    }
 }
 
 // ── budget ───────────────────────────────────────────────────────────────────
@@ -201,6 +343,25 @@ fn overlong_paths_rejected_from_the_drive_root() {
     let root = TestRoot::fresh();
     let long = "a".repeat(300);
     let err = resolve_in_workspace(&root.path, &long).expect_err("300 chars must fail");
+    assert!(
+        matches!(err, PathError::TooLong),
+        "must fail as TooLong, got: {err}"
+    );
+}
+
+#[test]
+fn budget_counts_utf16_units_not_scalars() {
+    // Windows budgets MAX_PATH in UTF-16 code units (D79), not Unicode
+    // scalars: one emoji is one scalar but TWO units, so the unit count —
+    // not the scalar count — decides TooLong.
+    let root = TestRoot::fresh();
+    // Margins chosen so the verdict depends on the UTF-16 count, never on
+    // the scratch root's own length (50·2+root ≪ 260 ≤ 150·2+root).
+    let ok = "😀".repeat(50); // 100 UTF-16 units, 50 scalars
+    let got = resolve_in_workspace(&root.path, &ok).expect("100 units must resolve");
+    assert!(is_within(&root.path, &got));
+    let over = "😀".repeat(150); // 300 UTF-16 units — at the budget
+    let err = resolve_in_workspace(&root.path, &over).expect_err("300 units must fail");
     assert!(
         matches!(err, PathError::TooLong),
         "must fail as TooLong, got: {err}"

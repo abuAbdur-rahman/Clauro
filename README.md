@@ -4,7 +4,7 @@
 
 # Clauro
 
-**A lightweight, local-first, BYOK desktop client for Claude.**
+**A lightweight, local-first, BYOK desktop chat client.**
 
 Native desktop. Single binary. No account, no telemetry.
 
@@ -26,10 +26,11 @@ Native desktop. Single binary. No account, no telemetry.
 ---
 
 > **This repository contains the specification and the application built from it.**
-> 97 numbered decisions, the contracts every test hangs off, and 23
-> contract-anchored tasks. Phase 0 (`Tasks/001`–`003`) is done: the sandbox
-> verdict is recorded, the workspace is green in CI, and the keyring and
-> model catalogue are live.
+> 128 numbered decisions, the contracts every test hangs off, and 33
+> contract-anchored tasks across eight phases. Phases 0–5 are done in substance
+> and Phase 6 (Release) is in progress: the sandbox verdict is recorded, the
+> workspace is green in CI on all four jobs, the keyring and model catalogue are
+> live, and the loop is driven end to end from the UI.
 
 ## Why read a spec instead of an app
 
@@ -72,7 +73,7 @@ one without a new D-number.
 | **Start here** | [`AGENTS.md`](AGENTS.md) — the document set and the rules that exist because we got them wrong |
 | What this is, and what it is not | [`MISSION.md`](MISSION.md) |
 | What must exist in v1 | [`SPEC.md`](SPEC.md) |
-| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D124**) |
+| Why each choice | [`DECISIONS.md`](DECISIONS.md) (**D1–D130**) |
 | The shapes tests assert against | [`CONTRACTS.md`](CONTRACTS.md) |
 | How it fits together | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | How it feels | [`DESIGN.md`](DESIGN.md) |
@@ -85,11 +86,12 @@ one without a new D-number.
 column is empty because the WebKitGTK probe app was never written, and per `AGENTS.md` §8a it stays
 empty until someone runs it rather than being filled in by inference.
 
-`Tasks/002`–`008` and `023` are implemented and their acceptance criteria are ticked with
-`path:line` evidence in the task files. **What those ticks do not say is that the phase works
-end to end** — `PHASES.md` §Progress is the honest view, including the four components that have full
-test coverage and no caller outside their own tests, and the two CI floor jobs that are labels rather
-than floors yet.
+`Tasks/001`–`033` exist. `002`–`008`, `023`, `030` and `032` are implemented with their acceptance
+criteria ticked and `path:line` evidence in the task files; `029` and `031` are partial (`◐`), and
+`021`/`022` are the open Phase 6 release work. **What those ticks do not say is that the phase works
+end to end** — `PHASES.md` §Progress is the honest view, including the floor jobs, which now
+*record* their webview runtime (and the Linux floor asserts its 2.40 floor) but do not yet *pin*
+one.
 
 CI is live and does real work: the spec's own invariants
 (`scripts/check-docs.py`), the platform matrix, an Aqua Trivy scan for
@@ -108,9 +110,10 @@ a written reason.
 
 ## Licence
 
-MIT. Ported designs are attributed in [`FEATURES.md`](FEATURES.md). Three MIT
-projects were used as reference implementations; one non-open-source project was
-read for observation only and nothing was taken from it (**D59**, **D60**).
+MIT. Ported designs are attributed in [`FEATURES.md`](FEATURES.md). Four MIT
+projects were used as reference implementations — three in full, and shadcn/ui
+for component code only (**D127**); two non-open-source projects were read for
+observation only and nothing was taken from them (**D59**, **D60**, **D103**).
 
 ## Security
 

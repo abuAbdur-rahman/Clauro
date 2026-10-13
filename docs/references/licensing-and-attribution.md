@@ -3,8 +3,13 @@
 **Ref: `AGENTS.md` §4.** Split out of `AGENTS.md` on 2026-10-06. This project borrowed, and honesty
 about it is a requirement.
 
-**Three MIT sources may be ported:** OpenCode (`anomalyco/opencode`, `dev`), DeepSeek Harness
-(`deepseek-ai/deepseek-harness`, `master`), LibreChat (`LibreChat-AI/LibreChat`, `main`).
+**Four MIT sources may be ported:** OpenCode (`anomalyco/opencode`, `dev`), DeepSeek Harness
+(`deepseek-ai/deepseek-harness`, `master`), LibreChat (`LibreChat-AI/LibreChat`, `main`), and
+shadcn/ui (`shadcn-ui/ui`) — **component code only**, scoped to `src/components/ui`, added
+2026-10-12 by **D127**. That fourth source is narrower than the first three: its components are
+copied in and adapted in place, which its MIT licence and its copy-into-your-repo model permit,
+and nothing from it may inform anything non-UI. D60's original text said "three" because it named
+only the three compared on compaction; D127 amends the set to four and D60 carries the pointer.
 
 **One repo is observation-only and nothing may be taken from it:** LobeHub. Its licence requires a
 commercial agreement for any derivative work and reserves unilateral amendment. Clauro is MIT, so

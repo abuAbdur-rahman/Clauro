@@ -17,6 +17,7 @@ import { listen } from "@tauri-apps/api/event";
 import { z } from "zod";
 import { Transcript } from "../transcript/types";
 import type { RenderRow } from "../transcript/types";
+import { useThreadStore } from "../catalogue/thread";
 
 export const TURN_EVENT = "clauro://turn-event";
 export const TURN_DONE = "clauro://turn-done";
@@ -87,6 +88,31 @@ export interface TurnStartParams {
   maxTokens: number;
 }
 
+/**
+ * Threads whose terminal `turn-done` listener is already installed. Module
+ * scope (not the store) so the listener survives every view unmount — the
+ * review-30 rail indicator must never stick at "working" forever just
+ * because ChatView remounted or the window state changed mid-turn.
+ */
+const doneSynced = new Set<string>();
+
+/** Flip the store's running flag and, on the rising edge, install the one
+ *  terminal listener that clears it. Idempotent per thread. */
+function setRunning(threadId: string, on: boolean): void {
+  const store = useThreadStore.getState();
+  store.setRunning(threadId, on);
+  if (!on || doneSynced.has(threadId)) return;
+  doneSynced.add(threadId);
+  // Fire-and-forget: a listener that cannot register is a (rare) leak of the
+  // indicator, never a failed turn — the start itself already succeeded.
+  void listenTurnDone(threadId, () => {
+    useThreadStore.getState().setRunning(threadId, false);
+  }).catch(() => {
+    // Registration failed: allow a later start to retry.
+    doneSynced.delete(threadId);
+  });
+}
+
 /** Start a turn. Returns at once; the turn reports through the channels. */
 export async function turnStart(params: TurnStartParams): Promise<{ thread_id: string }> {
   // Wire keys are camelCase to match what Tauri passes to the Rust command:
@@ -104,13 +130,20 @@ export async function turnStart(params: TurnStartParams): Promise<{ thread_id: s
     effort: params.effort,
     maxTokens: params.maxTokens,
   });
+  // Flag AFTER a successful invoke only: a refusal must roll back (nothing
+  // is running), and it must never flip on a throw.
+  setRunning(params.threadId, true);
   return z.object({ thread_id: z.string() }).parse(raw);
 }
 
 /** Stop a running turn. Resolves true when a turn was actually running. */
 export async function turnStop(threadId: string): Promise<boolean> {
   const raw: unknown = await invoke("turn_stop", { threadId });
-  return z.boolean().parse(raw);
+  const running = z.boolean().parse(raw);
+  // A resolved stop means the turn is over from the host's side, whether or
+  // not one was actually running — clear so the indicator never sticks.
+  setRunning(threadId, false);
+  return running;
 }
 
 /** Re-read one thread's transcript. The repair path for a missed event. */
@@ -170,7 +203,10 @@ export async function questionAnswer(params: QuestionAnswerParams): Promise<Answ
     effort: params.effort,
     maxTokens: params.maxTokens,
   });
-  return AnswerResolutionSchema.parse(raw);
+  const resolution = AnswerResolutionSchema.parse(raw);
+  // The host accepted and resumed the turn — same rising edge as turnStart.
+  setRunning(params.threadId, true);
+  return resolution;
 }
 
 /** Subscribe to streaming events for one thread. Returns the unlistener. */
@@ -195,8 +231,9 @@ export async function listenTurnDone(
 ): Promise<() => void> {
   return listen<unknown>(TURN_DONE, (envelope) => {
     const parsed = TurnDoneSchema.safeParse(envelope.payload);
-    if (!parsed.success) return;
-    if (!("thread_id" in parsed.data) || parsed.data.thread_id !== threadId) return;
+    // Both union arms carry a required thread_id, so a successful parse
+    // always narrows it — no `in` guard needed (review 30 NIT).
+    if (!parsed.success || parsed.data.thread_id !== threadId) return;
     onDone(parsed.data);
   });
 }

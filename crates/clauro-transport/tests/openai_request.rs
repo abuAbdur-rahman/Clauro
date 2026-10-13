@@ -175,3 +175,103 @@ fn plain_user_text_stays_a_user_message() {
     assert_eq!(messages[1]["role"], "user");
     assert_eq!(messages[1]["content"], "list a file");
 }
+
+/// Audit 12/finding 12 — non-text content degrades VISIBLY, not silently
+/// (RED, D80). A dropped image part or unknown block must leave a marker in
+/// the translated body, so the loss is visible instead of plausible-looking.
+#[test]
+fn non_text_content_degrades_visibly_never_silently() {
+    let body = json!({
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t", "content": [
+                    {"type": "text", "text": "ok"},
+                    {"type": "image", "source": {"type": "base64", "data": "..."}}
+                ]}
+            ]},
+            {"role": "user", "content": [{"type": "weird", "payload": "x"}]}
+        ]
+    });
+    let out = translate_request(&body);
+    let raw = out.to_string();
+    assert!(raw.contains("ok"), "text parts survive: {raw}");
+    assert!(
+        raw.contains("[dropped:") && raw.contains("image") && raw.contains("weird"),
+        "each dropped part leaves a visible marker, never silence: {raw}"
+    );
+}
+
+/// Audit 12/finding 13 — `system` and unknown roles must not push the raw
+/// block ARRAY as `content` (RED): near-certain 400 on the chat wire.
+#[test]
+fn system_role_and_unknown_role_get_string_content() {
+    let body = json!({
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "system", "content": [{"type": "text", "text": "S"}]},
+            {"role": "weird", "content": [{"type": "text", "text": "W"}]}
+        ]
+    });
+    let out = translate_request(&body);
+    let messages = out["messages"].as_array().expect("messages array");
+    assert!(
+        messages[0]["content"].is_string(),
+        "block-array content is a 400 on chat/completions: {messages:?}"
+    );
+    assert_eq!(messages[0]["content"], "S");
+    assert!(
+        messages[1]["content"].is_string(),
+        "unknown roles flatten too, keeping the role visible: {messages:?}"
+    );
+    assert_eq!(messages[1]["content"], "W");
+    assert_eq!(messages[1]["role"], "weird", "the role itself is preserved");
+}
+
+/// Audit 12/finding 14 — a `tool_use` without an `id` must not serialise
+/// `"id": null` (RED): a guaranteed 400. The fallback is deterministic so
+/// the pairing stays reproducible across replays.
+#[test]
+fn tool_use_without_id_gets_a_deterministic_fallback() {
+    let body = json!({
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "fs", "input": {"p": "a"}}
+            ]}
+        ]
+    });
+    let out = translate_request(&body);
+    let calls = out["messages"][0]["tool_calls"]
+        .as_array()
+        .expect("tool_calls");
+    let id = calls[0]["id"]
+        .as_str()
+        .expect("id must be a string, not null");
+    assert!(!id.is_empty(), "deterministic non-empty fallback: {id:?}");
+    // Deterministic: same input, same id.
+    assert_eq!(
+        translate_request(&body)["messages"][0]["tool_calls"][0]["id"],
+        id
+    );
+}
+
+/// Audit 12/FYI 15 — compaction bodies are NOT carried by the rewrite; D75
+/// gates compaction to the Anthropic wire, so a compaction body reaching
+/// here is a programming error. Made structural: `debug_assert` refuses it
+/// (in release the field is simply dropped, gated by D75 capability
+/// routing).
+#[test]
+#[should_panic(expected = "compaction")]
+fn compaction_bodies_are_refused_by_the_translate() {
+    let body = json!({
+        "model": "m",
+        "max_tokens": 100,
+        "messages": [],
+        "compaction": {"type": "auto", "instructions": "summarise"}
+    });
+    let _ = translate_request(&body);
+}

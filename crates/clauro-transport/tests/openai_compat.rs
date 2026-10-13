@@ -162,6 +162,69 @@ fn tool_call_framing_yields_start_then_input_deltas() {
     }
 }
 
+/// Audit 12/finding 11 — a continuation chunk with neither `index` nor `id`
+/// extends the open call (RED). It used to collapse every such continuation
+/// into one shared "unknown-call" block.
+#[test]
+fn tool_call_continuation_without_index_or_id_extends_the_open_call() {
+    let events = feed_chunks(&[
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"fs\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"p\\\":\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"\\\"a\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+    ]);
+    let starts: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e, NormalisedEvent::BlockStart { .. }))
+        .collect();
+    assert_eq!(starts.len(), 1, "one call, one start: {events:?}");
+    let all: String = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockDelta { text: Some(t), .. } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(all, "{\"p\":\"a\"}", "all fragments land on one call");
+}
+
+/// Audit 12/finding 11 — an id-first opening followed by an index-only
+/// continuation is ONE call (RED). It used to open a second block.
+#[test]
+fn id_first_then_index_only_resumes_the_same_call() {
+    let events = feed_chunks(&[
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"call_9\",\"type\":\"function\",\"function\":{\"name\":\"fs\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+    ]);
+    let starts: Vec<u32> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockStart { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts.len(),
+        1,
+        "id-first then index-only is one call: {events:?}"
+    );
+    let deltas: Vec<u32> = events
+        .iter()
+        .filter_map(|e| match e {
+            NormalisedEvent::BlockDelta {
+                index,
+                text: Some(_),
+                ..
+            } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        vec![starts[0]],
+        "the fragment lands on the same block"
+    );
+}
+
 /// Tasks/005's recorded Gemini wire, fixture-first (§6): thought deltas are
 /// marked per-delta by `extra_content.google.thought`, the `<thought>` /
 /// `</thought>` markup rides `delta.content`, and the closing chunk carries

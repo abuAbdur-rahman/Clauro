@@ -8,25 +8,33 @@ clauro-transport` 32/32 on this host. All four named fixtures exist and assert e
 rules they were written for; the chunk-reassembly tests hold at chunk sizes 1, 2, 3, 5, 7, 13 and
 survive a multi-byte codepoint split.
 
-**Two criteria are PARTIAL, and both are honest deferrals rather than defects — but this file
-currently describes them as delivered behaviour, and that is a false claim.** Per
-`AGENTS.md` §5a that gets corrected here rather than left standing.
+**Two criteria were PARTIAL when written. Both are closed as of 2026-10-12; the gap text below is
+kept because each one documents a real hole at the time, and each carries its closure line
+where it stands.** Per `AGENTS.md` §5a the correction sits beside the claim rather than
+being silently deleted.
 
-1. **Retry is a policy, not a retry.** `retry_delay` is fully implemented and table-tested
-   (`src/retry.rs:22-97`, `tests/retry.rs:11-63`) but **has no caller** — there is no HTTP send loop
-   anywhere in the repo, and `src/lib.rs:10` says so outright. The line below saying "Transport-level
-   backoff on 429/5xx honouring `Retry-After`" describes behaviour that does not exist yet.
+1. **Retry is a policy, not a retry — CLOSED 2026-10-12.** `retry_delay` was implemented and
+   table-tested (`src/retry.rs:22-97`, `tests/retry.rs:11-63`) **with no caller** when this file was
+   written — there was then no HTTP send loop anywhere in the repo, and `src/lib.rs:10` still says
+   so (that module-doc line is now stale in code; left to its file's owner). Real callers exist
+   today: `crates/clauro-transport/src/send.rs:114` (inside `run_with_retry`), `send.rs:196` and
+   `send.rs:253` (inside `stream_step`), and the live turn path reaches the first through
+   `LiveExchange::step` → `run_with_retry` (`src-tauri/src/turn.rs:489-495`). The "Transport-level
+   backoff on 429/5xx honouring `Retry-After`" line below is delivered behaviour, not a promise.
 2. **The OpenAI-compatible `notice` is never rendered.** The adapter emits `Ignored` correctly
-   (`src/openai_compat.rs:69-76`, `tests/openai_compat.rs:41-61`), but the only consumer of
+   (`src/openai_compat.rs:158-175`, `tests/openai_compat.rs:41-61`), but the only consumer of
    `NormalisedEvent` discards it at `crates/clauro-loop/src/run.rs:425-427`. `ContentBlock::Notice`
    and `insert_notice` both already exist and are used for other events — nothing routes `Ignored`
    into it. Both source files already promise 006 will do this (`src/openai_compat.rs:10`,
-   `src/anthropic.rs:90-91`), so this is a known gap, not an oversight.
+   `src/anthropic.rs:90-91`), so this is a known gap, not an oversight. (Closed 2026-10-07 — see the
+   ticked criterion below; the stale `run.rs` line numbers there are corrected in that criterion.)
 
-**Addendum 2026-10-07.** Item 2 is closed (see ticked criterion below). Item 1 stands:
-`retry_delay` still has no caller outside its own test — its caller is the first real HTTP
-send loop, which is the turn driver (023), so the retry criterion moves there rather than
-being built twice.
+**Addendum 2026-10-07, superseded 2026-10-12.** Item 2 was closed on 2026-10-07 (see the ticked
+criterion below). Item 1 as originally written here — "`retry_delay` still has no caller outside its
+own test … the retry criterion moves to 023 rather than being built twice" — was true on 2026-10-07
+and is **false since**: the send loop landed as `crates/clauro-transport/src/send.rs`, whose
+callers at `:114`, `:196` and `:253` are the ones named in item 1 above, with the production path
+routed through `run_with_retry` from `src-tauri/src/turn.rs:495`.
 
 ## Failing tests first
 
@@ -99,18 +107,21 @@ key is needed to choose.** `D75`.
       field that could set the other parameter, so the unrepresentability argument holds (`D21`)
 - [x] 429/5xx retried with backoff; `Retry-After` honoured — DONE 2026-10-07.
       Status set `408|429|5xx` at `src/retry.rs:28`, `Retry-After` parsed at `:31-35` including
-      HTTP-date form (`:45-97`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
-      `tests/retry.rs:11-63` covers all of it. `retry_delay` now has two real callers:
-      `stream_step` (`src/send.rs`, proven by `tests/send.rs`: 429 retried, 400 fails at once,
-      attempts capped, cap reports the status actually seen) and `LiveExchange::step`
-      (`src-tauri/src/turn.rs`, same policy, live path unverified by rule). The old "no
-      caller" note below is superseded.
+      HTTP-date form (`:45-105`), doubling with a 60 s cap at `:36-40`, `MAX_ATTEMPTS` bounded;
+      `tests/retry.rs:11-63` covers all of it. `retry_delay` now has three real callers in
+      `crates/clauro-transport/src/send.rs` — `:114` (inside `run_with_retry`), `:196` and
+      `:253` (inside `stream_step`), proven by `tests/send.rs`: 429 retried, 400 fails at
+      once, attempts capped, cap reports the status actually seen — and the live turn path
+      reaches the first via `LiveExchange::step` → `run_with_retry`
+      (`src-tauri/src/turn.rs:489-495`, same policy, live path unverified by rule). The old
+      "no caller" note is superseded; it lives in the status block above, marked CLOSED.
 - [x] OpenAI-compatible adapter renders an unrecognised event as a visible notice — DONE
-  2026-10-07 (see Status addendum below). `persist_step` routes `Ignored { raw_type }`
-  to `insert_notice` (`run.rs:634-647`); proven by
-  `wiring.rs:ignored_events_become_visible_notices`, which failed first (0 notices —
-  the silent drop). Stale pointers corrected: the drop was at `run.rs:632-634`, and
-  `insert_notice` lives at `run.rs:737`, not the numbers below.
+  2026-10-07 (see Status addendum below). `persist_step` (`run.rs:1126`) routes
+  `Ignored { raw_type }` (`run.rs:1213-1228`) to `insert_notice` (`run.rs:1380`);
+  proven by `wiring.rs:ignored_events_become_visible_notices`, which failed first
+  (0 notices — the silent drop). Pointer history: the drop was at `run.rs:632-634`
+  and `insert_notice` at `run.rs:737` when first corrected (2026-10-07); `run.rs`
+  has since grown, and the numbers above are current as of 2026-10-12.
 
 **Addendum 2026-10-07 (live smoke, Google Gemini key, Gemma 4).** The "assumption,
 not a test" risk above is now measured for one real provider — by a throwaway

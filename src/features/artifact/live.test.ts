@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   startArtifactProducer,
   useArtifactContent,
+  CONTENT_MAX_THREADS,
   type ArtifactLatest,
   type ProducerDeps,
 } from "./live";
@@ -35,6 +36,7 @@ interface Harness {
   content: Array<[string, ArtifactLatest | null]>;
   cleared: string[];
   errors: string[];
+  notices: string[];
   fire: { event: (e: TurnEvent) => void; done: () => void };
   unlistened: { events: number; done: number };
 }
@@ -47,6 +49,7 @@ function makeDeps(over: Partial<ProducerDeps> = {}): Harness {
     content: [],
     cleared: [],
     errors: [],
+    notices: [],
     unlistened: { events: 0, done: 0 },
     fire: { event: () => undefined, done: () => undefined },
   };
@@ -82,6 +85,9 @@ function makeDeps(over: Partial<ProducerDeps> = {}): Harness {
     }),
     onError: vi.fn((reason: string) => {
       h.errors.push(reason);
+    }),
+    setNotice: vi.fn((threadId: string, notice: string) => {
+      h.notices.push(`${threadId}: ${notice}`);
     }),
     ...over,
   };
@@ -201,5 +207,70 @@ describe("artifact content store", () => {
     expect(useArtifactContent.getState().threads[THREAD]).toEqual(DOC);
     useArtifactContent.getState().reset();
     expect(useArtifactContent.getState().threads).toEqual({});
+  });
+
+  it("evicts the oldest thread beyond its bound (audit 14, D27)", () => {
+    for (let i = 0; i < CONTENT_MAX_THREADS + 3; i += 1) {
+      useArtifactContent.getState().set(`t${String(i)}`, DOC);
+    }
+    const threads = useArtifactContent.getState().threads;
+    expect(Object.keys(threads).length).toBeLessThanOrEqual(CONTENT_MAX_THREADS);
+    expect(threads["t0"]).toBeUndefined();
+    expect(threads[`t${String(CONTENT_MAX_THREADS + 2)}`]).toBeDefined();
+  });
+});
+
+describe("a refresh in flight cannot write after the producer stops (audit 14, NIT)", () => {
+  it("resolves late and writes nothing", async () => {
+    const h = makeDeps(); // first fetch resolves null, mount refresh settles
+    const stop = await startArtifactProducer(THREAD, h.deps);
+    h.content.length = 0;
+    h.live.length = 0;
+
+    let release: (value: ArtifactLatest | null) => void = () => undefined;
+    h.deps.fetchLatest = vi.fn(
+      () =>
+        new Promise<ArtifactLatest | null>((resolve) => {
+          release = resolve;
+        }),
+    );
+    h.fire.done(); // refresh starts, still awaiting the fetch
+    stop(); // producer stops while that fetch is pending
+    release(DOC);
+    await flush();
+
+    // Unsubscribing tears the listeners down, but an already-running refresh
+    // has no reference to them: without a cancellation guard it writes into
+    // stores the shell has moved on from.
+    expect(h.content).toHaveLength(0);
+    expect(h.live).toHaveLength(0);
+  });
+});
+
+describe("the D45 gate holds at the producer boundary (audit 14, IMPORTANT)", () => {
+  it("starts no listeners on an unproven Linux engine, and says why", async () => {
+    const h = makeDeps();
+    const stop = await startArtifactProducer(THREAD, h.deps, {
+      platform: "linux",
+      opaqueProven: false,
+    });
+    expect(vi.mocked(h.deps.listenEvents)).not.toHaveBeenCalled();
+    expect(vi.mocked(h.deps.listenDone)).not.toHaveBeenCalled();
+    expect(vi.mocked(h.deps.fetchLatest)).not.toHaveBeenCalled();
+    expect(h.notices).toHaveLength(1);
+    expect(h.notices[0]).toMatch(/Linux/);
+    stop();
+  });
+
+  it("runs normally everywhere else", async () => {
+    const h = makeDeps();
+    const stop = await startArtifactProducer(THREAD, h.deps, {
+      platform: "windows",
+      opaqueProven: false,
+    });
+    expect(vi.mocked(h.deps.listenEvents)).toHaveBeenCalledOnce();
+    expect(vi.mocked(h.deps.fetchLatest)).toHaveBeenCalledOnce();
+    expect(h.notices).toHaveLength(0);
+    stop();
   });
 });

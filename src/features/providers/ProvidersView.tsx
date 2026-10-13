@@ -5,7 +5,8 @@
  * masked key, status pill, enable switch, and Edit/Test/Delete. Adding and
  * editing happen in a Radix dialog: type select (autofills name and URL but
  * never wipes a custom value once typed), name, base URL, Replace-key input
- * with an eye toggle, model chips with add/remove, Fetch (stored models),
+ * with an eye toggle, read-only model chips (D129: no invoke carries
+ * `models`, so editing would be discarded), Fetch (stored models),
  * Test (live proof), and a Save gated on the zod form contract.
  *
  * Key rules that never weaken: the stored key is never echoed — the card
@@ -35,6 +36,7 @@ import {
   type ProviderType,
   type ProviderView as ProviderRow,
 } from "./providers";
+import { invalidateModelEntries } from "./modelEntries";
 
 type ProbeStatus = "untested" | "testing" | "connected" | "error";
 
@@ -46,7 +48,7 @@ const STATUS_LABEL: Record<ProbeStatus, string> = {
 };
 
 const STATUS_CLASS: Record<ProbeStatus, string> = {
-  untested: "text-neutral-400",
+  untested: "text-muted-foreground",
   testing: "text-amber-400",
   connected: "text-green-400",
   error: "text-red-400",
@@ -113,6 +115,10 @@ export function ProvidersView(): React.JSX.Element {
     try {
       setRows(await providerList());
     } catch (e) {
+      // Never strand the view behind "Loading providers…": the loading
+      // early-return renders before the notice, so an unset rows left the
+      // error unreachable and the spinner infinite (review 31).
+      setRows([]);
       setNotice(errorText(e));
     }
   }, []);
@@ -143,6 +149,9 @@ export function ProvidersView(): React.JSX.Element {
     const started = Date.now();
     try {
       const view = await providerRefresh(id);
+      // A refresh rewrites the provider's models: the picker's shared load
+      // (modelEntries.ts) must not outlive it.
+      invalidateModelEntries();
       setStatus(id, "connected");
       setNotice(`Connected · ${String(view.models.length)} models · ${String(Date.now() - started)}ms`);
       await reload();
@@ -158,6 +167,8 @@ export function ProvidersView(): React.JSX.Element {
     setNotice(null);
     try {
       await providerRemove(id);
+      // Same rule as refresh: the shared picker load carried this provider.
+      invalidateModelEntries();
       setDeleting(null);
       await reload();
     } catch (e) {
@@ -166,15 +177,15 @@ export function ProvidersView(): React.JSX.Element {
   }
 
   if (rows === null) {
-    return <p className="text-sm text-neutral-500">Loading providers…</p>;
+    return <p className="text-sm text-muted-foreground">Loading providers…</p>;
   }
 
   return (
     <div data-testid="providers-view">
       <div className="flex items-center gap-2">
         <div>
-          <h1 className="text-base text-neutral-100">Providers</h1>
-          <p className="mt-1 text-xs text-neutral-500">
+          <h1 className="text-base text-foreground">Providers</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
             One endpoint, one key, one model list. The picker shows only what is configured here.
           </p>
         </div>
@@ -196,7 +207,7 @@ export function ProvidersView(): React.JSX.Element {
         </p>
       )}
       {rows.length === 0 ? (
-        <p className="mt-4 text-sm text-neutral-400">
+        <p className="mt-4 text-sm text-muted-foreground">
           No providers configured. Add one above — the model picker stays empty until then.
         </p>
       ) : (
@@ -243,7 +254,7 @@ export function ProvidersView(): React.JSX.Element {
       >
         <DialogContent data-testid="provider-delete-confirm">
           <DialogTitle>Delete {deleting?.display_name ?? "provider"}?</DialogTitle>
-          <p className="text-xs text-neutral-400">
+          <p className="text-xs text-muted-foreground">
             {deleting?.display_name ?? "This provider"} and its models will be removed, and its
             stored key deleted. Re-adding takes one click plus a pasted key.
           </p>
@@ -345,16 +356,16 @@ function ProviderCard({
           {initialsOf(row.display_name)}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm text-neutral-100">{row.display_name}</p>
+          <p className="truncate text-sm text-foreground">{row.display_name}</p>
           <p
             data-testid={`provider-url-${row.id}`}
-            className="truncate text-xs text-neutral-500"
+            className="truncate text-xs text-muted-foreground"
           >
             {row.base_url ?? row.kind}
           </p>
           <p
             data-testid={`provider-key-${row.id}`}
-            className="font-mono text-xs text-neutral-500"
+            className="font-mono text-xs text-muted-foreground"
           >
             {row.has_key ? MASKED_KEY : "No key"}
           </p>
@@ -367,7 +378,7 @@ function ProviderCard({
           onToggle={onToggleEnabled}
         />
       </div>
-      <p className="mt-1 text-xs text-neutral-500">
+      <p className="mt-1 text-xs text-muted-foreground">
         {row.model_count} models
         {row.models_fetched_at === null
           ? " · never fetched"
@@ -435,7 +446,6 @@ function ProviderDialog({
   const [key, setKey] = useState<string>("");
   const [showKey, setShowKey] = useState<boolean>(false);
   const [models, setModels] = useState<string[]>([]);
-  const [modelInput, setModelInput] = useState<string>("");
   const [status, setDialogStatus] = useState<ProbeStatus>("untested");
   const [busy, setBusy] = useState<"fetch" | "test" | "save" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -494,13 +504,6 @@ function ProviderDialog({
     }
   }
 
-  function addChip(): void {
-    const id = modelInput.trim();
-    if (id === "" || models.includes(id)) return;
-    setModels((prev) => [...prev, id]);
-    setModelInput("");
-  }
-
   async function save(): Promise<void> {
     setBusy("save");
     setError(null);
@@ -519,12 +522,16 @@ function ProviderDialog({
             })
           ).id;
         }
+        // The provider now exists: drop the picker's shared load.
+        invalidateModelEntries();
         // Ollama proves keyless: the host accepts a blank key for its row
         // and fetches without auth, so models arrive on first save. Every
         // other type still needs a typed key before proof can run.
         if (key.trim() !== "" || type === "ollama") {
           try {
             const proven = await providerSetKey(id, key);
+            // Proven models are new rows the picker has never seen.
+            invalidateModelEntries();
             onStatus(id, "connected");
             onNotice(`Connected · ${String(proven.models.length)} models`);
           } catch (e) {
@@ -543,13 +550,20 @@ function ProviderDialog({
       }
       if (row === null) return;
       if (key.trim() === "") {
-        setError(
-          "No key entered. The host has no rename endpoint yet — re-add the provider to change its name or URL.",
-        );
+        // Blank = "keep the stored key" — the allowBlankKey contract in
+        // providers.ts. The old dead end (enabled Save that always errored
+        // "No key entered") is gone; nothing is written, the stored key
+        // stays. Name/URL edits still need a re-add — the host has no
+        // rename endpoint — so the notice says that instead of pretending.
+        onNotice("Kept the stored key. Name/URL changes need a re-add — no host rename endpoint yet.");
+        await onSaved();
+        onClose();
         return;
       }
       try {
         const proven = await providerSetKey(row.id, key);
+        // A proven key can carry a different model list than the keyless one.
+        invalidateModelEntries();
         setDialogStatus("connected");
         onStatus(row.id, "connected");
         onNotice(`Connected · ${String(proven.models.length)} models`);
@@ -582,7 +596,7 @@ function ProviderDialog({
       <DialogContent data-testid="provider-dialog" aria-label={`${mode === "add" ? "Add" : "Edit"} provider`}>
         <DialogTitle>{mode === "add" ? "Add provider" : `Edit ${row?.display_name ?? "provider"}`}</DialogTitle>
         <div className="flex flex-col gap-3">
-          <label className="text-xs text-neutral-400">
+          <label className="text-xs text-muted-foreground">
             Type
             <select
               data-testid="provider-dialog-type"
@@ -600,7 +614,7 @@ function ProviderDialog({
               ))}
             </select>
           </label>
-          <label className="text-xs text-neutral-400">
+          <label className="text-xs text-muted-foreground">
             Name
             <input
               data-testid="provider-dialog-name"
@@ -614,7 +628,7 @@ function ProviderDialog({
               className="mt-1 block w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
             />
           </label>
-          <label className="text-xs text-neutral-400">
+          <label className="text-xs text-muted-foreground">
             Base URL
             <input
               data-testid="provider-dialog-url"
@@ -628,7 +642,7 @@ function ProviderDialog({
               className="mt-1 block w-full rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
             />
           </label>
-          <div className="text-xs text-neutral-400">
+          <div className="text-xs text-muted-foreground">
             <label htmlFor="provider-dialog-key">
               {mode === "edit" ? "Replace key (blank keeps the stored one)" : "API key"}
             </label>
@@ -661,59 +675,28 @@ function ProviderDialog({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <p className="text-xs text-neutral-400">Models</p>
+              <p className="text-xs text-muted-foreground">Models</p>
               <span className="flex-1" />
               <StatusPill status={status} testId="provider-dialog-status" />
             </div>
             <div data-testid="provider-dialog-chips" className="mt-1 flex min-h-6 flex-wrap gap-1">
               {models.length === 0 ? (
-                <span className="text-xs text-neutral-500">No models yet — Fetch to load.</span>
+                <span className="text-xs text-muted-foreground">No models yet — Fetch to load.</span>
               ) : (
                 models.map((m) => (
                   <span
                     key={m}
-                    className="inline-flex items-center gap-1 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200"
+                    className="inline-flex items-center rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-200"
                   >
                     {m}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${m}`}
-                      onClick={() => {
-                        setModels((prev) => prev.filter((x) => x !== m));
-                      }}
-                      className="text-neutral-400 hover:text-neutral-100"
-                    >
-                      ×
-                    </button>
                   </span>
                 ))
               )}
             </div>
             <div className="mt-2 flex gap-2">
-              <input
-                data-testid="provider-dialog-model-input"
-                aria-label="Add model ID"
-                value={modelInput}
-                placeholder="Add model ID"
-                onChange={(e) => {
-                  setModelInput(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addChip();
-                  }
-                }}
-                className="min-w-0 flex-1 rounded border border-neutral-800 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
-              />
-              <button
-                type="button"
-                data-testid="provider-dialog-model-add"
-                onClick={addChip}
-                className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:bg-neutral-800"
-              >
-                Add
-              </button>
+              {/* Read-only list (review 31): no invoke ever carries `models`,
+                  so add/remove chips were edits that silently vanished on
+                  close. Fetch/Test prove what the host actually stores. */}
               <button
                 type="button"
                 data-testid="provider-dialog-fetch"

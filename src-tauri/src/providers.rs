@@ -12,6 +12,8 @@
 //! endpoint (MIRRORED behaviour, own words, own implementation — observation
 //! only per docs/references/licensing-and-attribution.md, D103).
 
+use std::sync::Arc;
+
 use clauro_store::{ProviderKind, ProviderModel, Store, StoreError};
 
 /// A built-in provider definition. URLs are endpoint facts; names and
@@ -66,7 +68,11 @@ pub fn builtin(id: &str) -> Option<Builtin> {
 }
 
 /// Validate a custom base URL. Only http(s) endpoints; no blanks, no
-/// credentials smuggled in the URL, no trailing-slash ambiguity. Returns the
+/// credentials smuggled in the URL, no trailing-slash ambiguity. Cleartext
+/// is accepted only for loopback — the local-model case (Ollama) and the dev
+/// mock (`pnpm mock` on 127.0.0.1:8787) never leave this machine; every
+/// remote endpoint must be https, or the next turn would hand the provider's
+/// bearer token to the network in cleartext (review 13, item 5). Returns the
 /// canonical root (no trailing slash) the fetchers append `/models` to.
 pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
     let bad = |reason: &str| ProviderError::BadInput {
@@ -83,15 +89,25 @@ pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
     if root.is_empty() || root.contains(' ') || root.contains('@') {
         return Err(bad("endpoint is not a usable host"));
     }
+    // The authority without its port, and without IPv6 brackets:
+    // `127.0.0.1:8787` → `127.0.0.1`, `[::1]:11434` → `::1`. Stripping the
+    // port first is what makes the host checks exact — a prefix match would
+    // welcome `127.0.0.1.attacker.example` as if it were loopback.
+    let authority = root.split('/').next().unwrap_or("");
+    let host = if let Some(inner) = authority.strip_prefix('[') {
+        inner.split(']').next().unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
     // A host without a dot is a typo (or an intranet name we refuse to
-    // guess about) — except localhost, which is the local-model case.
-    let host = root.split('/').next().unwrap_or("");
-    let host_ok = host == "localhost"
-        || host.starts_with("localhost:")
-        || host.starts_with("127.0.0.1")
-        || host.contains('.');
-    if !host_ok {
+    // guess about) — except loopback, the local-model case.
+    if !is_loopback_host(host) && !host.contains('.') {
         return Err(bad("endpoint host is not usable"));
+    }
+    if trimmed.starts_with("http://") && !is_loopback_host(host) {
+        return Err(bad(
+            "endpoint must use https:// — cleartext http:// is only allowed for loopback endpoints (localhost, 127.0.0.1, [::1])",
+        ));
     }
     let scheme = if trimmed.starts_with("https://") {
         "https://"
@@ -99,6 +115,44 @@ pub fn validate_base_url(raw: &str) -> Result<String, ProviderError> {
         "http://"
     };
     Ok(format!("{scheme}{}", root.trim_end_matches('/')))
+}
+
+/// The only hosts cleartext is allowed for: loopback, in the spellings a
+/// user can type plus the inner form of a bracketed IPv6 literal.
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// Bound a provider-controlled error body and never let the provider key
+/// ride along: a proxy can echo our own Authorization header back into the
+/// error page, and this text lands in a persisted error (review 13 NIT).
+/// Redact first, then truncate — truncating first could cut the key and
+/// leave a recognisable fragment behind.
+pub(crate) fn sanitise_provider_detail(detail: &str, secret: &str) -> String {
+    let secret = secret.trim();
+    let replaced = if secret.is_empty() {
+        detail.to_string()
+    } else {
+        detail.replace(secret, "[redacted]")
+    };
+    replaced.chars().take(512).collect()
+}
+
+/// A keyring rollback that itself failed must not hide behind the original
+/// error: the user needs to know the key is still in the keychain (review 13
+/// NIT — a silently swallowed delete leaves a secret outliving its row).
+pub(crate) fn combine_with_rollback(
+    rollback: Result<(), String>,
+    primary: ProviderError,
+) -> ProviderError {
+    match rollback {
+        Ok(()) => primary,
+        Err(delete_err) => ProviderError::Store {
+            reason: format!(
+                "{primary}; the key also could not be removed from the keychain: {delete_err}"
+            ),
+        },
+    }
 }
 
 /// Validate a provider id for custom entries. Lowercase alphanumerics and
@@ -139,6 +193,16 @@ pub fn validate_custom_id(raw: &str) -> Result<String, ProviderError> {
 #[must_use]
 pub fn allows_blank_key(id: &str) -> bool {
     id.trim() == "ollama"
+}
+
+/// Whether a blank `key` must be refused for this row — the condition every
+/// blank-key gate stands behind (`provider_set_key`, `provider_refresh`, the
+/// turn/resume starts in `turn.rs`), extracted so the rule is one testable
+/// seam instead of four inline copies (review 33): a blank is refused for
+/// every row that is not keyless-capable (D125).
+#[must_use]
+pub(crate) fn blank_key_rejected(id: &str, key: &str) -> bool {
+    key.trim().is_empty() && !allows_blank_key(id)
 }
 
 /// The bearer value for a key, or `None` when blank. A blank key must omit
@@ -354,7 +418,7 @@ fn fetch_live_models(
         },
     })?;
     if !resp.status().is_success() {
-        let detail: String = resp.text().unwrap_or_default().chars().take(300).collect();
+        let detail = sanitise_provider_detail(&resp.text().unwrap_or_default(), key);
         return Err(ProviderError::Fetch {
             reason: if detail.trim().is_empty() {
                 "provider refused the key or the request".to_string()
@@ -427,7 +491,7 @@ fn view_of(
 
 /// Every configured provider. Unconfigured providers have no row and cannot
 /// appear — the picker is gated on this list.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_list(
     state: tauri::State<'_, crate::turn::TurnState>,
 ) -> Result<Vec<ProviderView>, ProviderError> {
@@ -446,7 +510,7 @@ pub fn provider_list(
 /// Add a built-in provider by id. Models are NOT fetched here — the provider
 /// has no key yet, and an unauthenticated fetch would fail loudly for no
 /// reason. `provider_set_key` performs the first fetch.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_add_builtin(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
@@ -482,7 +546,7 @@ pub fn provider_add_builtin(
 
 /// Add a custom OpenAI-compatible provider. The URL is validated structurally
 /// here; the key (and the live proof) arrives with `provider_set_key`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_add_custom(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
@@ -526,13 +590,19 @@ pub fn provider_add_custom(
 /// Remove a provider, its models, and its key. Key first, then rows: a failure
 /// afterwards leaves no orphaned secret, only a keyless row the user can
 /// remove again. Removing twice is a no-op returning false.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_remove(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
 ) -> Result<bool, ProviderError> {
-    // Keyring delete is idempotent in this crate: missing entries are Ok.
-    let _ = crate::keyring_store::delete(&id);
+    // Key first, then rows: a failure afterwards leaves no orphaned secret,
+    // only a keyless row the user can remove again. A keychain failure is
+    // reported, never swallowed — a secret must not outlive its row silently
+    // (review 13 NIT). Delete is idempotent in this crate: missing entries
+    // are Ok.
+    crate::keyring_store::delete(&id).map_err(|e| ProviderError::Store {
+        reason: format!("cannot remove the key from the keychain: {e}"),
+    })?;
     let store = state.store.lock().map_err(|_| ProviderError::Store {
         reason: "store lock poisoned".to_string(),
     })?;
@@ -544,8 +614,12 @@ pub fn provider_remove(
 /// back out of the keychain and nothing is stored — a typo'd key fails here,
 /// loudly, not at the first turn. The `ollama` row accepts a blank key: the
 /// local server has none, and the proof fetch runs without auth.
+///
+/// `async fn` with the fetch on the blocking pool: the proof is up to 30 s
+/// of network, and an `async` command body runs on a runtime worker — a
+/// worker blocked that long delays every other command (review 13 FYI).
 #[tauri::command]
-pub fn provider_set_key(
+pub async fn provider_set_key(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
     key: String,
@@ -561,7 +635,7 @@ pub fn provider_set_key(
         })?;
         (row.kind, row.base_url.clone())
     };
-    if key.trim().is_empty() && !allows_blank_key(&id) {
+    if blank_key_rejected(&id, &key) {
         return Err(ProviderError::BadInput {
             reason: "key must not be blank".to_string(),
         });
@@ -569,12 +643,28 @@ pub fn provider_set_key(
     crate::keyring_store::store(&id, key.trim()).map_err(|_| ProviderError::Store {
         reason: "cannot write the keychain".to_string(),
     })?;
-    let models = match fetch_live_models(kind, base_url.as_deref(), key.trim()) {
-        Ok(m) => m,
+    // One typed path for both failures — the task never ran, or the provider
+    // refused the key — so the rollback below covers every case.
+    let proof: Result<Vec<ProviderModel>, ProviderError> =
+        tauri::async_runtime::spawn_blocking(move || {
+            fetch_live_models(kind, base_url.as_deref(), key.trim())
+        })
+        .await
+        .map_err(|e| ProviderError::Store {
+            reason: format!("model list task failed: {e}"),
+        })
+        .and_then(|inner| inner);
+    let models = match proof {
+        Ok(models) => models,
         Err(e) => {
-            // Roll back: a key that never validated must not linger.
-            let _ = crate::keyring_store::delete(&id);
-            return Err(e);
+            // Roll back: a key that never validated must not linger. A
+            // failed rollback is reported alongside the original failure —
+            // swallowing it would leave a secret with no owner (review 13
+            // NIT).
+            return Err(combine_with_rollback(
+                crate::keyring_store::delete(&id).map_err(|e| e.to_string()),
+                e,
+            ));
         }
     };
     let now = now_secs() as i64;
@@ -617,46 +707,119 @@ pub struct EnrichedModel {
     pub tool_call: bool,
 }
 
-/// Read the enrichment cache, fetching it first when absent or older than its
-/// TTL. A failed fetch is NOT an error here — it yields `None`, and every
-/// model degrades to `limits_known: false`. Enrichment is a background fact,
-/// never a picker blocker. The boot path never calls this; it runs on first
-/// provider-models read instead.
-fn enrichment_catalogue(data_dir: &std::path::Path) -> Option<crate::catalogue::Catalogue> {
-    use crate::catalogue::{is_fresh, read_cache, write_cache, ENRICHMENT_TTL_SECS};
-    let now = now_secs();
-    let fresh_enough = read_cache(data_dir)
-        .ok()
-        .flatten()
-        .filter(|c| is_fresh(c.modified_secs, now, ENRICHMENT_TTL_SECS))
-        .map(|c| c.bytes);
-    if let Some(bytes) = fresh_enough {
-        return crate::catalogue::parse_catalogue(&bytes).ok();
+/// Read the enrichment cache, answering from stale data while the refresh
+/// runs behind the response, and fetching only when there is nothing to
+/// answer with at all. A failed fetch is NOT an error here — it yields
+/// `None`, and every model degrades to `limits_known: false`. Enrichment is
+/// a background fact, never a picker blocker.
+///
+/// Runs on the blocking pool (the command spawns it there), never on the
+/// WebView2 IPC thread and never on a runtime worker: a cold cache is a
+/// 5.3 MB download with a 60 s ceiling, and a memo miss parses those same
+/// 5.3 MB (A-perf-ipc).
+fn enrichment_catalogue(
+    data_dir: &std::path::Path,
+    memo: &crate::catalogue::EnrichmentMemo,
+) -> Option<Arc<crate::catalogue::Catalogue>> {
+    use crate::catalogue::{load_enrichment, EnrichmentAction};
+    let load = load_enrichment(data_dir, memo, now_secs(), crate::catalogue::read_cache);
+    if load.action != EnrichmentAction::FetchNow {
+        return settle_enrichment(load, data_dir, memo);
     }
-    // Absent or stale: one blocking fetch. The caller is already a command;
-    // slow enrichment delays the picker once per week, not once per boot.
+    // Nothing usable: fetch now — but only one caller at a time. The second
+    // picker's invoke waits on this lock and then answers from the memo the
+    // first one filled, instead of downloading 5.3 MB twice.
+    let _fetching = memo.fetch_guard();
+    let again = load_enrichment(data_dir, memo, now_secs(), crate::catalogue::read_cache);
+    if again.action == EnrichmentAction::FetchNow {
+        let bytes = fetch_enrichment_blocking()?;
+        return crate::catalogue::store_fetched(data_dir, memo, &bytes);
+    }
+    settle_enrichment(again, data_dir, memo)
+}
+
+/// Hand back the data and, when it is stale, start the refresh that must not
+/// sit in the response path.
+fn settle_enrichment(
+    load: crate::catalogue::EnrichmentLoad,
+    data_dir: &std::path::Path,
+    memo: &crate::catalogue::EnrichmentMemo,
+) -> Option<Arc<crate::catalogue::Catalogue>> {
+    if load.action == crate::catalogue::EnrichmentAction::RefreshInBackground {
+        spawn_refresh(data_dir.to_path_buf(), memo.clone());
+    }
+    load.catalogue
+}
+
+/// Fetch models.dev on the blocking pool: 5.3 MB with a 60 s ceiling, and
+/// bounded like every other read of this URL (review 13 NIT). `None` is the
+/// honest degradation — no network, no limits, never a panic.
+fn fetch_enrichment_blocking() -> Option<Vec<u8>> {
+    use crate::catalogue::{MAX_CACHE_BYTES, MODELS_DEV_URL};
     let bytes = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
         .ok()?
-        .get(crate::catalogue::MODELS_DEV_URL)
+        .get(MODELS_DEV_URL)
         .send()
         .ok()?
         .bytes()
-        .ok()?
-        .to_vec();
-    // A failed cache write must not fail enrichment: memory serves this read.
-    let _ = write_cache(data_dir, &bytes);
-    crate::catalogue::parse_catalogue(&bytes).ok()
+        .ok()?;
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return None;
+    }
+    Some(bytes.to_vec())
+}
+
+/// One refresh: fetch, write, memoise. Holds the fetch lock for its whole
+/// duration so it can never collide with a cold-cache fetch's write.
+fn refresh_enrichment(data_dir: &std::path::Path, memo: &crate::catalogue::EnrichmentMemo) {
+    let _fetching = memo.fetch_guard();
+    if let Some(bytes) = fetch_enrichment_blocking() {
+        // No caller waits on this result: the memo inside `store_fetched` is
+        // the delivery mechanism, so there is nothing to hand back.
+        let _ = crate::catalogue::store_fetched(data_dir, memo, &bytes);
+    }
+}
+
+/// Start at most one background refresh, off every request path: the caller
+/// already answered from stale data, and this replaces it behind the
+/// response instead of holding the invoke open for up to 60 s.
+fn spawn_refresh(data_dir: std::path::PathBuf, memo: crate::catalogue::EnrichmentMemo) {
+    if !memo.try_begin_refresh() {
+        return; // one is already running; it will pick up the new file
+    }
+    let claimed = memo.clone();
+    let thread_dir = data_dir.clone();
+    let spawned = std::thread::Builder::new()
+        .name("clauro-enrichment-refresh".to_string())
+        .spawn(move || {
+            // The guard's Drop clears the claim, panic or not.
+            let _refreshing = claimed.refreshing_guard();
+            refresh_enrichment(&thread_dir, &claimed);
+        });
+    if let Err(_spawn_err) = spawned {
+        // No thread available: run it here instead of dropping the refresh.
+        // The caller is already on the blocking pool, so the stall is
+        // bounded and never reaches the UI thread.
+        let _refreshing = memo.refreshing_guard();
+        refresh_enrichment(&data_dir, &memo);
+    }
 }
 
 /// Stored models for one provider joined with enrichment. One invoke per
 /// provider: the picker renders limits (or their honest absence) without N
 /// round-trips.
+///
+/// `async fn`: this is the boot path — two ModelPickers mount and each
+/// invokes it per configured provider, so its body must never run on the
+/// WebView2 IPC thread (tauri-macros runs a sync command inline there).
+/// The enrichment half is heavier still and moves to the blocking pool.
 #[tauri::command]
-pub fn provider_models_enriched(
+pub async fn provider_models_enriched(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::turn::TurnState>,
+    memo: tauri::State<'_, crate::catalogue::EnrichmentMemo>,
     id: String,
 ) -> Result<Vec<EnrichedModel>, ProviderError> {
     use tauri::Manager as _;
@@ -678,8 +841,17 @@ pub fn provider_models_enriched(
         .map_err(|e| ProviderError::Store {
             reason: format!("no app-data dir: {e}"),
         })?;
-    let enrichment = enrichment_catalogue(&data_dir);
-    Ok(join_enrichment(&provider_id, stored, enrichment.as_ref()))
+    // Blocking pool, not the runtime worker an `async fn` body runs on: a
+    // cold cache is a 60 s fetch and a memo miss is a 5.3 MB parse. The memo
+    // turns every later invoke into a stat (A-perf-ipc).
+    let memo = memo.inner().clone();
+    let enrichment =
+        tauri::async_runtime::spawn_blocking(move || enrichment_catalogue(&data_dir, &memo))
+            .await
+            .map_err(|e| ProviderError::Store {
+                reason: format!("enrichment task failed: {e}"),
+            })?;
+    Ok(join_enrichment(&provider_id, stored, enrichment.as_deref()))
 }
 
 /// Join stored models with enrichment. Pure: the network half lives in
@@ -722,7 +894,7 @@ fn join_enrichment(
 /// ids are not secrets. Stale lists are returned as-is with `stale: true`;
 /// the UI offers refresh (`provider_refresh`) rather than blocking the picker
 /// on a network call.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn provider_models(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
@@ -747,8 +919,11 @@ pub fn provider_models(
 /// Re-fetch one provider's live model list. Needs the stored key — a
 /// keyless provider fails `NoKey`, which is the UI's cue to ask for one.
 /// The `ollama` row is exempt: keyless by design, refreshed without auth.
+///
+/// `async fn` with the fetch on the blocking pool: up to 30 s of network
+/// may not hold a runtime worker or the IPC thread (review 13 FYI).
 #[tauri::command]
-pub fn provider_refresh(
+pub async fn provider_refresh(
     state: tauri::State<'_, crate::turn::TurnState>,
     id: String,
 ) -> Result<ModelsView, ProviderError> {
@@ -766,12 +941,18 @@ pub fn provider_refresh(
     let key = crate::keyring_store::retrieve(&id).map_err(|_| ProviderError::NoKey {
         provider: id.clone(),
     })?;
-    if key.trim().is_empty() && !allows_blank_key(&id) {
+    if blank_key_rejected(&id, &key) {
         return Err(ProviderError::NoKey {
             provider: id.clone(),
         });
     }
-    let models = fetch_live_models(kind, base_url.as_deref(), key.trim())?;
+    let models: Vec<ProviderModel> = tauri::async_runtime::spawn_blocking(move || {
+        fetch_live_models(kind, base_url.as_deref(), key.trim())
+    })
+    .await
+    .map_err(|e| ProviderError::Store {
+        reason: format!("model list task failed: {e}"),
+    })??;
     let now = now_secs() as i64;
     let store = state.store.lock().map_err(|_| ProviderError::Store {
         reason: "store lock poisoned".to_string(),
@@ -792,7 +973,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtins_are_the_five_first_class_providers() {
+    fn four_builtins_plus_custom_are_the_five_first_class_providers() {
         let ids: Vec<&str> = builtins().iter().map(|b| b.id).collect();
         assert_eq!(ids, vec!["openrouter", "agentrouter", "ollama", "google"]);
     }
@@ -860,6 +1041,103 @@ mod tests {
     }
 
     #[test]
+    fn cleartext_is_allowed_only_for_loopback_endpoints() {
+        // https is fine anywhere.
+        assert!(validate_base_url("https://llm.example/v1").is_ok());
+        // Loopback cleartext keeps working: the dev mock (`pnpm mock` on
+        // 127.0.0.1:8787) and local models (Ollama on localhost) never leave
+        // this machine, so the key cannot leak to the network.
+        assert_eq!(
+            validate_base_url("http://127.0.0.1:8787/v1").expect("loopback ipv4"),
+            "http://127.0.0.1:8787/v1"
+        );
+        assert_eq!(
+            validate_base_url("http://localhost:11434/v1").expect("localhost"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            validate_base_url("http://[::1]:11434/v1").expect("loopback ipv6"),
+            "http://[::1]:11434/v1"
+        );
+        // Remote cleartext is refused typed: a keyed endpoint over cleartext
+        // hands the bearer token to the network (review 13, item 5).
+        for bad in [
+            "http://attacker.example/v1",
+            // A loopback-looking host is not loopback.
+            "http://127.0.0.1.attacker.example/v1",
+            "http://localhost.attacker.example/v1",
+            "http://127.0.0.1evil/v1",
+        ] {
+            let err = validate_base_url(bad).expect_err("must refuse");
+            assert!(
+                matches!(err, ProviderError::BadInput { .. }),
+                "{bad:?}: {err:?}"
+            );
+            if let ProviderError::BadInput { reason } = &err {
+                assert!(
+                    reason.contains("https://"),
+                    "{bad:?} reason should point at https: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_builtin_endpoint_survives_validation() {
+        for b in builtins() {
+            if let Some(url) = b.base_url {
+                assert_eq!(
+                    validate_base_url(url).expect(b.id),
+                    url,
+                    "builtin {id} must keep its shipped endpoint",
+                    id = b.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn error_details_are_truncated_and_the_key_never_persists() {
+        let key = "sk-live-secret";
+        let echo = format!(
+            "proxy echoed: authorization: Bearer {key}\n{}",
+            "x".repeat(4_000)
+        );
+        let out = sanitise_provider_detail(&echo, key);
+        assert!(!out.contains(key), "the key must never persist: {out}");
+        assert!(out.contains("[redacted]"), "{out}");
+        assert!(out.chars().count() <= 512, "bounded: {}", out.len());
+        // A blank secret redacts nothing but the bound still applies.
+        let out = sanitise_provider_detail(&echo, "");
+        assert!(out.chars().count() <= 512);
+    }
+
+    #[test]
+    fn a_failed_keyring_rollback_is_reported_not_swallowed() {
+        let primary = ProviderError::Fetch {
+            reason: "model list fetch failed".to_string(),
+        };
+        // A clean rollback reports the original failure unchanged.
+        assert_eq!(combine_with_rollback(Ok(()), primary.clone()), primary);
+        // A failed rollback names both: the key is still in the keychain
+        // and the user must be told (review 13 NIT).
+        let combined = combine_with_rollback(
+            Err("access denied".to_string()),
+            ProviderError::Fetch {
+                reason: "model list fetch failed".to_string(),
+            },
+        );
+        match combined {
+            ProviderError::Store { reason } => {
+                assert!(reason.contains("model list fetch failed"), "{reason}");
+                assert!(reason.contains("keychain"), "{reason}");
+                assert!(reason.contains("access denied"), "{reason}");
+            }
+            other => panic!("expected Store, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn custom_id_accepts_lowercase_dashes() {
         assert_eq!(
             validate_custom_id("office-gateway").expect("valid"),
@@ -913,6 +1191,22 @@ mod tests {
             auth_header("  sk-live  "),
             Some("Bearer sk-live".to_string())
         );
+    }
+
+    #[test]
+    fn the_set_and_refresh_blank_gate_refuses_everything_but_keyless_rows() {
+        // The gate BOTH `provider_set_key` and `provider_refresh` stand
+        // behind (D125, review 33): the FE now permits a blank keyless save
+        // (A-views), so this condition is the only thing between a silent
+        // empty key and ollama's auth-less proof fetch. Refuse a blank for
+        // every keyed row; pass ollama through, blank or not.
+        assert!(blank_key_rejected("openrouter", "   "));
+        assert!(blank_key_rejected("google", ""));
+        assert!(blank_key_rejected("office-gateway", "\t"));
+        assert!(!blank_key_rejected("ollama", "   "));
+        assert!(!blank_key_rejected("ollama", ""));
+        assert!(!blank_key_rejected("openrouter", "sk-live"));
+        assert!(!blank_key_rejected("ollama", "sk-live"));
     }
 
     #[test]

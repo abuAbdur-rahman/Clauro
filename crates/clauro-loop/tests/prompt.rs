@@ -10,7 +10,6 @@ use clauro_loop::prompt::{build_system_prompt, first_turn_setup, frozen_hash, Pr
 #[test]
 fn hash_stable_across_turns_for_same_surface() {
     let defs = clauro_tools::eight_definitions();
-    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
     let a = build_system_prompt(&PromptInputs {
         tools: &defs,
         memory_instructions: None,
@@ -20,9 +19,19 @@ fn hash_stable_across_turns_for_same_surface() {
         memory_instructions: None,
     });
     assert_eq!(
-        frozen_hash(&a, &names),
-        frozen_hash(&b, &names),
+        frozen_hash(&a, &defs),
+        frozen_hash(&b, &defs),
         "same surface, same hash, every turn"
+    );
+    // The property that matters across turns is stability beyond THIS
+    // process: a literal pin, so a hasher or field-encoding change breaks
+    // here instead of invalidating every stored `system_frozen` (review 21).
+    // This surface is the no-memory prompt; the wording snapshot pins the
+    // memory-instructions variant.
+    assert_eq!(
+        frozen_hash(&a, &defs),
+        "113ec8cd58c6fc8f",
+        "the frozen hash is repeatable across process restarts"
     );
 }
 
@@ -30,28 +39,58 @@ fn hash_stable_across_turns_for_same_surface() {
 fn hash_changes_when_tool_list_changes() {
     let all: Vec<_> = clauro_tools::eight_definitions();
     let fewer: Vec<_> = all.iter().take(7).cloned().collect();
-    let ha = frozen_hash(
-        "sys",
-        &all.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
-    );
-    let hb = frozen_hash(
-        "sys",
-        &fewer.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
-    );
+    let ha = frozen_hash("sys", &all);
+    let hb = frozen_hash("sys", &fewer);
     assert_ne!(
         ha, hb,
         "which is why enabling bash opens a fresh thread (D19, D67)"
     );
 }
 
+fn tool(name: &str, description: &str, schema: serde_json::Value) -> clauro_tools::ToolDefinition {
+    clauro_tools::ToolDefinition {
+        name: name.to_string(),
+        description: description.to_string(),
+        input_schema: schema,
+        writes_to_disk: false,
+    }
+}
+
+/// D76: effort, `max_tokens` and `tool_choice` are not parameters of the hash —
+/// there is nowhere for them to enter. The inputs that DO belong to the
+/// surface are prompt text and the serialized tools, so this test varies one
+/// of those: same names, same descriptions, different schema → different
+/// hash. A schema-only change moves what the request carries, so it must
+/// move the frozen hash (review 21, D19).
 #[test]
-fn effort_and_params_cannot_move_the_hash() {
-    // The hash function takes prompt text + tool names. Budgets, effort,
-    // max_tokens and tool_choice have no parameter to enter through (D76).
-    let h1 = frozen_hash("sys", &["fs"]);
-    let h2 = frozen_hash("sys", &["fs"]);
-    assert_eq!(h1, h2);
+fn hash_covers_the_serialized_tool_schema() {
+    let defs = clauro_tools::eight_definitions();
+    let mut changed = defs.clone();
+    changed[0].input_schema =
+        serde_json::json!({"type": "object", "properties": {"surprise": {"type": "string"}}});
+    let prompt = build_system_prompt(&PromptInputs {
+        tools: &defs,
+        memory_instructions: None,
+    });
+    let h1 = frozen_hash(&prompt, &defs);
+    let h2 = frozen_hash(&prompt, &changed);
+    assert_ne!(h1, h2, "a schema-only change must move the hash (D19)");
     assert_eq!(h1.len(), 16, "64-bit hex");
+}
+
+/// A flat name concatenation lets `["ab"]` hash equal to `["a","b"]`; unit
+/// separators between tools and fields make the surface unambiguous
+/// (review 21).
+#[test]
+fn hash_cannot_confuse_a_tool_name_boundary() {
+    let joined = tool("ab", "same", serde_json::json!({}));
+    let split_a = tool("a", "same", serde_json::json!({}));
+    let split_b = tool("b", "same", serde_json::json!({}));
+    assert_ne!(
+        frozen_hash("sys", &[joined]),
+        frozen_hash("sys", &[split_a, split_b]),
+        "tool boundaries must be unambiguous"
+    );
 }
 
 #[test]
@@ -123,25 +162,18 @@ fn prompt_snapshot_pins_our_wording() {
 fn insta_like_snapshot(text: &str) {
     // Hand-rolled snapshot: the prompt hash is the pin. If this fails, the
     // wording moved — update the hash below deliberately, after a D39 read.
+    let defs = clauro_tools::eight_definitions();
     assert_eq!(
-        frozen_hash(
-            text,
-            &[
-                "memory",
-                "artifact",
-                "web-search",
-                "web-fetch",
-                "fs",
-                "compact",
-                "bash",
-                "question"
-            ]
-        ),
+        frozen_hash(text, &defs),
         // Pin moved 2026-10-05 by `Tasks/014`: the Artifacts paragraph (D4, D5,
         // D110) joined the prompt. D39 re-read before moving it — the wording
         // is ours, describing our own frame's limits, and borrows nothing from
         // any first-party material.
-        "ccbcfa44e3478a93",
+        //
+        // Pin moved 2026-10-12 by the review-21 D19 fix: `frozen_hash` now
+        // covers each tool's serialized schema, not just its name. The
+        // wording itself did not move (the prompt builder is untouched).
+        "0cf7e8238873c898",
         "prompt wording moved — re-read for D39, then update the pin"
     );
 }
@@ -150,12 +182,6 @@ fn insta_like_snapshot(text: &str) {
 fn first_turn_setup_returns_prompt_and_hash_together() {
     let defs = clauro_tools::eight_definitions();
     let (prompt, hash) = first_turn_setup(&defs, None);
-    assert_eq!(
-        hash,
-        frozen_hash(
-            &prompt,
-            &defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>()
-        )
-    );
+    assert_eq!(hash, frozen_hash(&prompt, &defs));
     assert!(prompt.contains("/memories"));
 }

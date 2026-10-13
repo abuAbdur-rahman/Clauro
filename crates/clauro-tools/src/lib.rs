@@ -41,7 +41,7 @@ pub use registry::{
 };
 pub use secret::looks_secret;
 pub use web::{
-    current_year, register_web, reqwest_getter, FetchConfig, Getter, HttpError, HttpRequest,
-    HttpResponse, SearchConfig, WebHost, DDG_HTML_ENDPOINT, FETCH_DEFAULT_MAX_BYTES,
+    bound_body, current_year, register_web, reqwest_getter, FetchConfig, Getter, HttpError,
+    HttpRequest, HttpResponse, SearchConfig, WebHost, DDG_HTML_ENDPOINT, FETCH_DEFAULT_MAX_BYTES,
     FETCH_DEFAULT_MAX_REDIRECTS,
 };

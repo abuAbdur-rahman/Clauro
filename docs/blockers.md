@@ -15,7 +15,7 @@
 
 ## P1 — thread list + indicator
 
-- [ ] B07 No date groups (Pinned/Today/Yesterday/7d/Older) — `groupChats` missing.
+- [x] B07 Date groups — DONE (`ProjectsRail.tsx:115` `groupRailChats` buckets pinned/today/yesterday/prev-7/older, called at `:287`; `ProjectsRail.test.tsx:172` buckets, `:190` omits empty + sorts newest-first; the mock SEED has its own pure port at `seed.ts:253`).
 - [ ] B08 No row menu (Pin/Rename/Move/Export/Delete); vendored `dropdown-menu` orphaned.
 - [ ] B09 No inline rename; no move-to-project submenu.
 - [ ] B10 No active-row 3px accent bar.
@@ -26,9 +26,9 @@
 
 - [ ] B13 Hardcoded `THREAD=thread-001`, `DEMO_PROJECTS` — no thread CRUD.
 - [ ] B14 Message actions absent (copy/regen/branch/thumbs); regen must append, never pop (D19).
-- [ ] B15 No scroll-follow + Jump-to-latest; `FrameCoalescer` unwired.
-- [ ] B16 No context bar (70/90%); `usage` parsed then discarded.
-- [ ] B17 Composer: no slash menu, no Ctrl+B/I/E, no token hint, no `sendWith`/IME guard, textarea unbounded, Stop not in-place, attach `noop` advertises D47.
+- [x] B15 Scroll-follow + Jump-to-latest + `FrameCoalescer` — DONE (`ChatView.tsx:71-292` stick-to-bottom: follows new rows only while stuck within 48px, `setStuck` at `:286`, snaps at `:292`; `:295` `jumpToLatest` + the pill at `:351-355`, tested at `ChatView.test.tsx:538`; `FrameCoalescer` is imported and used at `ChatView.tsx:158`, not unwired).
+- [x] B16 Context bar — DONE (`ChatView.tsx:361` `data-testid="context-bar"`, honest estimate `tokens ≈ chars/4` computed at `:77-83`, shown as `Context {pct}% used` at `:365` with the ` / · estimate` label at `:362`; empty-transcript hide + the estimate itself tested at `ChatView.test.tsx:422` and `:443`). `usage` is consumed, not discarded.
+- [x] B17 Composer surface — DONE for every behavioural half (`Composer.tsx:277-288` slash query + filter, keyboard nav at `:460-473`, menu rendered at `:559-575`; Ctrl+B/I/E inline wrap at `:402-418` with Ctrl+Shift+K fence at `:419`; token hint `data-testid="token-hint"` at `:769-773` labelled "· estimate"; `sendWith` prop at `:172` honoured at `:458-545` with the settings page persisting it at `SettingsDialog.tsx:284`; IME guard at `:393-396` — no chord fires mid-composition; Stop swaps in place at `:813-825`; chat-view attach is real at `ChatView.tsx:390`). **Two halves remain open:** the textarea is still **unbounded** (no `maxLength`, no cap on `draft`), and the **home** composer still passes `onAttach={noop}` (`App.tsx:586`) — so D47 attachments work in a chat but not from the empty-state screen.
 - [ ] B18 `transcript_read` mock returns `[]` — real must read SQLite; empty honest ok, fake rows never.
 
 ## P2 — settings/providers
@@ -42,7 +42,7 @@
 ## P2 — projects/artifacts/onboarding
 
 - [ ] B24 Projects `onNew={noop}`, detail read-only (`instructions=""`, `"0%"`), grid name-only, name-only search, no empty state.
-- [ ] B25 Artifact unreachable: `source=""` (`App.tsx:224`), no producer, card dead text. D123/D124 transport must hold in both modes (served doc, `artifact` host, no `srcdoc` shortcut in mock).
+- [x] B25 Artifact producer + drawer — DONE (`live.ts:135` `useArtifactProducer`, the D121 production wiring, called at `ChatView.tsx:98`; the content store `useArtifactContent` at `live.ts:48` is set from turn events at `:158` and consumed by the shell at `App.tsx:335`, reaching the drawer as `source={artifactContent?.source ?? ""}` at `:704` — an honest empty when the thread has no artifact, not a hardcoded dead string). End-to-end: `ChatView.test.tsx:390` asserts the produced source lands in the store. **Still open, unchanged:** D123/D124 transport must hold in both modes (served doc, `artifact` host, no `srcdoc` shortcut in mock) — that half of the row was never about the producer.
 - [ ] B26 Onboarding absent (`rg -i onboard src` = 0).
 - [ ] B27 `neutral-*` hardcodes (`TranscriptView UserRow`, `ArtifactDrawer`, `App.tsx:106`) vs token rule.
 - [ ] B28 Rule-4 reason comments missing on 6 non-shadcn `ui/` files.

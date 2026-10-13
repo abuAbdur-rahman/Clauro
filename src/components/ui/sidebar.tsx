@@ -1,3 +1,7 @@
+// Ported from shadcn/ui (MIT): https://github.com/shadcn-ui/ui — new-york v4 registry
+// copy, adapted in place (D112/D127, component code only). Provenance: PORTED
+// (FEATURES.md); attribution per AGENTS.md §4.
+
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
@@ -16,7 +20,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const SIDEBAR_STORAGE_KEY = "clauro.sidebar";
 const SIDEBAR_WIDTH = "16rem";
@@ -87,13 +91,15 @@ function SidebarProvider({
     (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value;
       if (setOpenProp) {
+        // Controlled: the caller owns the state, so the caller owns persistence
+        // too — writing localStorage here would let a stale toggle clobber the
+        // caller's next render (review 32 NIT).
         setOpenProp(openState);
       } else {
         _setOpen(openState);
+        // Persist collapse across reloads (B04: localStorage, never cookies).
+        storeSidebar(openState);
       }
-
-      // Persist collapse across reloads (B04: localStorage, never cookies).
-      storeSidebar(openState);
     },
     [setOpenProp, open],
   );
@@ -107,13 +113,28 @@ function SidebarProvider({
     }
   }, [isMobile, setOpen, setOpenMobile]);
 
-  // Adds a keyboard shortcut to toggle the sidebar (Ctrl-only, B05).
+  // Adds a keyboard shortcut to toggle the sidebar (Ctrl or Cmd, B05 +
+  // review 32 FYI: metaKey for macOS parity, no key auto-repeat, and never
+  // while the user is typing — the shortcut must not steal Ctrl/Cmd+B from
+  // text fields or editable regions).
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === SIDEBAR_KEYBOARD_SHORTCUT && event.ctrlKey) {
-        event.preventDefault();
-        toggleSidebar();
+      if (event.repeat) return;
+      if (event.key !== SIDEBAR_KEYBOARD_SHORTCUT) return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      const target = event.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        // `isContentEditable` is the canonical browser check, but jsdom (and
+        // any other non-layout engine) does not implement it — the attribute
+        // walk below covers those, and inherited editability in both.
+        const editable =
+          target.isContentEditable ||
+          target.closest('[contenteditable]:not([contenteditable="false"])') !== null;
+        if (tag === "INPUT" || tag === "TEXTAREA" || editable) return;
       }
+      event.preventDefault();
+      toggleSidebar();
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -140,25 +161,27 @@ function SidebarProvider({
 
   return (
     <SidebarContext.Provider value={contextValue}>
-      <TooltipProvider delayDuration={0}>
-        <div
-          data-slot="sidebar-wrapper"
-          style={
-            {
-              "--sidebar-width": SIDEBAR_WIDTH,
-              "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-              ...style,
-            } as React.CSSProperties
-          }
-          className={cn(
-            "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
-            className,
-          )}
-          {...props}
-        >
-          {children}
-        </div>
-      </TooltipProvider>
+      {/* D112 local tweak: upstream wraps the children in a TooltipProvider,
+          but every Tooltip in ui/tooltip.tsx already mounts its own (see the
+          per-Tooltip provider there), so this outer one only stacked a second
+          provider. Removed — the inner provider is the one that applies. */}
+      <div
+        data-slot="sidebar-wrapper"
+        style={
+          {
+            "--sidebar-width": SIDEBAR_WIDTH,
+            "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
+            ...style,
+          } as React.CSSProperties
+        }
+        className={cn(
+          "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </div>
     </SidebarContext.Provider>
   );
 }
@@ -307,7 +330,11 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">): R
         "hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex",
         "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
         "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
-        "hover:group-data-[collapsible=offcanvas]:bg-group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full",
+        // D112 local tweak: upstream string restored verbatim (shadcn-ui/ui
+        // new-york-v4 sidebar.tsx) — the hand-tweaked copy had doubled the
+        // `bg-` segment (`bg-group-data-...:bg-sidebar`), which compiles to
+        // nothing and killed the rail hover affordance (review 32).
+        "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full hover:group-data-[collapsible=offcanvas]:bg-sidebar",
         "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
         "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
         className,

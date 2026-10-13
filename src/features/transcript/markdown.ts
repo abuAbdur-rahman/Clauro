@@ -9,27 +9,50 @@
  *    order matters: trusting `marked`'s own escaping leaves a hole that a new
  *    markdown feature can reopen tomorrow.
  *
+ *    The config is a strict **allowlist** (review 15). The earlier blocklist
+ *    (`FORBID_TAGS`) could only be as strong as its last omission: svg, math,
+ *    video, base, meta, details and every `<img src="https://…">` stayed live,
+ *    and a dependency that grows a feature grows a new hole in a blacklist.
+ *    An allowlist cannot regress that way — a tag nobody listed simply does
+ *    not render.
+ *
  *    The purifier is loaded **dynamically**, for the same reason the artifact
  *    frame does it (`D4`): a static import puts ~100 KB of sanitiser in the
  *    main chunk, paid on every launch to clean a transcript that usually has
  *    nothing dangerous in it. That is why `renderMarkdown` is async — the
  *    caller awaits the first render, then the instance is cached.
  *
- *    Note what is deliberately absent: `ALLOWED_URI_REGEXP`. Setting it puts
- *    DOMPurify on a different configuration path which, on 3.x, drops
- *    camelCase attributes — the same trap `features/artifact/sanitize.ts`
- *    documents. DOMPurify's default URI regexp already refuses `javascript:`,
- *    and `tests/markdown.test.ts` asserts that directly rather than trusting
- *    the comment.
+ *    Note what is deliberately absent alongside the blocklist:
+ *    `ALLOWED_URI_REGEXP`. Setting it puts DOMPurify on a different
+ *    configuration path which, on 3.x, drops camelCase attributes — the same
+ *    trap `features/artifact/sanitize.ts` documents. The allowlist needs only
+ *    lowercase ASCII attributes, and DOMPurify's default URI regexp already
+ *    refuses `javascript:` (entity/tab/newline tricks included, because it
+ *    tests the value with control characters stripped) and `data:` on `href`
+ *    — `markdown.test.ts` asserts both directly rather than trusting this
+ *    comment.
  *
  * 2. **Coalesce.** A streaming turn delivers deltas far faster than a frame.
  *    Reparsing per delta is a parse per token; the transcript renders at most
  *    once per animation frame, over the accumulated text.
  */
-import { Marked } from "marked";
-
 interface Purifier {
   sanitize: (dirty: string, config?: unknown) => string;
+}
+
+/**
+ * `marked` is imported dynamically for the same reason the purifier is: a
+ * static import pins ~46 KB of parser into the entry chunk, paid on every
+ * launch for a transcript that is mostly prose. `renderMarkdown` is already
+ * async, so the caller's shape does not change and the module is fetched once
+ * and cached by the bundler. This is a **loading** change only — the parse
+ * options and the sanitiser config are untouched, so the HTML for a given
+ * input is byte-identical.
+ */
+async function parseMarkdown(source: string): Promise<string> {
+  const { Marked } = await import("marked");
+  const marked = new Marked({ gfm: true, breaks: false });
+  return marked.parse(source, { async: false });
 }
 
 /** Cached after the first load, so a re-render does not re-import. */
@@ -58,15 +81,58 @@ function loadPurifier(): Promise<Purifier> {
  * readable transcript beats degrading to an XSS.
  */
 export async function renderMarkdown(source: string): Promise<string> {
-  const marked = new Marked({ gfm: true, breaks: false });
-  const raw = marked.parse(source, { async: false });
+  const raw = await parseMarkdown(source);
   try {
     const p = await loadPurifier();
     return p.sanitize(raw, {
-      // The transcript fetches nothing: no iframes, no forms, no stylesheets.
-      // A model that emits one has it stripped and the rest still renders.
-      FORBID_TAGS: ["script", "iframe", "object", "embed", "style", "link", "form", "input"],
-      FORBID_ATTR: ["style", "srcset", "formaction", "target"],
+      // The transcript's whole surface, listed. Marked's GFM output needs
+      // these and nothing else; raw model HTML beyond them keeps its text
+      // (DOMPurify's KEEP_CONTENT) and loses its shell. Review 15: a
+      // blocklist can only be as strong as its last omission.
+      ALLOWED_TAGS: [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "br",
+        "hr",
+        "blockquote",
+        "strong",
+        "em",
+        "b",
+        "i",
+        "del",
+        "s",
+        "ul",
+        "ol",
+        "li",
+        "a",
+        "pre",
+        "code",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+      ],
+      // href/title ride along with the default URI policy (no `javascript:`,
+      // no `data:` on href); align/start/colspan/rowspan carry table and list
+      // structure; class carries `language-*`, which codeblocks.ts reads.
+      ALLOWED_ATTR: ["href", "title", "class", "align", "start", "colspan", "rowspan"],
+      // data-* is the host's namespace: codeblocks.ts treats data-codeblock
+      // and data-highlighted as trusted state, so a model must not be able to
+      // set them. aria-* passes on its own (inert values) and stays allowed.
+      ALLOW_DATA_ATTR: false,
+      // `img` is deliberately **not** listed. The transcript fetches nothing:
+      // no proxy mediates a remote image (tracking pixel, IP leak — D3's
+      // egress rule for the artifact frame applies here too, review 15), and
+      // a `data:` image is a multi-MB render bomb. `![alt](url)` therefore
+      // renders as nothing; a future image feature needs a proxy, a size cap
+      // and its own D-number before any `img` returns to this list.
     });
   } catch {
     return escapeHtml(raw);

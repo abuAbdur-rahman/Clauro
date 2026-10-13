@@ -56,6 +56,12 @@ failed first (no such methods). One deliberate semantic, documented in the tests
 item that *starts* a turn is consumed even if that turn fails — the input row is already
 history (D68), and re-queueing it would duplicate the row on retry.
 
+*Scope note (lead, 2026-10-13, review 21): "fully owned" above refers to the IDLE-DRAIN
+obligation only — and only to the drain mechanics: `lib.rs` registers no queue-chip commands,
+so draining is driven by turn completion, not by user chip actions. The POLICY surface
+(approval commands, store-driven `ThreadToolState`/rules) was never this task's delivered
+claim and is open host work — named on `Tasks/012`'s status.*
+
 > Added by audit 4 finding 6. The loop that drives the registry, and the prompt every tool depends
 > on, had no owner. **Read this before `008`–`014`** — those tasks each implement a handler, and the
 > loop is what calls them.

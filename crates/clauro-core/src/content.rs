@@ -107,8 +107,10 @@ impl std::error::Error for MissingSignature {}
 impl ContentBlock {
     /// Build a `Thinking` with its signature checked. Empty signatures fail
     /// here, not mid-thread on replay (D72). Deserialization enforces the
-    /// same rule; direct struct construction is same-crate code and covered
-    /// by the deserialize test's contract, not by this function.
+    /// same rule. What this does not cover: enum variant fields are public
+    /// to every dependent crate, so `ContentBlock::Thinking { .. }` can be
+    /// built directly from anywhere — there D72 rests on caller discipline
+    /// (clauro-loop's seam re-checks the run), not on this constructor.
     pub fn thinking(
         text: &str,
         signature: &str,

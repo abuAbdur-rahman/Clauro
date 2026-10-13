@@ -12,7 +12,10 @@
 //! `message` and `block` stay fully append-only; the scan in
 //! `tests/append_only.rs` keeps proving it.
 
-use clauro_store::{NewProvider, ProviderKind, ProviderModel, Store};
+use clauro_store::{
+    MessageRole, NewBlock, NewMessage, NewProject, NewProvider, NewThread, ProviderKind,
+    ProviderModel, Store,
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -162,6 +165,55 @@ fn replacing_models_for_an_unknown_provider_fails_typed() {
 }
 
 #[test]
+fn a_failed_model_replace_rolls_back_to_the_previous_list() {
+    // Review 20, IMPORTANT 4: the rewrite was DELETE + N INSERTs + UPDATE in
+    // autocommit mode — an error mid-loop committed a partial model list with
+    // a stale freshness stamp. One transaction: all or the old state.
+    let dir = TestDir::fresh();
+    let store = Store::open(&dir.db()).expect("open");
+    store.insert_provider(anthropic(100)).expect("insert");
+    store
+        .replace_provider_models(
+            "anthropic",
+            &[ProviderModel {
+                id: "old-model".to_string(),
+                display_name: "Old".to_string(),
+            }],
+            1_000,
+        )
+        .expect("baseline fetch");
+    let duplicate_id = [
+        ProviderModel {
+            id: "new-1".to_string(),
+            display_name: "New 1".to_string(),
+        },
+        ProviderModel {
+            id: "new-1".to_string(),
+            display_name: "New 1 again".to_string(),
+        },
+    ];
+    store
+        .replace_provider_models("anthropic", &duplicate_id, 5_000)
+        .expect_err("duplicate model id must fail at the primary key");
+    let models = store.list_provider_models("anthropic").expect("list");
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["old-model"],
+        "a failed refresh rolls back whole: no partial list"
+    );
+    let row = store
+        .get_provider("anthropic")
+        .expect("read")
+        .expect("present");
+    assert_eq!(
+        row.models_fetched_at,
+        Some(1_000),
+        "the freshness stamp of the last GOOD fetch survives"
+    );
+}
+
+#[test]
 fn removing_a_provider_removes_its_models_and_nothing_else() {
     let dir = TestDir::fresh();
     let store = Store::open(&dir.db()).expect("open");
@@ -231,11 +283,54 @@ fn list_providers_returns_everything_in_id_order() {
 fn a_v1_database_migrates_to_provider_tables() {
     // A database created before providers existed opens with the new tables
     // and keeps its transcript rows. Simulated by dropping the two tables and
-    // rewinding `user_version`, which is exactly the v1 shape.
+    // rewinding `user_version`, which is exactly the v1 shape. Review 20 NIT:
+    // the "keeps its transcript rows" claim was asserted with nothing seeded.
     let dir = TestDir::fresh();
     {
         let store = Store::open(&dir.db()).expect("open");
         store.insert_provider(anthropic(100)).expect("insert");
+        store
+            .insert_project(NewProject {
+                id: "p1".to_string(),
+                name: "proj".to_string(),
+                instructions: String::new(),
+                bash_enabled: false,
+            })
+            .expect("seed project");
+        store
+            .insert_thread(NewThread {
+                id: "t1".to_string(),
+                project_id: Some("p1".to_string()),
+                title: None,
+                incognito: false,
+                memory_off: false,
+                system_frozen: "sys".to_string(),
+                tools_frozen: "[]".to_string(),
+            })
+            .expect("seed thread");
+        store
+            .insert_message(NewMessage {
+                id: "m1".to_string(),
+                thread_id: "t1".to_string(),
+                seq: 1,
+                role: MessageRole::User,
+                created_at: 1,
+            })
+            .expect("seed message");
+        store
+            .insert_block(NewBlock {
+                id: "b1".to_string(),
+                message_id: "m1".to_string(),
+                seq: 0,
+                kind: "text".to_string(),
+                payload: r#"{"text":"hi"}"#.to_string(),
+                boundary: None,
+                is_summary: false,
+                generation: 0,
+                signature: None,
+                dropped: false,
+            })
+            .expect("seed block");
     }
     {
         let conn = rusqlite::Connection::open(dir.db()).expect("raw open");
@@ -252,4 +347,12 @@ fn a_v1_database_migrates_to_provider_tables() {
         store.table_names().contains(&"provider".to_string()),
         "provider table exists after migration"
     );
+    let thread = store
+        .get_thread("t1")
+        .expect("read")
+        .expect("transcript thread survives the migration");
+    assert_eq!(thread.system_frozen, "sys");
+    let blocks = store.blocks_for_thread("t1");
+    assert_eq!(blocks.len(), 1, "transcript blocks survive the migration");
+    assert_eq!(blocks[0].payload, r#"{"text":"hi"}"#);
 }

@@ -101,3 +101,44 @@ fn compaction_instructions_pass_through_capped() {
         100
     );
 }
+
+/// Audit 12/FYI 17 — the checked builder rejects a thinking budget that is
+/// not strictly below `max_tokens` (RED). Anthropic hard-400s the pair; the
+/// check must be client-side.
+#[test]
+fn checked_builder_rejects_budget_not_below_max_tokens() {
+    use clauro_transport::{try_build_normal_request, NormalBuildError};
+
+    let err = try_build_normal_request(NormalBuildInput {
+        model: "claude-x".to_string(),
+        max_tokens: 1024,
+        system: "sys".to_string(),
+        messages: vec![],
+        tools: vec![],
+        thinking: ThinkingConfig {
+            budget_tokens: 10_000,
+            display: None,
+        },
+        tool_choice: json!({"type": "auto"}),
+    })
+    .expect_err("budget >= max_tokens is a hard 400 server-side");
+    assert!(
+        matches!(err, NormalBuildError::BudgetNotBelowMax { .. }),
+        "typed error: {err:?}"
+    );
+
+    let ok = try_build_normal_request(NormalBuildInput {
+        model: "claude-x".to_string(),
+        max_tokens: 4096,
+        system: "sys".to_string(),
+        messages: vec![],
+        tools: vec![],
+        thinking: ThinkingConfig {
+            budget_tokens: 1024,
+            display: None,
+        },
+        tool_choice: json!({"type": "auto"}),
+    })
+    .expect("budget below max_tokens builds");
+    assert_eq!(ok.body["thinking"]["budget_tokens"], json!(1024));
+}

@@ -16,6 +16,10 @@ use std::process::Stdio;
 /// Truncation cap for captured output, in bytes.
 pub const RUN_DEFAULT_MAX_BYTES: usize = 256 * 1024;
 
+/// Default wall-clock budget for one run. Generous enough for a cold build,
+/// finite so a hung command cannot wedge the serial turn loop (audit 10).
+pub const RUN_DEFAULT_TIMEOUT_MS: u64 = 10 * 60 * 1000;
+
 /// What a run produced. Over-cap output sets `truncated` and keeps everything
 /// at `spill_path`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,10 +56,17 @@ impl std::error::Error for RunError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunLimits {
     pub max_bytes: usize,
+    /// Wall-clock budget for the whole run. On expiry the group is killed
+    /// and the run returns [`RunError::Killed`] — one hung command must
+    /// never wedge the serial turn loop (audit 10).
+    pub timeout_ms: u64,
 }
 
 /// Variable names that never reach the child, matched case-insensitively on
-/// substring: keys, secrets, tokens, passwords, credentials, private matter.
+/// substring: keys, secrets, tokens, passwords, credentials, private matter —
+/// plus the audit-11 name gaps `AUTH`, `BEARER`, `DSN`, `COOKIE`, `SESSION`.
+/// Over-matching is deliberate: dropping a benign name degrades the child,
+/// keeping a credential defeats D29.
 fn secret_name(name: &str) -> bool {
     let upper = name.to_uppercase();
     [
@@ -66,6 +77,11 @@ fn secret_name(name: &str) -> bool {
         "PASSWORD",
         "CREDENTIAL",
         "PRIVATE",
+        "AUTH",
+        "BEARER",
+        "DSN",
+        "COOKIE",
+        "SESSION",
     ]
     .iter()
     .any(|frag| upper.contains(frag))
@@ -85,20 +101,31 @@ pub fn scrub_env_vars(vars: &[(String, String)]) -> Vec<(String, String)> {
 /// Same shapes as `clauro_tools::looks_secret`, dependency-free (this crate
 /// cannot import the tools crate — the graph points the other way).
 fn looks_secret_value(v: &str) -> bool {
+    // Prefixes compared case-insensitively: `Akia…` and `GHP_…` are real
+    // casings a raw `contains("AKIA")`/`contains("ghp_")` never matched
+    // (audit 11).
+    let upper = v.to_uppercase();
     for prefix in [
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "xoxa-",
-        "xoxr-",
-        "xoxs-",
+        "SK-",
+        "GHP_",
+        "GITHUB_PAT_",
+        "XOXB-",
+        "XOXP-",
+        "XOXA-",
+        "XOXR-",
+        "XOXS-",
         "AKIA",
     ] {
-        if v.contains(prefix) {
+        if upper.contains(prefix) {
             return true;
         }
+    }
+    // URL credentials — `DATABASE_URL=postgres://user:pass@host/db` has no
+    // key prefix and no 32-byte entropy run, yet hands a live secret to the
+    // child (audit 11's headline example). `scheme://userinfo@host/...` is
+    // the shape.
+    if url_has_userinfo(v) {
+        return true;
     }
     // Long spaceless runs with mixed classes: tokens, not prose.
     for run in v.split(|c: char| c.is_whitespace() || "=:;\"'".contains(c)) {
@@ -117,9 +144,26 @@ fn looks_secret_value(v: &str) -> bool {
     false
 }
 
+/// True iff `v` contains `scheme://userinfo@host…` — credentials embedded in
+/// a URL. The authority ends at `/`, `?`, `#`, or the end of the string, so
+/// an `@` in the path (`https://example.com/a@b`) does not count.
+fn url_has_userinfo(v: &str) -> bool {
+    let Some(scheme) = v.find("://") else {
+        return false;
+    };
+    let rest = &v[scheme + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    rest[..authority_end].contains('@')
+}
+
 /// Fixed merge order (D30): scrubbed process env → internal overrides →
 /// ordinary env → managed. Managed always wins; a model-supplied entry can
 /// never displace it.
+///
+/// The slot key is case-insensitive on Windows (audit 11 NIT): env names are
+/// there, so a model-supplied `PATH` and a managed `Path` are the *same*
+/// slot — otherwise both survive the merge and "managed always wins" becomes
+/// a casing coincidence.
 pub fn build_env(
     scrubbed_base: &[(String, String)],
     overrides: &[(String, String)],
@@ -127,16 +171,27 @@ pub fn build_env(
     managed: &[(String, String)],
 ) -> Vec<(String, String)> {
     use std::collections::BTreeMap;
-    let mut merged = BTreeMap::new();
+    fn slot(k: &str) -> String {
+        #[cfg(windows)]
+        {
+            k.to_uppercase()
+        }
+        #[cfg(not(windows))]
+        {
+            k.to_string()
+        }
+    }
+    // Value carries the ORIGINAL casing of the winning (last) layer.
+    let mut merged: BTreeMap<String, (String, String)> = BTreeMap::new();
     for (k, v) in scrubbed_base
         .iter()
         .chain(overrides)
         .chain(ordinary)
         .chain(managed)
     {
-        merged.insert(k.clone(), v.clone());
+        merged.insert(slot(k), (k.clone(), v.clone()));
     }
-    merged.into_iter().collect()
+    merged.into_values().collect()
 }
 
 /// A spawned child with its process-group id for [`kill_group`].
@@ -192,7 +247,15 @@ pub fn spawn_command(
         cmd.process_group(0);
     }
     let base: Vec<(String, String)> = std::env::vars().collect();
-    let env = build_env(&scrub_env_vars(&base), &[], extra_env, managed_env);
+    // `extra_env` is scrubbed too (audit 11 FYI): it enters the ordinary
+    // slot, and D29's claim is about the child's *whole* environment, not
+    // just the inherited half. Managed stays host-trusted (D30).
+    let env = build_env(
+        &scrub_env_vars(&base),
+        &[],
+        &scrub_env_vars(extra_env),
+        managed_env,
+    );
     // Clear first: scrubbed-away names must not leak back through inheritance.
     cmd.args(&args)
         .current_dir(workdir)
@@ -278,6 +341,25 @@ fn group_has_members(pgid: u32) -> bool {
         .unwrap_or(true)
 }
 
+/// Keep at most `cap` bytes of `output`, never splitting a UTF-8 char.
+///
+/// The old inline version called `String::truncate(cap)` first, which
+/// **panics** when `cap` lands mid-codepoint, under a held `Store` lock in
+/// the tools layer (audit 10) — and its "safety net" loop tested
+/// `kept.is_char_boundary(kept.len())`, which is always true after a
+/// successful truncate, i.e. dead code.
+pub fn truncate_kept(output: &str, cap: usize) -> String {
+    // Slice at a char boundary ≤ cap: clamp to the string length first (a
+    // cap above the output length is a no-op, not a panic), then walk DOWN
+    // to the nearest boundary. Never `String::truncate(cap)` — it asserts
+    // `is_char_boundary(cap)` and panics on the first multi-byte straddle.
+    let mut end = cap.min(output.len());
+    while end > 0 && !output.is_char_boundary(end) {
+        end -= 1;
+    }
+    output[..end].to_string()
+}
+
 /// Run to completion in `workdir`, truncating with spill past `limits`.
 pub fn run_command(
     command: &str,
@@ -294,32 +376,85 @@ pub fn run_command(
         cmd.process_group(0);
     }
     let base: Vec<(String, String)> = std::env::vars().collect();
-    let env = build_env(&scrub_env_vars(&base), &[], extra_env, managed_env);
+    // Same scrub on `extra_env` as `spawn_command` (D29 covers the whole
+    // child environment; audit 11 FYI).
+    let env = build_env(
+        &scrub_env_vars(&base),
+        &[],
+        &scrub_env_vars(extra_env),
+        managed_env,
+    );
     cmd.args(&args)
         .current_dir(workdir)
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env_clear();
     for (k, v) in &env {
         cmd.env(k, v);
     }
-    let output = cmd.output().map_err(|e| RunError::Spawn(e.to_string()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let mut child = cmd.spawn().map_err(|e| RunError::Spawn(e.to_string()))?;
+    let pid = child.id();
+    // Drain pipes on background threads: a full pipe would wedge the child,
+    // and an unread pipe wedges the parent at wait.
+    let out_thread = child.stdout.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::copy(&mut pipe, &mut buf);
+            buf
+        })
+    });
+    let err_thread = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = std::io::copy(&mut pipe, &mut buf);
+            buf
+        })
+    });
+    // Wall-clock watchdog (audit 10): poll instead of blocking forever on
+    // `output()`; at the deadline kill the whole GROUP — `taskkill /T` /
+    // `kill -- -pgid` — because killing only `cmd` would orphan grandchildren
+    // and the next run would still be wedged behind them.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(limits.timeout_ms);
+    let status = loop {
+        match child.try_wait().map_err(|e| RunError::Io(e.to_string()))? {
+            Some(st) => break st,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = kill_group(pid);
+                let _ = child.wait();
+                // The pipe threads exit on their own once the kill closes
+                // the child's ends; joining here would only add latency.
+                return Err(RunError::Killed(format!(
+                    "wall-clock timeout of {} ms exceeded",
+                    limits.timeout_ms
+                )));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(25)),
+        }
+    };
+    let stdout = String::from_utf8_lossy(
+        &out_thread
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default(),
+    )
+    .into_owned();
+    let stderr = String::from_utf8_lossy(
+        &err_thread
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default(),
+    )
+    .into_owned();
     let total = stdout.len() + stderr.len();
     if total <= limits.max_bytes {
         return Ok(RunOutput {
-            exit_code: output.status.code().unwrap_or(-1),
+            exit_code: status.code().unwrap_or(-1),
             stdout,
             stderr,
             truncated: false,
             spill_path: None,
         });
     }
-    let mut kept = stdout.clone();
-    kept.truncate(limits.max_bytes);
-    while !kept.is_char_boundary(kept.len()) {
-        kept.pop();
-    }
+    let kept = truncate_kept(&stdout, limits.max_bytes);
     let spill_path = workdir.join(format!(
         ".run-spill-{}-{}",
         std::process::id(),
@@ -331,7 +466,7 @@ pub fn run_command(
     std::fs::write(&spill_path, format!("{stdout}{stderr}"))
         .map_err(|e| RunError::Io(format!("spill failed: {e}")))?;
     Ok(RunOutput {
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code: status.code().unwrap_or(-1),
         stdout: kept,
         stderr: String::new(),
         truncated: true,

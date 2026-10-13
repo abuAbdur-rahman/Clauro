@@ -317,6 +317,11 @@ impl WebHost {
         let mut visited = vec![current.clone()];
         let mut res = None;
         for _ in 0..=self.fetch.max_redirects {
+            // SSRF guard on EVERY hop (audit 10): the initial URL and each
+            // redirect target must both resolve clear of loopback, link-local
+            // (cloud metadata) and private address space before the getter —
+            // the thing that actually opens the socket — is invoked.
+            refuse_private_url(&current)?;
             let r = (self.get)(&HttpRequest {
                 url: current.clone(),
                 headers: vec![],
@@ -413,6 +418,119 @@ impl WebHost {
     }
 }
 
+/// SSRF guard (audit 10): refuse a URL whose host resolves to loopback,
+/// link-local (the `169.254.169.254` cloud-metadata endpoint), RFC1918
+/// private space, or an unspecified/broadcast wildcard. Called on the
+/// initial URL and on every redirect hop.
+///
+/// Hostnames go through `ToSocketAddrs` from std — no new dependency. A
+/// literal IP needs no DNS at all. An unresolvable host is allowed through:
+/// the transport will fail it anyway, and refusing DNS blips would break
+/// offline runs. (Full rebinding hardening would pin the resolved address at
+/// connect time — impossible through the injected getter — so this is the
+/// best-effort boundary the architecture allows.)
+fn refuse_private_url(url: &str) -> Result<(), HttpError> {
+    let rest = url
+        .split_once("://")
+        .map(|(_, r)| r)
+        .ok_or_else(|| HttpError::Transport(format!("refused scheme: {url}")))?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    // `user:pass@host:8080` — the host is what actually connects.
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        // Bracketed IPv6 literal: `[::1]:8080` — the `]` ends the address.
+        v6.split(']').next().unwrap_or(v6)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    if host.is_empty() {
+        return Err(HttpError::Transport(format!("refused empty host: {url}")));
+    }
+    let private = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => is_private_ip(ip),
+        Err(_) => {
+            use std::net::ToSocketAddrs;
+            // ANY address the name resolves to must be clear — one private
+            // answer poisons the name.
+            (host, 0u16)
+                .to_socket_addrs()
+                .map(|addrs| addrs.into_iter().any(|a| is_private_ip(a.ip())))
+                .unwrap_or(false)
+        }
+    };
+    if private {
+        return Err(HttpError::Transport(format!(
+            "refused private address: {url}"
+        )));
+    }
+    Ok(())
+}
+
+/// Loopback, link-local, RFC1918, unspecified, broadcast — plus the IPv6
+/// equivalents and v4-mapped forms, so `::ffff:127.0.0.1` cannot launder a
+/// loopback past the guard.
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_private()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            if s[0] & 0xfe00 == 0xfc00 {
+                return true; // unique-local fc00::/7
+            }
+            if s[0] & 0xffc0 == 0xfe80 {
+                return true; // link-local fe80::/10
+            }
+            if s[0..5] == [0, 0, 0, 0, 0] && s[5] == 0xffff {
+                let v4 = std::net::Ipv4Addr::new(
+                    (s[6] >> 8) as u8,
+                    (s[6] & 0xff) as u8,
+                    (s[7] >> 8) as u8,
+                    (s[7] & 0xff) as u8,
+                );
+                return is_private_ip(std::net::IpAddr::V4(v4));
+            }
+            false
+        }
+    }
+}
+
+/// Read a response body under a hard cap: refuse a declared oversize up
+/// front, then read at most `cap + 1` bytes (the extra byte distinguishes
+/// "exactly at cap" from "overflowing" for the caller). Replaces
+/// `res.bytes()`, which buffered the ENTIRE body before any truncation — a
+/// hostile endpoint could stream gigabytes at a client whose only bound was
+/// the 30s transport timeout (audit 10).
+pub fn bound_body(
+    content_length: Option<u64>,
+    cap: usize,
+    mut src: impl std::io::Read,
+) -> Result<Vec<u8>, HttpError> {
+    use std::io::Read;
+    if let Some(len) = content_length {
+        if len > cap as u64 {
+            return Err(HttpError::Transport(format!(
+                "content-length {len} exceeds the {cap}-byte cap"
+            )));
+        }
+    }
+    let mut buf = Vec::with_capacity(cap.min(8192));
+    src.by_ref()
+        .take(cap as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| HttpError::Transport(e.to_string()))?;
+    Ok(buf)
+}
+
 /// Production getter: reqwest blocking, no auto-redirects (the loop handles
 /// hops so loops stay visible), 30s timeout.
 #[must_use]
@@ -440,10 +558,10 @@ pub fn reqwest_getter() -> Getter {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
-        let body = res
-            .bytes()
-            .map_err(|e| HttpError::Transport(e.to_string()))?
-            .to_vec();
+        // Capped read (audit 10): a declared oversize is refused before a
+        // byte is buffered, and the stream itself is bounded by `take` —
+        // `res.bytes()` would have buffered everything first.
+        let body = bound_body(res.content_length(), FETCH_DEFAULT_MAX_BYTES, res)?;
         Ok(HttpResponse {
             status,
             headers,

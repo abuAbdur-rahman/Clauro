@@ -3,6 +3,7 @@
 //! Nothing throws across the tool boundary (D55): every handler returns a
 //! `ToolOutcome`, and a non-zero exit is `ok` with output attached.
 
+use crate::ToolStatus;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -35,11 +36,20 @@ impl ToolOutcome {
     /// Wire status string.
     #[must_use]
     pub fn status_str(&self) -> &'static str {
-        match self {
-            Self::Ok { .. } => "ok",
-            Self::Error { .. } => "error",
-            Self::Aborted { .. } => "aborted",
-            Self::Rejected { .. } => "rejected",
+        ToolStatus::from(self).as_str()
+    }
+}
+
+/// The stored status of an outcome. One exhaustive match, so a new variant
+/// breaks this impl at compile time instead of a consumer's catch-all
+/// persisting an `Ok` as `error` (review 22).
+impl From<&ToolOutcome> for ToolStatus {
+    fn from(outcome: &ToolOutcome) -> Self {
+        match outcome {
+            ToolOutcome::Ok { .. } => Self::Ok,
+            ToolOutcome::Error { .. } => Self::Error,
+            ToolOutcome::Aborted { .. } => Self::Aborted,
+            ToolOutcome::Rejected { .. } => Self::Rejected,
         }
     }
 }

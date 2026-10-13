@@ -27,7 +27,16 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    /* Review 32 NIT, closed 2026-10-13 (A-final):
+       `exactOptionalPropertyTypes` ON — cost was 12 mechanical
+       `?: T` → `?: T | undefined` widenings (all fixed, typecheck green).
+       `noUncheckedIndexedAccess` stays OFF on a measured call, not on
+       principle: it surfaces 82 errors (TS2532 ×35, TS2722 ×20, TS2322/2345
+       ×18, TS18048 ×5, TS2538 ×4), nearly all narrowing work in code other
+       agents still have in flight. Re-measure once the audit settles — it is
+       real hardening, not a default to leave off silently. */
+    "exactOptionalPropertyTypes": true
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]

@@ -305,6 +305,36 @@ fn create_duplicate_is_an_error() {
 // ── controls ─────────────────────────────────────────────────────────────────
 
 #[test]
+fn multibyte_secret_guard_never_poisons_the_store_lock() {
+    // audit 10 / 01 critical 13: `looks_secret` panicked on a multi-byte
+    // char inside its byte window while the shared Store mutex was held;
+    // the poisoned mutex then bricked memory/artifact handlers until
+    // restart. The guard must be panic-free on model-controlled bodies, and
+    // the mutex must stay usable afterwards.
+    let s = seeded();
+    let body = format!("passphrase {}", "你𝄞ø".repeat(20));
+    let out = call(
+        &s.store,
+        "t1",
+        json!({"command": "create", "path": "/memories/multibyte", "body": body}),
+    );
+    // A typed outcome — refused or accepted — never a panic.
+    assert!(
+        matches!(out, ToolOutcome::Ok { .. } | ToolOutcome::Error { .. }),
+        "{out:?}"
+    );
+    let after = call(
+        &s.store,
+        "t1",
+        json!({"command": "create", "path": "/memories/after", "body": "still alive"}),
+    );
+    assert!(
+        matches!(after, ToolOutcome::Ok { .. }),
+        "store mutex must survive the guard: {after:?}"
+    );
+}
+
+#[test]
 fn pause_blocks_writes_keeps_rows_resume_is_clean() {
     let s = seeded();
     call(
@@ -346,40 +376,39 @@ fn pause_blocks_writes_keeps_rows_resume_is_clean() {
 }
 
 #[test]
-fn reset_needs_confirm_and_wipes_every_project() {
+fn reset_is_host_driven_and_never_wipes_from_the_model() {
+    // audit 10: `reset` deleted every memory in every project, gated only by
+    // model-supplied `confirm:true` — a prompt-injected irreversible wipe.
+    // CONTRACTS §3 pins memory to six commands (D7); `reset` is an account
+    // *control* (D8), host-driven, never a model command. The model-facing
+    // path must refuse and change nothing.
     let s = seeded();
     call(
         &s.store,
         "t1",
         json!({"command": "create", "path": "/memories/a", "body": "b"}),
     );
-    call(
-        &s.store,
-        "t2",
-        json!({"command": "create", "path": "/memories/b", "body": "b"}),
-    );
-    let msg = err_text(call(&s.store, "t1", json!({"command": "reset"})));
-    assert!(msg.contains("confirm"), "{msg}");
-    let out = ok_text(call(
-        &s.store,
-        "t1",
+    for input in [
+        json!({"command": "reset"}),
         json!({"command": "reset", "confirm": true}),
-    ));
-    assert!(out.contains('2'), "count removed: {out}");
-    let la = ok_text(call(
+    ] {
+        let msg = err_text(call(&s.store, "t1", input));
+        assert!(!msg.is_empty(), "model-facing reset must be a typed error");
+    }
+    let kept = ok_text(call(
         &s.store,
         "t1",
         json!({"command": "view", "path": "/memories"}),
     ));
-    let lb = ok_text(call(
-        &s.store,
-        "t2",
-        json!({"command": "view", "path": "/memories"}),
-    ));
-    assert!(
-        !la.contains("/memories/a") && !lb.contains("/memories/b"),
-        "{la} {lb}"
-    );
+    assert!(kept.contains("/memories/a"), "nothing wiped: {kept}");
+    // The host-driven path a settings UI can call stays intact (D8).
+    let n = s
+        .store
+        .lock()
+        .expect("lock")
+        .delete_all_memories()
+        .expect("host reset");
+    assert_eq!(n, 1, "one memory deleted by the host path");
 }
 
 #[test]

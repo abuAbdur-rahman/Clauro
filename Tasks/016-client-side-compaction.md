@@ -38,9 +38,10 @@ replay `system` + `tools` + messages verbatim, and **carry `tools` through** eve
 summariser never calls one — dropping them misaligns every following token.
 
 **Fixed-section checkpoint** (`D16`). Ordered sections, empty sections kept, terse bullets, exact
-paths and identifiers preserved, and *"Do not mention the summary process or that context was
-compacted."* Two more rules in the trailing instruction: do not mention the summarisation request,
-and output only the checkpoint text.
+paths and identifiers preserved, and the checkpoint stays silent about the summarisation itself —
+it must not reveal that a summary happened or that earlier context was compacted. Two more rules
+in the trailing instruction: do not mention the summarisation request, and output only the
+checkpoint text.
 
 **Boundary marker + generation counter** (`D63`). Resolving a checkpoint **slices from the marker
 onward**, so parts emitted after a mid-run summary survive. Compaction is real **only if the

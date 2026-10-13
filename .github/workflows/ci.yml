@@ -41,17 +41,21 @@ jobs:
       - name: Check D-refs, task count, crate names, DDL count
         run: python3 scripts/check-docs.py
 
-  # 2. Platform matrix — Windows only until 021 re-enables Linux (D114).
+  # 2. Platform matrix — Windows primary + floor, Linux primary + floor.
   #
-  # Linux primary + Linux floor are parked, not deleted: their exact definitions
-  # live in `.github/workflows/linux-matrix.yml.disabled` (a non-`.yml` name, so
-  # GitHub never executes it). They never completed — 35-minute walls against a
-  # 30-minute job limit on cold builds with no cargo cache — and re-running red
-  # teaches nothing. Windows primary + Windows floor are the gate until then.
+  # Linux re-enabled 2026-10-12 (review 42; AGENTS.md §9 / D50: the Windows and
+  # Linux floors are release blockers, and release.yml ships Linux AppImages).
+  # D114 parked these jobs on 2026-10-06 because cold builds hit 35-minute walls
+  # against a 30-minute limit with no cargo cache, and its own restore plan was
+  # "re-enable together with the cargo cache and timeout budget" — which is what
+  # this job now has: rust-cache below and a 60-minute timeout. The parked
+  # definitions from `.github/workflows/linux-matrix.yml.disabled` (matrix
+  # entries, apt step) are restored verbatim and that file is deleted. A new
+  # D-number superseding D114/D115's parking is owed to DECISIONS.md.
   check:
     name: ${{ matrix.job }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +64,10 @@ jobs:
             os: windows-latest
           - job: windows floor
             os: windows-latest
+          - job: linux primary
+            os: ubuntu-24.04
+          - job: linux floor
+            os: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -96,6 +104,13 @@ jobs:
         with:
           toolchain: ${{ steps.tc.outputs.channel }}
           components: clippy, rustfmt
+
+      # Cargo cache — D114's restore condition and review 42's fix for the
+      # 35-minute cold-build walls. Same default key as release.yml minus the
+      # target: this matrix is host-native only, and the key folds in the
+      # lockfile so a dependency bump starts clean.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: steps.rust.outputs.present == 'true'
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         if: steps.web.outputs.present == 'true'
         with:
@@ -107,15 +122,43 @@ jobs:
           node-version-file: ".nvmrc"
           cache: pnpm
 
-      # (Linux webview deps step removed with the Linux jobs — D114. It lives
-      # in `.github/workflows/linux-matrix.yml.disabled` and returns with them.)
+      # Restored verbatim from `.github/workflows/linux-matrix.yml.disabled`
+      # when the Linux jobs came back (D114 parked it; review 42 / D50
+      # re-enabled 2026-10-12).
+      - name: Install Linux webview deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      # The Linux floor records its WebKitGTK runtime the way the Windows floor
+      # records WebView2 (D50: a floor that records nothing is a label, not a
+      # floor). 2.40 is D50's floor; a pinned-version install is Phase 7
+      # (Tasks/021).
+      - name: Record the Linux floor WebKitGTK runtime version
+        if: matrix.job == 'linux floor'
+        shell: bash
+        run: |
+          v=$(pkg-config --modversion webkit2gtk-4.1 2>/dev/null || true)
+          if [ -z "$v" ]; then
+            echo "::warning::no webkit2gtk-4.1 found via pkg-config - see Tasks/021"
+            exit 0
+          fi
+          echo "WebKitGTK version: $v"
+          if [ "$(printf '%s\n' 2.40.0 "$v" | sort -V | head -n1)" = "2.40.0" ]; then
+            echo "at or above the D50 floor (2.40+)"
+          else
+            echo "::error::WebKitGTK $v is below the D50 floor (2.40+)"
+            exit 1
+          fi
 
       # The Windows floor pins a FIXED WebView2 runtime rather than relying on
       # whatever the image happens to ship. Full fixed-version install lands
-      # with Tasks/021 (Phase 6); until then this step records the resolved
-      # runtime version in the job log, so the next reader can tell what was
-      # actually tested (TECH_STACK.md §5). A floor that records nothing is a
-      # label, not a floor (D50).
+      # with Tasks/021 (Phase 7, per D115); until then this step records the
+      # resolved runtime version in the job log, so the next reader can tell
+      # what was actually tested (TECH_STACK.md §5). A floor that records
+      # nothing is a label, not a floor (D50).
       - name: Record the Windows floor WebView2 runtime version
         if: matrix.job == 'windows floor'
         shell: pwsh
@@ -130,12 +173,15 @@ jobs:
 
       - name: clippy
         if: steps.rust.outputs.present == 'true'
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # --locked like cargo test below (review 42): clippy resolves the
+        # dependency graph too, and a drifted lock must fail the build, not
+        # silently update.
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: cargo test
         if: steps.rust.outputs.present == 'true'
-        # --locked is not optional in CI (release.yml:61). Without it, Cargo
-        # lock drift silently updates instead of failing the build.
+        # --locked is not optional in CI (release.yml asserts it too). Without
+        # it, Cargo lock drift silently updates instead of failing the build.
         run: cargo test --workspace --locked
 
       - name: Frontend lint, typecheck and test

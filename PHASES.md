@@ -1,6 +1,6 @@
 # Clauro — PHASES.md
 
-**Eight phases, twenty-eight tasks.** Each phase lists its tasks, its gate, and what it unblocks.
+**Eight phases, thirty-three tasks.** Each phase lists its tasks, its gate, and what it unblocks.
 Sequencing rationale is in `PLAN.md` §4.
 
 Every task is test-first and contract-anchored (`AGENTS.md` §6). A task's file names the failing
@@ -20,33 +20,46 @@ interchangeable:
 | ◐ | Partially done. The task file says exactly what is missing and why. |
 | ⬜ | Not done. **UI-only criteria say so explicitly** — `AGENTS.md` §8a forbids filling a blank on inference, and no frontend component exists yet for them. |
 
-**Where the project actually is, 2026-10-05.** Phases 0 and 1 are done in substance. Phase 2 has its
-two structural pieces — `007` and `023`, the registry and the loop — and the `memory` handler. What
-is missing is the wiring between them, and it is worth being blunt about the shape of it:
+**Where the project actually is, 2026-10-12.** Phases 0 through 5 are done in substance and Phase 6
+is in progress; `Tasks/001`–`033` exist, with `029`–`032` recorded in the Phase 6 table below and
+`033` in Phase 0. The shape of the wiring that Phase 2 once lacked is now in place:
 
-- **The loop now consults the registry components at dispatch** (`run.rs`
+- **The loop consults the registry components at dispatch and the UI drives turns.** `run.rs`
   dispatches through `resolve()`, holds ask-effects in `ApprovalQueue`,
   tells `QuestionGate` about every non-question call with per-message reset,
   refuses mixed questions by lookahead, and bounds `Ok` previews via
-  `bound_output`). Still uncalled: `resolve_answer` (answer persistence needs
-  the UI card), and no host drives a turn. `D26` holds twice over — denied
-  tools are absent from the request *and* refused if emitted.
-- **`src-tauri` registers seven commands and none reaches the loop.** `clauro-loop` is not a
-  dependency of the shell crate. Nothing drives a turn from the UI yet.
+  `bound_output`. `resolve_answer` is imported at `run.rs:25` and called on the
+  answer path at `run.rs:407` — answer persistence is wired, not test-only.
+  `D26` holds twice over — denied tools are absent from the request *and*
+  refused if emitted.
+- **`src-tauri` registers 20 commands and one of them drives the loop.** The shell depends on
+  `clauro-loop` (`src-tauri/Cargo.toml:37`) and `turn.rs` is the turn driver — `turn::turn_start`
+  reaches `run_turn`/`continue_turn` through `prepare_loop` (`turn.rs:1121-1151`), so a turn is
+  driven from the UI. (Review 41 cited "22 commands at lib.rs:212-235"; the block is
+  `lib.rs:223-244` with 20 entries.)
 - **Three silent `let _ =` drops** were on the exact paths `D65`/`D68` guarantee
   (`run.rs:493,716,732`; `PHASES.md` previously cited the stale `290,513,529` — corrected
   in the same change that fixed them). **Fixed by `Tasks/028` (O1):** `insert_tool_block`,
   `insert_notice` and the `cancel_turn` call now return `LoopError::Store` instead of
   vanishing. A failed write fails the turn loudly; nothing on these paths is silent.
-- **Six criteria are blocked on a frontend that does not exist** (three in `006`, two in `008`, one
-  in `009`, plus `023`'s queue chips). They are not failures; they are unstarted.
+- **Six criteria were blocked on frontend work** (three in `006`, two in `008`, one
+  in `009`, plus `023`'s queue chips). They were not failures; they were unstarted.
+  *(Stated as of 2026-10-05. The interaction pass in `Tasks/032` has since landed the context bar,
+  jump-to-latest, the slash menu and the composer token hint — see the Phase 6 table — so several
+  of these are now `◐` with evidence rather than blank.)*
 
-**Two defects found in infrastructure that is otherwise green.** `.github/workflows/ci.yml:134` runs
-`cargo test` **without `--locked`**, so Cargo lock drift silently updates instead of failing — while
-`release.yml:61` says in a comment that "`--locked` is not optional in CI". And the two floor jobs
-are not yet floors: `ci.yml:119-122` is a `Write-Host` stub that pins nothing, and `linux floor` is
-byte-identical to `linux primary`. `D50` calls a floor failure a release blocker; the floors behind
-that guarantee need building. Both are one-line fixes and belong to `Tasks/021`.
+**Two defects found in infrastructure that is otherwise green.** *(Both written 2026-10-05; both
+now fixed, recorded here because the history is the reason the fixes exist.)* `ci.yml` ran
+`cargo test` **without `--locked`**, so Cargo lock drift silently updated instead of failing —
+while `release.yml` said in a comment that "`--locked` is not optional in CI". Fixed in review 42:
+`ci.yml:185` now runs `cargo test --workspace --locked` and `ci.yml:179` runs clippy with
+`--locked`. And the two floor jobs were not yet floors: the floor steps were `Write-Host` stubs
+that pinned nothing, and `linux floor` was byte-identical to `linux primary`. Partly fixed — both
+floors now *record* their webview runtime (`ci.yml:139` for WebKitGTK, `ci.yml:162` for WebView2)
+and the Linux floor **asserts** its 2.40 floor, failing the job below it. What remains belongs to
+`Tasks/021`: the Windows floor still records rather than *pins*, and neither platform has a
+fixed-version install. A recorded-but-unpinned floor is a step, not a guarantee, and `D50` still
+has teeth only where the version is asserted.
 
 **Document corrections made 2026-10-05.** Five false claims were found and corrected in the task
 files rather than left standing (`AGENTS.md` §5a): `Tasks/004` said "Eleven tables" when the schema
@@ -78,19 +91,22 @@ a display.
 | `Tasks/033-five-provider-set.md` | ✅ verified 2026-10-11, Windows host (lib 80/80, vitest 473/473, tsc + eslint green; live-key proof not run by rule) | §1 (`provider` builtin ids) | D125 |
 
 **Gate:** `001` verdict written and committed. `cargo test` and `vitest` green headless on the
-Windows CI jobs. **Linux jobs parked 2026-10-06 (D114), owned by Phase 7 (D115)** — see the Phase 7 gate.
+Windows CI jobs. **Linux jobs were parked 2026-10-06 (D114/D115); restored to `ci.yml` 2026-10-12
+(D126)** — see the Phase 6 and Phase 7 gates.
 
-**Gate status:** ✅ closed Windows-only 2026-10-09 (D115). `002` and `003` are complete;
-`001`'s Windows verdict is committed (`docs/spikes/sandbox-verdict.md`). The Linux column —
-the WebKitGTK app, `event.origin`/`event.source` capture, both Linux jobs — is owned by
-Phase 7 and gates nothing here: an unrun floor blocks nothing (D50), and Phases 0–6 close
-Windows-only by decision, not by omission. (`event.origin`/`event.source` capture on Windows
-itself remains open under `Tasks/014` — that is Phase 3 work, not this gate.)
+**Gate status:** ✅ closed Windows-only 2026-10-09 (D115, CI clause since superseded by D126).
+`002` and `003` are complete; `001`'s Windows verdict is committed
+(`docs/spikes/sandbox-verdict.md`). The Linux column — the WebKitGTK app,
+`event.origin`/`event.source` capture — is still owned by Phase 7 and gates nothing here (D50),
+but the two Linux *jobs* now run on every change (D126). (`event.origin`/`event.source` capture
+on Windows itself remains open under `Tasks/014` — that is Phase 3 work, not this gate.)
 
-> **The two floor jobs are labels, not floors yet.** `ci.yml:119-122` is a `Write-Host` stub that pins
-> no runtime, and `linux floor` is byte-identical to `linux primary`. The labels are there; `D50`'s
-> guarantee behind them is not. Plus `ci.yml:134` omits `--locked`, so Cargo lock drift does not fail
-> the build. Both belong to `Tasks/021`.
+> **The two floor jobs are labels, not floors yet.** *(Written 2026-10-05; partly obsolete.)* Both
+> floors now *record* their webview runtime — `ci.yml:139` (WebKitGTK, which also **asserts** the
+> 2.40 floor and fails below it) and `ci.yml:162` (WebView2) — and `cargo test`/`clippy` run with
+> `--locked` (`ci.yml:179,185`). What is still missing is *pinning*: neither floor installs a fixed
+> runtime version, so the label still rests partly on whatever the image ships. That belongs to
+> `Tasks/021`. A floor that records but does not pin is a step, not a guarantee.
 
 **Unblocks:** everything. `Tasks/013` waits on the `001` verdict; everything else waits on `002`.
 
@@ -178,10 +194,15 @@ tools outside this gate (`artifact`, `bash`) remain Phase 3's, as expected.
 **Read order inside this phase:** `007` → `023` → the handlers. `023` owns the loop that drives every
 handler, so a handler written before it has no defined caller.
 
-> **The wiring gap is the whole story of this phase.** Every piece exists and every test is
-> green, and yet nothing drives a turn: `src-tauri/Cargo.toml` does not depend on `clauro-loop`,
-> and `generate_handler!` (`src-tauri/src/lib.rs:172-181`) registers eight commands that reach the
-> store and the keyring but never the loop.
+> **The wiring gap was the whole story of this phase — it is now closed.** Every piece existed and
+> every test was green, and yet nothing drove a turn: `src-tauri/Cargo.toml` did not depend on
+> `clauro-loop`, and `generate_handler!` (`src-tauri/src/lib.rs:172-181` then) registered eight
+> commands that reached the store and the keyring but never the loop. **Resolved since:** the shell
+> now depends on `clauro-loop` (`src-tauri/Cargo.toml:37`), `turn.rs` drives turns, and the handler
+> block is `src-tauri/src/lib.rs:223-244` with **20** commands — `turn_start` reaching
+> `run_turn`/`continue_turn` through `prepare_loop`. The counts below are the history of that
+> closure, kept because each one documents a real step: 18 when `turn.rs` landed, 19 with
+> `question_answer` (D118), 20 with the provider/catalogue commands in task 033.
 >
 > An earlier version of this note claimed `crates/clauro-loop/src/run.rs:263` dispatched tool calls
 > **without consulting `resolve()` or `ApprovalQueue`**, and that "grep for both returns zero
@@ -190,7 +211,8 @@ handler, so a handler written before it has no defined caller.
 > tells `QuestionGate` about each call with per-message reset, refuses mixed questions by
 > lookahead, and bounds output on the way out — `D27` is enforced at dispatch. Since 2026-10-07 a
 > host drives turns (`src-tauri/src/turn.rs`, eighteen commands registered). Since 2026-10-09
-> questions pause and resume (D118, nineteen commands with `question_answer`). Still open:
+> questions pause and resume (D118, nineteen commands with `question_answer`). Since 2026-10-11 the
+> provider surface in task 033 took it to twenty. Still open:
 > the idle-queue drain.
 
 **Unblocks:** Phase 3 (`fs` proves the workspace tree before `bash` exists; `artifact` needs the
@@ -260,8 +282,9 @@ cannot authorise a retry; usage after compaction reads `usage.iterations`, not t
 `vitest` 16/114 pass. Trigger = `max(fixedCost+2048, min(ratio, usable))` (`lib.rs:compute_trigger`);
 `NoProgress.authorises_retry()==false`; billing sums + context takes last (`compact.rs:usage_from_iterations`,
 `anthropic.rs:usage_wire`); `balanced_boundary` lands only where no open `tool_use` remains.
-Two known doc debts, not gate failures: `CONTRACTS.md §4` still states D64 formula (SPEC M1 + D82 win),
-and SPEC M5 says threshold-preferred while code follows D95 on-demand-first.
+**The two doc debts noted here on 2026-10-06 are now paid (2026-10-12):** `CONTRACTS.md` §4 and §6
+state the D82 arithmetic (`max(fixedCost + 2_048, min(ratioBound, usableTokens))`, clamped to the
+window), and SPEC M5 now reads on-demand-first per D95 with threshold as the fallback.
 
 **Unblocks:** nothing structurally — but a v1 without this fails on any long thread.
 
@@ -299,19 +322,25 @@ zero hits source + manifests.
 
 **Purpose:** prove it on the engines people actually run.
 
-| Task | Contract | D-refs |
-|---|---|---|
-| `Tasks/021-platform-floors-and-linux-gate.md` | §7 | D2, D45, D46, D50, D77, D79 |
-| `Tasks/022-packaging-and-dependency-audit.md` | — | D4, D23, D24, D39, D49, D53, D59, D60 |
+| Task | State | Contract | D-refs |
+|---|---|---|---|
+| `Tasks/021-platform-floors-and-linux-gate.md` | ◐ Linux CI restored to `ci.yml` (D126) — floors record + Linux floor asserts 2.40; fixed-version installs + the Linux gate proof still open | §7 | D2, D45, D46, D50, D77, D79 |
+| `Tasks/022-packaging-and-dependency-audit.md` | ◐ installers exist; `THIRD_PARTY_NOTICES` + the cargo-audit workflow wiring are release-time, still open | — | D4, D23, D24, D39, D49, D53, D59, D60, D127 |
+| `Tasks/029-dual-mode-shell-parity.md` | ◐ slice 1 landed 2026-10-10 on Windows; `docs/blockers.md` row follow-ups remain | — | D112 |
+| `Tasks/030-cold-launch.md` | ✅ landed (code); one environmental item for the human (Defender exclusion on `node_modules`) | — | D112 |
+| `Tasks/031-ui-upgrade-wave.md` | ◐ T1–T7 landed in `65e46f4` (2026-10-11); the task file's boxes are unticked and its status still reads "open" — tick-with-evidence is owed by its owner (review 41), not by this document | — | D112 |
+| `Tasks/032-interaction-layout-pass.md` | ✅ landed, all four groups + criteria ticked with `path:line` evidence (corrected 2026-10-12) | — | D112 |
 
 **Gate:** **both floors** pass, not just the primaries. Installers exist for Windows and Linux.
 Dependency audit confirms nothing was ported from LobeHub or from proprietary wording.
 
-**Parked 2026-10-06 (D114), owned by Phase 7 (D115):** Linux primary + Linux floor are out of
-`ci.yml` until after full development — definitions preserved in
-`.github/workflows/linux-matrix.yml.disabled`, restore owned by Phase 7 together with the cargo
-cache + timeout budget. Until then the enforced gate is the two Windows jobs; `D50` is unchanged
-(an unrun floor blocks nothing, a failed one blocks everything).
+**Linux CI restored 2026-10-12 (D126).** The parking that D114/D115 imposed on 2026-10-06 is
+lifted: `ci.yml` runs windows primary, windows floor, linux primary and linux floor on every
+change, with the cargo cache (`Swatinem/rust-cache`) and `timeout-minutes: 60` that D114 itself
+named as the restore condition. `.github/workflows/linux-matrix.yml.disabled` was deleted — the
+definitions were restored verbatim into `ci.yml`. What still belongs to `Tasks/021` and to Phase 7
+is the fixed-version runtime *install* and the `001` Linux column, not the jobs. `D50` is unchanged
+(a failed floor blocks everything) and now has both floors actually running behind it.
 
 **A floor failure is a release blocker, not a warning.** The floors are where the sandbox guarantee
 gets falsified. **D50.**
@@ -323,17 +352,21 @@ gets falsified. **D50.**
 **Purpose:** everything Linux-shaped that Phases 0–6 provably don't need on Windows, in one
 place with one gate, so no earlier phase stays open for it. Created 2026-10-07 (**D115**);
 no new tasks — the work already has numbers, only the phase assignment moves.
+**Narrowed 2026-10-12 (D126):** the CI jobs and the cache/timeout budget are no longer here —
+they are back in `ci.yml` and gate every change. What remains is the runtime and verdict work.
 
-| Item | Currently in | Moves here |
-|---|---|---|
-| `001` Linux column (WebKitGTK verdict, `event.origin`/`event.source` capture) | Phase 0 gate | Phase 7 gate |
-| Linux primary + Linux floor CI (parked per `D114`, definitions in `.github/workflows/linux-matrix.yml.disabled`) | Phase 6 gate | Phase 7 gate |
-| Linux runtime gate proof (`021`, **D45**) | Phase 6 | Phase 7 |
-| Cargo cache + job-timeout budget that make Linux jobs meaningful | `021` | Phase 7 |
+| Item | Was in | Here now | State |
+|---|---|---|---|
+| `001` Linux column (WebKitGTK verdict, `event.origin`/`event.source` capture) | Phase 0 gate | Phase 7 gate | ⬜ open |
+| Linux primary + Linux floor CI | parked per `D114` in `.github/workflows/linux-matrix.yml.disabled` | **returned to the Phase 6 / every-change gate 2026-10-12 (D126)** | ✅ no longer here |
+| Cargo cache + job-timeout budget that make Linux jobs meaningful | `021` | **landed in `ci.yml` 2026-10-12 (D126)** | ✅ no longer here |
+| Linux runtime gate proof (`021`, **D45**) | Phase 6 | Phase 7 gate | ⬜ open |
+| Fixed-version runtime installs (pinned WebKitGTK; pinned WebView2 on the Windows floor) | `021` | Phase 7 gate | ⬜ open |
 
-**Gate:** the `001` Linux column is filled on real WebKitGTK, both Linux jobs pass, and the
-Linux gate fires-or-stays-silent correctly. Until then `SPEC.md` §6.3 reads "both floors" as
-the two Windows jobs.
+**Gate:** the `001` Linux column is filled on real WebKitGTK, the Linux gate
+fires-or-stays-silent correctly, and both floors install a pinned runtime rather than recording
+whatever the image ships. `SPEC.md` §6.3 reads "both floors" as all four jobs since D126 — the
+narrowing that D115 introduced ("both floors" = the two Windows jobs) is lifted with the parking.
 
 **Unblocks:** nothing — this phase is terminal by design.
 

@@ -35,13 +35,19 @@ vi.mock("../features/providers/providers", async (importOriginal) => {
   };
 });
 
-// T4 owns ProjectsRail and its working tree is mid-edit (unbound
-// `FolderKanban` at ProjectsRail.tsx:513 breaks every full-App render).
-// These wiring tests stub the rail so T6 stays verifiable without touching
-// T4's files; the stub keeps the rail's test id for view assertions.
+// Focused hotkey unit test: the rail is stubbed so a failure points at the
+// hotkey layer, not rail internals (App.actions/App.e2e render the real rail).
+// The stub keeps the rail's test id for view assertions.
 vi.mock("../features/projects/ProjectsRail", () => ({
   ProjectsRail: () => <div data-testid="projects-rail" />,
 }));
+
+vi.mock("./TitleBar", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./TitleBar")>();
+  // Keep the real component; replace only the toggle so the hotkey test can
+  // observe whether it drives the toggle directly or clicks through the DOM.
+  return { ...actual, toggleMaximizeWindow: vi.fn() };
+});
 
 function media(query: string) {
   return {
@@ -96,10 +102,14 @@ describe("App hotkey wiring (031 T6)", () => {
     expect(await screen.findByTestId("home-header")).toBeDefined();
   });
 
-  it("F11 drives the TitleBar maximize affordance without throwing", async () => {
+  it("F11 toggles maximize through TitleBar's toggle, not a DOM query", async () => {
+    // Review 30 NIT: the hotkey used to `querySelector('button[aria-label=
+    // "Maximize"]').click()` — DOM actuation instead of the real handler.
+    const { toggleMaximizeWindow } = await import("./TitleBar");
     render(<App />);
     await screen.findByTestId("home-header");
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "F11" }));
+    expect(vi.mocked(toggleMaximizeWindow)).toHaveBeenCalledOnce();
     expect(await screen.findByRole("button", { name: /maximize/i })).toBeDefined();
   });
 });

@@ -202,6 +202,38 @@ CREATE TABLE provider_model (
 CREATE INDEX idx_provider_model ON provider_model(provider_id, model_id);
 "#;
 
+/// D19 in the engine, not just in review (`CONTRACTS.md` §1). Idempotent and
+/// applied on **every** open rather than gated by `user_version`: a database
+/// created before the triggers existed gains them on its next open, with no
+/// schema-version migration and no version bump (035, audit `40` CRITICAL).
+///
+/// `DELETE` is deliberately not banned. `delete_thread` / `delete_project`
+/// must still remove `message`/`block` rows as part of the D10 delete, and a
+/// trigger cannot tell that path apart from a rogue rewrite — so the delete
+/// path is covered by the behavioural tests in `tests/retention.rs` instead.
+/// Honest residual: `INSERT OR REPLACE` resolves its conflict through that
+/// same delete path, which is why the source scan in `tests/append_only.rs`
+/// also refuses the spelling outright.
+///
+/// Formatting is load-bearing for `tests/append_only.rs`: `BEFORE UPDATE`
+/// ends its line and the table sits behind `ON`, so the statement scan reads
+/// the token after the keyword as `on`, never as the target table.
+const TRIGGERS_SQL: &str = r#"
+CREATE TRIGGER IF NOT EXISTS trg_message_append_only
+  BEFORE UPDATE
+  ON message
+  BEGIN
+    SELECT RAISE(ABORT, 'append-only (D19): message rows are never rewritten');
+  END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_append_only
+  BEFORE UPDATE
+  ON block
+  BEGIN
+    SELECT RAISE(ABORT, 'append-only (D19): block rows are never rewritten');
+  END;
+"#;
+
 // ── errors ───────────────────────────────────────────────────────────────────
 
 /// Every failure this crate can produce. Nothing crosses to callers untyped.
@@ -219,6 +251,9 @@ pub enum StoreError {
     /// A compaction must advance its thread's generation strictly by one (D63,
     /// D84: `UNIQUE (thread_id, generation)` is the second guard).
     BadCompactionGeneration { thread: String, got: i64, want: i64 },
+    /// The file was stamped by a newer build. Opening it anyway would misread
+    /// tables this build does not know; refuse instead of guessing (035).
+    UnsupportedVersion { got: i64, supported: i64 },
 }
 
 impl fmt::Display for StoreError {
@@ -234,6 +269,10 @@ impl fmt::Display for StoreError {
             Self::BadCompactionGeneration { thread, got, want } => write!(
                 f,
                 "compaction on thread {thread} must be generation {want}, got {got}"
+            ),
+            Self::UnsupportedVersion { got, supported } => write!(
+                f,
+                "database schema version {got} is newer than this build supports ({supported})"
             ),
         }
     }
@@ -564,16 +603,40 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         // The file outlives any one handle, so reopening must not replay the
-        // DDL. `user_version` gates creation (and later migrations); the DDL
-        // above stays verbatim rather than gaining IF NOT EXISTS on every line.
+        // table DDL. `user_version` gates creation (and later migrations).
+        // DDL + version stamp commit as one unit: previously they were two
+        // autocommit statements, so a crash between them left a version-0
+        // file whose next open replayed `CREATE TABLE` and bricked itself
+        // with "already exists" (review 20). SQLite DDL is transactional, so
+        // one transaction is the whole fix. A file stamped by a newer build
+        // is refused, not silently misread.
+        const SUPPORTED: i64 = 2;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version == 0 {
-            conn.execute_batch(SCHEMA_SQL)?;
-            conn.pragma_update(None, "user_version", 2)?;
-        } else if version == 1 {
-            conn.execute_batch(MIGRATION_1_TO_2_SQL)?;
-            conn.pragma_update(None, "user_version", 2)?;
+        match version {
+            0 => {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch(SCHEMA_SQL)?;
+                tx.pragma_update(None, "user_version", SUPPORTED)?;
+                tx.commit()?;
+            }
+            1 => {
+                let tx = conn.unchecked_transaction()?;
+                tx.execute_batch(MIGRATION_1_TO_2_SQL)?;
+                tx.pragma_update(None, "user_version", SUPPORTED)?;
+                tx.commit()?;
+            }
+            SUPPORTED => {}
+            got => {
+                return Err(StoreError::UnsupportedVersion {
+                    got,
+                    supported: SUPPORTED,
+                });
+            }
         }
+        // Version-independent and idempotent: every open replays this batch so
+        // databases created before the D19 triggers gain them too — no
+        // schema-version migration, no user_version bump (see TRIGGERS_SQL).
+        conn.execute_batch(TRIGGERS_SQL)?;
         Ok(Self { conn })
     }
 
@@ -743,7 +806,9 @@ impl Store {
 
     /// Replace the whole model list and stamp freshness, atomically. Refresh
     /// replaces, never merges — a model the provider removed must disappear
-    /// from the picker rather than lingering as a dead entry.
+    /// from the picker rather than lingering as a dead entry. One transaction:
+    /// an error mid-rewrite (a duplicate id, a crash) rolls back to the
+    /// previous list and its previous freshness stamp (review 20).
     pub fn replace_provider_models(
         &self,
         provider_id: &str,
@@ -755,12 +820,13 @@ impl Store {
                 "no such provider: {provider_id}"
             )));
         }
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM provider_model WHERE provider_id = ?1",
             [provider_id],
         )?;
         for m in models {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO provider_model (provider_id, model_id, display_name) VALUES (?1, ?2, ?3)",
                 rusqlite::params![provider_id, m.id, m.display_name],
             )?;
@@ -768,10 +834,11 @@ impl Store {
         // The one mutating write path outside the transcript tables: this
         // column is configuration freshness, documented in CONTRACTS.md §1
         // and allowlisted in tests/append_only.rs.
-        self.conn.execute(
+        tx.execute(
             "UPDATE provider SET models_fetched_at = ?1 WHERE id = ?2",
             rusqlite::params![fetched_at, provider_id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -792,13 +859,14 @@ impl Store {
     }
 
     /// Remove a provider and its models. Returns whether a row existed —
-    /// removing twice is a no-op, not an error.
+    /// removing twice is a no-op, not an error. Both DELETEs in one
+    /// transaction: a crash between them used to leave models whose provider
+    /// row was gone (review 20).
     pub fn remove_provider(&self, id: &str) -> Result<bool, StoreError> {
-        self.conn
-            .execute("DELETE FROM provider_model WHERE provider_id = ?1", [id])?;
-        let removed = self
-            .conn
-            .execute("DELETE FROM provider WHERE id = ?1", [id])?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM provider_model WHERE provider_id = ?1", [id])?;
+        let removed = tx.execute("DELETE FROM provider WHERE id = ?1", [id])?;
+        tx.commit()?;
         Ok(removed > 0)
     }
 
@@ -812,14 +880,17 @@ impl Store {
 
     /// Refuses a generation regression with a typed error, so I3
     /// (non-decreasing along `(thread, seq)`) holds by construction (D63).
+    /// The guard and the insert share one transaction — the check-then-act
+    /// pair is atomic even if the `Store` is ever reached from two handles
+    /// (review 20 NIT; callers today serialise via a mutex).
     pub fn insert_block(&self, b: NewBlock) -> Result<(), StoreError> {
-        let thread: String = self.conn.query_row(
+        let tx = self.conn.unchecked_transaction()?;
+        let thread: String = tx.query_row(
             "SELECT thread_id FROM message WHERE id = ?1",
             [&b.message_id],
             |row| row.get(0),
         )?;
-        let max: Option<i64> = self
-            .conn
+        let max: Option<i64> = tx
             .query_row(
                 "SELECT MAX(b.generation) FROM block b JOIN message m ON b.message_id = m.id WHERE m.thread_id = ?1",
                 [&thread],
@@ -836,7 +907,7 @@ impl Store {
                 });
             }
         }
-        self.conn.execute(
+        tx.execute(
             "INSERT INTO block (id, message_id, seq, kind, payload, boundary, is_summary, generation, signature, dropped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 b.id,
@@ -851,6 +922,7 @@ impl Store {
                 i64::from(b.dropped)
             ],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -877,9 +949,12 @@ impl Store {
     }
 
     /// Ordinary-channel sums. The column list is the D57 proof: `summary_*`
-    /// is selected nowhere here.
-    pub fn usage_totals(&self, thread_id: &str) -> UsageTotals {
-        self.conn
+    /// is selected nowhere here. Typed errors, no panic: a reader that panics
+    /// while the caller holds the store mutex poisons it and kills every
+    /// handler until restart (review 20).
+    pub fn usage_totals(&self, thread_id: &str) -> Result<UsageTotals, StoreError> {
+        Ok(self
+            .conn
             .query_row(
                 "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_write_tokens), 0) FROM usage WHERE thread_id = ?1",
                 [thread_id],
@@ -891,8 +966,7 @@ impl Store {
                         cache_write_tokens: row.get(3)?,
                     })
                 },
-            )
-            .expect("usage sums must read")
+            )?)
     }
 
     pub fn insert_tool_result(&self, r: NewToolResult) -> Result<(), StoreError> {
@@ -930,8 +1004,11 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_memory(&self, id: &str) -> Option<MemoryRow> {
-        self.conn
+    /// One memory row. `Ok(None)` is "no such id"; a failed read is a typed
+    /// error, not a panic while the caller holds the store mutex (review 20).
+    pub fn get_memory(&self, id: &str) -> Result<Option<MemoryRow>, StoreError> {
+        Ok(self
+            .conn
             .query_row(
                 "SELECT id, path, body, revision, sensitive, updated_at FROM memory WHERE id = ?1",
                 [id],
@@ -946,8 +1023,7 @@ impl Store {
                     })
                 },
             )
-            .optional()
-            .expect("memory read must not fail")
+            .optional()?)
     }
 
     /// Every note in one scope, for topic listing. Sensitivity filtering
@@ -1045,19 +1121,22 @@ impl Store {
         Ok(())
     }
 
-    pub fn compaction_generations(&self, thread_id: &str) -> Vec<i64> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT generation FROM compaction_event WHERE thread_id = ?1 ORDER BY generation",
-            )
-            .expect("compaction read must prepare");
-        stmt.query_map([thread_id], |row| row.get(0))
-            .expect("compaction read must run")
-            .filter_map(Result::ok)
-            .collect()
+    /// The compaction ledger's generations for one thread, ascending. Typed
+    /// errors, no panic and no silently dropped row (review 20): a partial
+    /// ledger read would restart the generation arithmetic from a wrong max.
+    pub fn compaction_generations(&self, thread_id: &str) -> Result<Vec<i64>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT generation FROM compaction_event WHERE thread_id = ?1 ORDER BY generation",
+        )?;
+        let rows = stmt.query_map([thread_id], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The signature cannot change to `Result` while clauro-loop
+    /// (`run.rs:1140`) consumes the `Vec` form, but a silently dropped row
+    /// would feed I1/I3 a truncated transcript and a false "clean" verdict —
+    /// so decode failures refuse loudly instead (review 20; the typed-error
+    /// follow-up needs a clauro-loop call-site change).
     pub fn blocks_for_message(&self, message_id: &str) -> Vec<BlockRow> {
         let mut stmt = self
             .conn
@@ -1071,8 +1150,8 @@ impl Store {
             })
         })
         .expect("block read must run")
-        .filter_map(Result::ok)
-        .collect()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("block rows must decode — a dropped row would truncate the transcript")
     }
 
     /// The owning message of one block. A read, not a write path: answering a
@@ -1157,8 +1236,8 @@ impl Store {
         )?;
         self.must_touch(rows, id)?;
         Ok(self
-            .get_memory(id)
-            .expect("just-written memory must read")
+            .get_memory(id)?
+            .ok_or_else(|| StoreError::NotFound(format!("no such memory: {id}")))?
             .revision)
     }
 
@@ -1289,16 +1368,16 @@ impl Store {
     /// The child-first delete, over an open transaction. Shared by
     /// `delete_thread` (one thread) and `delete_project` (every thread in the
     /// project), so both get the same ordering and the same atomicity.
-    fn delete_thread_rows(tx: &rusqlite::Transaction<'_>, thread_id: &str) -> Result<(), StoreError> {
+    fn delete_thread_rows(
+        tx: &rusqlite::Transaction<'_>,
+        thread_id: &str,
+    ) -> Result<(), StoreError> {
         tx.execute(
             "DELETE FROM block WHERE message_id IN (SELECT id FROM message WHERE thread_id = ?1)",
             [thread_id],
         )?;
         tx.execute("DELETE FROM usage WHERE thread_id = ?1", [thread_id])?;
-        tx.execute(
-            "DELETE FROM tool_result WHERE thread_id = ?1",
-            [thread_id],
-        )?;
+        tx.execute("DELETE FROM tool_result WHERE thread_id = ?1", [thread_id])?;
         tx.execute("DELETE FROM artifact WHERE thread_id = ?1", [thread_id])?;
         tx.execute(
             "DELETE FROM compaction_event WHERE thread_id = ?1",
@@ -1314,6 +1393,14 @@ impl Store {
     }
 
     /// Fork prefix rows into a new thread under new ids; source untouched (D99).
+    ///
+    /// Copies message, block, tool_result and the compaction ledger: a fork
+    /// without its tool results leaves every `tool_use` unpaired under I1, and
+    /// one without its ledger restarts the destination at generation 1 while
+    /// its blocks claim N (D84 divergence) — both review-20 findings. One
+    /// transaction, so a mid-fork failure leaves neither a half-copied
+    /// destination nor a dangling thread row; each SELECT is prepared once,
+    /// not re-prepared per message (review 20 NIT).
     pub fn fork_thread(&self, src: &str, dst: &str) -> Result<(), StoreError> {
         type BlockRow = (
             String,
@@ -1326,44 +1413,70 @@ impl Store {
             Option<String>,
             i64,
         );
+        type ResultRow = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        );
+        type EventRow = (String, i64, String, i64, i64, i64, Option<i64>, i64);
+        let tx = self.conn.unchecked_transaction()?;
         let t: ThreadRow = self
             .get_thread(src)?
             .ok_or_else(|| StoreError::NotFound(src.to_string()))?;
-        self.insert_thread(NewThread {
-            id: dst.to_string(),
-            project_id: t.project_id,
-            title: t.title,
-            incognito: false,
-            memory_off: t.memory_off,
-            system_frozen: t.system_frozen,
-            tools_frozen: t.tools_frozen,
-        })?;
-        let msgs: Vec<(String, i64, String, i64)> = self
-            .conn
-            .prepare(
+        tx.execute(
+            "INSERT INTO thread (id, project_id, title, incognito, memory_off, system_frozen, tools_frozen, created_at) VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                dst,
+                t.project_id,
+                t.title,
+                t.memory_off,
+                t.system_frozen,
+                t.tools_frozen,
+                now_ms()
+            ],
+        )?;
+        let msgs: Vec<(String, i64, String, i64)> = {
+            let mut stmt = tx.prepare(
                 "SELECT id, seq, role, created_at FROM message WHERE thread_id = ?1 ORDER BY seq",
-            )?
-            .query_map([src], |row| {
+            )?;
+            let rows = stmt.query_map([src], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .filter_map(Result::ok)
-            .collect();
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
         for (mid, seq, role, created) in &msgs {
             let new_mid = format!("{dst}-{mid}");
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO message (id, thread_id, seq, role, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![new_mid, dst, seq, role, created],
             )?;
-            let blocks: Vec<BlockRow> = self
-                .conn
-                .prepare("SELECT id, seq, kind, payload, boundary, is_summary, generation, signature, dropped FROM block WHERE message_id = ?1 ORDER BY seq")?
-                .query_map([mid], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?))
-                })?
-                .filter_map(Result::ok)
-                .collect();
+            let blocks: Vec<BlockRow> = {
+                let mut stmt = tx.prepare(
+                    "SELECT id, seq, kind, payload, boundary, is_summary, generation, signature, dropped FROM block WHERE message_id = ?1 ORDER BY seq",
+                )?;
+                let rows = stmt.query_map([mid], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
             for (bid, bseq, kind, payload, boundary, is_sum, gen, sig, dropped) in &blocks {
-                self.conn.execute(
+                tx.execute(
                     "INSERT INTO block (id, message_id, seq, kind, payload, boundary, is_summary, generation, signature, dropped) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         format!("{dst}-{bid}"), new_mid, bseq, kind, payload,
@@ -1372,6 +1485,66 @@ impl Store {
                 )?;
             }
         }
+        {
+            let mut stmt = tx.prepare(
+                "SELECT id, tool_call_id, tool_name, status, preview, preview_path, full_path, output_bytes, created_at FROM tool_result WHERE thread_id = ?1",
+            )?;
+            let results: Vec<ResultRow> = stmt
+                .query_map([src], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, call, name, status, preview, preview_path, full_path, bytes, created) in
+                &results
+            {
+                tx.execute(
+                    "INSERT INTO tool_result (id, thread_id, tool_call_id, tool_name, status, preview, preview_path, full_path, output_bytes, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![
+                        format!("{dst}-{id}"), dst, call, name, status, preview,
+                        preview_path, full_path, bytes, created
+                    ],
+                )?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "SELECT id, generation, summary_block, covers_from, covers_to, summary_tokens, summary_used_tokens, created_at FROM compaction_event WHERE thread_id = ?1 ORDER BY generation",
+            )?;
+            let events: Vec<EventRow> = stmt
+                .query_map([src], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, gen, summary_block, from, to, tokens, used, created) in &events {
+                tx.execute(
+                    "INSERT INTO compaction_event (id, thread_id, generation, summary_block, covers_from, covers_to, summary_tokens, summary_used_tokens, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        format!("{dst}-{id}"), dst, gen, summary_block, from, to,
+                        tokens, used, created
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1379,28 +1552,48 @@ impl Store {
     /// the project row, in one transaction. Subtree files removed by caller
     /// (019).
     ///
-    /// The per-thread child rows (blocks, usage, tool results, **artifacts**
-    /// and **compaction events**) go through `delete_thread_rows` inside this
-    /// same transaction. The previous version deleted threads first and ran a
-    /// `DELETE FROM artifact ... project_id` *afterward — dead code, since by
-    /// then the threads (and their artifacts) were already gone — and never
-    /// touched `compaction_event` at all, so any project with an
-    /// artifact-bearing thread could not be deleted.
+    /// The child rows (blocks, usage, tool results, **artifacts** and
+    /// **compaction events**) go in the same transaction as the threads. The
+    /// previous version deleted threads first and ran a `DELETE FROM artifact
+    /// ... project_id` *afterward — dead code, since by then the threads (and
+    /// their artifacts) were already gone — and never touched
+    /// `compaction_event` at all, so any project with an artifact-bearing
+    /// thread could not be deleted. Each table is one set-scoped statement
+    /// over the project's threads rather than a per-thread loop (review 20
+    /// NIT); ordering stays child-first so no FK fires mid-delete.
     pub fn delete_project(&self, project_id: &str) -> Result<(), StoreError> {
         let tx = self.conn.unchecked_transaction()?;
-        let threads: Vec<String> = tx
-            .prepare("SELECT id FROM thread WHERE project_id = ?1")?
-            .query_map([project_id], |row| row.get(0))?
-            .filter_map(Result::ok)
-            .collect();
-        for t in &threads {
-            Self::delete_thread_rows(&tx, t)?;
-        }
-        tx.execute("DELETE FROM memory WHERE project_id = ?1", [project_id])?;
         tx.execute(
-            "DELETE FROM attachment WHERE project_id = ?1",
+            "DELETE FROM block WHERE message_id IN (SELECT id FROM message WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1))",
             [project_id],
         )?;
+        tx.execute(
+            "DELETE FROM usage WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM tool_result WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM artifact WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM compaction_event WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM message WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute(
+            "DELETE FROM memory_setting WHERE thread_id IN (SELECT id FROM thread WHERE project_id = ?1)",
+            [project_id],
+        )?;
+        tx.execute("DELETE FROM thread WHERE project_id = ?1", [project_id])?;
+        tx.execute("DELETE FROM memory WHERE project_id = ?1", [project_id])?;
+        tx.execute("DELETE FROM attachment WHERE project_id = ?1", [project_id])?;
         tx.execute("DELETE FROM project WHERE id = ?1", [project_id])?;
         tx.commit()?;
         Ok(())
@@ -1551,13 +1744,23 @@ impl Store {
             .flatten()
     }
 
-    /// `artifact.compiled_path` — set once after the Worker transform.
-    pub fn set_artifact_compiled_path(&self, id: &str, path: &str) -> Result<(), StoreError> {
+    /// `artifact.compiled_path` — set once after the Worker transform. The
+    /// predicate names the whole primary key `(thread_id, id, version)`: an
+    /// artifact id alone is not unique, so the old `WHERE id = ?` stamped the
+    /// path onto every version of that artifact in every thread (review 20,
+    /// IMPORTANT 3).
+    pub fn set_artifact_compiled_path(
+        &self,
+        thread_id: &str,
+        artifact_id: &str,
+        version: i64,
+        path: &str,
+    ) -> Result<(), StoreError> {
         let rows = self.conn.execute(
-            "UPDATE artifact SET compiled_path = ?1 WHERE id = ?2",
-            rusqlite::params![path, id],
+            "UPDATE artifact SET compiled_path = ?1 WHERE thread_id = ?2 AND id = ?3 AND version = ?4",
+            rusqlite::params![path, thread_id, artifact_id, version],
         )?;
-        self.must_touch(rows, id)
+        self.must_touch(rows, &format!("{thread_id}/{artifact_id}@{version}"))
     }
 
     /// The newest artifact row of one thread, if any. Refresh bumps

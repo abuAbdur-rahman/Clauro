@@ -33,20 +33,16 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import {
-  containsKeyMaterial,
-  threadToHtml,
-  threadToMarkdown,
-  type ExportBlock,
-} from "../retention/retention";
-import { transcriptRead } from "../turn/turn";
-import type { RenderRow } from "../transcript/types";
+import { exportThreadDownload } from "../retention/export";
 import { useThreadStore } from "../catalogue/thread";
 import { providerList, providerModelsEnriched, type EnrichedModel } from "../providers/providers";
 import { useTheme } from "../shell/usetheme";
-import { useSettingsStore, type SettingsSection } from "../shell/settings";
+import { DEFAULT_DISPLAY_NAME, useSettingsStore, type SettingsSection } from "../shell/settings";
+
+export { rowToExportBlock } from "../retention/export";
 
 const SECTIONS: { id: SettingsSection; label: string; keywords: string; icon: LucideIcon }[] = [
   { id: "general", label: "General", keywords: "display name language send auto-compact context bar system prompt", icon: SettingsIcon },
@@ -193,7 +189,14 @@ function Toggle({
   );
 }
 
-export function SettingsDialog({ threadId }: { threadId: string }): React.JSX.Element {
+export function SettingsDialog({
+  threadId,
+  title,
+}: {
+  threadId: string;
+  /** On-screen chat title; export names the file from it (review 31). */
+  title?: string;
+}): React.JSX.Element {
   const open = useSettingsStore((s) => s.open);
   const section = useSettingsStore((s) => s.section);
   const closeSettings = useSettingsStore((s) => s.closeSettings);
@@ -269,7 +272,7 @@ export function SettingsDialog({ threadId }: { threadId: string }): React.JSX.El
             {section === "providers" && <ProvidersPane />}
             {section === "models" && <ModelsPane query={q} />}
             {section === "memory" && <MemoryPane query={q} />}
-            {section === "data" && <DataPane threadId={threadId} query={q} />}
+            {section === "data" && <DataPane threadId={threadId} title={title} query={q} />}
             {section === "shortcuts" && <ShortcutsPane />}
             {section === "about" && <AboutPane />}
           </div>
@@ -285,6 +288,10 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
   const [sysPrompt, setSysPrompt] = useLocalPref("clauro.prefs.sysPrompt", "");
   const [autoCompact, setAutoCompact] = useLocalFlag("clauro.prefs.autoCompact", true);
   const [showContext, setShowContext] = useLocalFlag("clauro.prefs.showContext", true);
+  // The pref now has a reader (review 31): the greeting reads the settings
+  // store, so every keystroke writes both. Blank falls back to the default
+  // so the greeting can never render empty.
+  const setDisplayName = useSettingsStore((s) => s.setDisplayName);
   return (
     <div data-testid="settings-page-general">
       <h2 className="mb-4 text-xl font-semibold">General</h2>
@@ -295,6 +302,8 @@ function GeneralPane({ query }: { query: string }): React.JSX.Element {
             value={name}
             onChange={(e) => {
               setName(e.target.value);
+              const trimmed = e.target.value.trim();
+              setDisplayName(trimmed === "" ? DEFAULT_DISPLAY_NAME : e.target.value);
             }}
             className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
@@ -481,7 +490,8 @@ function AppearancePane({ query }: { query: string }): React.JSX.Element {
 }
 
 function ProvidersPane(): React.JSX.Element {
-  const openSettings = useSettingsStore((s) => s.openSettings);
+  const closeSettings = useSettingsStore((s) => s.closeSettings);
+  const openProviders = useSettingsStore((s) => s.openProviders);
   return (
     <div data-testid="settings-page-providers">
       <h2 className="mb-4 text-xl font-semibold">Providers</h2>
@@ -492,8 +502,13 @@ function ProvidersPane(): React.JSX.Element {
       <div className="mt-4">
         <button
           type="button"
+          data-testid="open-providers-cta"
           onClick={() => {
-            openSettings("providers");
+            // The section on screen is not the surface: close the dialog and
+            // raise the providers view the shell renders (review 31 — this
+            // used to call openSettings("providers"), a self-reopening no-op).
+            closeSettings();
+            openProviders();
           }}
           className="rounded-md bg-primary px-3 py-2 text-xs text-primary-foreground hover:opacity-90"
         >
@@ -852,33 +867,6 @@ function MemoryPane({ query }: { query: string }): React.JSX.Element {
   );
 }
 
-/** Flatten one contract row to exportable text. Thinking never survives —
- *  `stripThinkingForExport` enforces that downstream too; this mapper only
- *  chooses the readable field per kind. */
-export function rowToExportBlock(row: RenderRow): ExportBlock {
-  const block = row.block;
-  switch (block.kind) {
-    case "text":
-      return { kind: "text", text: block.text };
-    case "thinking":
-      return { kind: "thinking", text: block.text };
-    case "tool_use":
-      return { kind: "tool_use", text: `${block.name} ${block.input_json}` };
-    case "tool_result":
-      return { kind: "tool_result", text: block.preview };
-    case "artifact_ref":
-      return { kind: "artifact_ref", text: block.title };
-    case "question_card":
-      return { kind: "question_card", text: block.prompt };
-    case "summary":
-      return { kind: "summary", text: block.text };
-    case "compaction":
-      return { kind: "compaction", text: block.provider_block_id };
-    case "notice":
-      return { kind: "notice", text: block.text };
-  }
-}
-
 function storageBytes(): number {
   try {
     let chars = 0;
@@ -898,9 +886,20 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function DataPane({ threadId, query }: { threadId: string; query: string }): React.JSX.Element {
+function DataPane({
+  threadId,
+  title,
+  query,
+}: {
+  threadId: string;
+  title?: string | undefined;
+  query: string;
+}): React.JSX.Element {
   const [status, setStatus] = useState<string | null>(null);
   const [used, setUsed] = useState(0);
+  // Nested destructive confirm (UI-GUIDE §7): Clear/Reset act only after
+  // this card says so — both used to fire on the first click.
+  const [confirming, setConfirming] = useState<null | "clear" | "reset">(null);
 
   useEffect(() => {
     setUsed(storageBytes());
@@ -908,33 +907,34 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
 
   async function exportAs(format: "md" | "html"): Promise<void> {
     setStatus(null);
-    try {
-      const rows = await transcriptRead(threadId);
-      const blocks = rows.map(rowToExportBlock);
-      const joined = blocks.map((b) => b.text ?? b.kind).join("\n");
-      // The key-material scan blocks the write, not warns past it: an export
-      // carrying a secret is worse than no export.
-      if (containsKeyMaterial(joined)) {
-        setStatus("Export blocked: the transcript looks like it contains key material.");
+    // One pipeline with the rail's Export (review 31): same guard, same
+    // sanitised filename, typed outcome — this function never throws.
+    const outcome = await exportThreadDownload(threadId, title ?? "chat", format);
+    if (!outcome.ok || outcome.error !== null) {
+      setStatus(outcome.error ?? "Export failed.");
+      return;
+    }
+    setStatus(`Exported ${String(outcome.blocks)} blocks as ${outcome.filename ?? "chat"}.`);
+  }
+
+  function runConfirmed(): void {
+    if (confirming === "clear") {
+      useThreadStore.getState().reset();
+      setStatus("Cleared all chats.");
+    } else if (confirming === "reset") {
+      try {
+        window.localStorage.clear();
+      } catch {
+        // Storage can be unreadable (private mode, policy): surface it like
+        // every other failure instead of pretending the reset landed.
+        setConfirming(null);
+        setStatus("Some local storage could not be cleared.");
         return;
       }
-      const title = `thread-${threadId}`;
-      const body = format === "md" ? threadToMarkdown(title, blocks) : threadToHtml(title, blocks);
-      const blob = new Blob([body], {
-        type: format === "md" ? "text/markdown" : "text/html",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${title}.${format}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-      setStatus(`Exported ${String(blocks.length)} blocks.`);
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
+      setUsed(0);
+      setStatus("Reset local settings.");
     }
+    setConfirming(null);
   }
 
   return (
@@ -979,8 +979,7 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
           <button
             type="button"
             onClick={() => {
-              useThreadStore.getState().reset();
-              setStatus("Cleared all chats.");
+              setConfirming("clear");
             }}
             className="rounded-md border border-destructive px-3 py-1.5 text-xs text-destructive hover:bg-accent"
           >
@@ -991,13 +990,7 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
           <button
             type="button"
             onClick={() => {
-              try {
-                window.localStorage.clear();
-              } catch {
-                // Unrecoverable here; report below like every other failure.
-              }
-              setUsed(0);
-              setStatus("Reset local settings.");
+              setConfirming("reset");
             }}
             className="rounded-md border border-destructive px-3 py-1.5 text-xs text-destructive hover:bg-accent"
           >
@@ -1019,6 +1012,49 @@ function DataPane({ threadId, query }: { threadId: string; query: string }): Rea
           />
         </div>
       </div>
+      {/* Nested destructive confirm (UI-GUIDE §7): the same Dialog idiom the
+          providers delete-confirm uses — nothing here destroys on first
+          click. Cancel/Esc simply closes; only the testid button runs. */}
+      <Dialog
+        open={confirming !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirming(null);
+        }}
+      >
+        <DialogContent aria-label="Confirm destructive action" className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              {confirming === "reset" ? "Reset app?" : "Clear all chats?"}
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            {confirming === "reset"
+              ? "Clears local settings (theme, preferences, stored keys' surface state) and returns to onboarding."
+              : "Drops every in-memory chat for this session. Providers and keys are kept."}
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setConfirming(null);
+              }}
+              className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid={confirming === "reset" ? "confirm-reset-app" : "confirm-clear-chats"}
+              onClick={() => {
+                runConfirmed();
+              }}
+              className="rounded-md border border-destructive px-3 py-1.5 text-xs text-destructive hover:bg-accent"
+            >
+              {confirming === "reset" ? "Reset" : "Clear"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

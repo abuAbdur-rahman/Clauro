@@ -27,6 +27,9 @@ pub struct OpenAiParser {
     text_index: Option<u32>,
     thinking_index: Option<u32>,
     tool_index: BTreeMap<String, u32>,
+    /// The most recent tool block, so a continuation carrying neither
+    /// `index` nor `id` extends its own call (audit 12).
+    last_tool: Option<u32>,
 }
 
 impl OpenAiParser {
@@ -37,6 +40,7 @@ impl OpenAiParser {
             text_index: None,
             thinking_index: None,
             tool_index: BTreeMap::new(),
+            last_tool: None,
         }
     }
 
@@ -45,6 +49,14 @@ impl OpenAiParser {
         let index = self.next_index;
         self.next_index += 1;
         index
+    }
+
+    /// How many distinct tool blocks the map points at.
+    fn distinct_tool_blocks(&self) -> usize {
+        let mut blocks: Vec<u32> = self.tool_index.values().copied().collect();
+        blocks.sort_unstable();
+        blocks.dedup();
+        blocks.len()
     }
 
     /// Stream one answer-text delta, synthesising the text block start once.
@@ -206,32 +218,53 @@ impl StreamParser for OpenAiParser {
             }
             if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                 for call in calls {
-                    // Keyed by stream index first: the opening chunk carries
-                    // both id and index, continuations carry index only.
-                    let key = call
-                        .get("index")
-                        .and_then(Value::as_u64)
-                        .map(|i| format!("index:{i}"))
-                        .or_else(|| call.get("id").and_then(Value::as_str).map(str::to_string))
-                        .unwrap_or_else(|| "unknown-call".to_string());
-                    let is_new = !self.tool_index.contains_key(&key);
-                    let index = if let Some(&i) = self.tool_index.get(&key) {
-                        i
-                    } else {
-                        let i = self.fresh_index();
-                        self.tool_index.insert(key, i);
-                        i
+                    // Resolve the block this fragment belongs to: stream
+                    // index first (continuations carry it alone), then id
+                    // (id-first dialects open by id). A key seen for the
+                    // first time must not open a second block for a call
+                    // already open under the other key (audit 12).
+                    let id = call
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty());
+                    let stream_index = call.get("index").and_then(Value::as_u64);
+                    let index_key = stream_index.map(|i| format!("index:{i}"));
+                    let mut block = index_key
+                        .as_ref()
+                        .and_then(|k| self.tool_index.get(k).copied())
+                        .or_else(|| id.and_then(|id| self.tool_index.get(id).copied()));
+                    if block.is_none() {
+                        block = match (stream_index, id) {
+                            // Neither key: a continuation of whatever call
+                            // is currently open.
+                            (None, None) => self.last_tool,
+                            // Index-only, unseen: resume the sole open call
+                            // (id-first dialect). With several calls open
+                            // the mapping is unknowable — new block.
+                            (Some(_), None) if self.distinct_tool_blocks() == 1 => self.last_tool,
+                            // A new call.
+                            _ => None,
+                        };
+                    }
+                    let (index, is_new) = match block {
+                        Some(i) => (i, false),
+                        None => (self.fresh_index(), true),
                     };
+                    // Register every key this fragment answered by, so later
+                    // continuations — under either key — hit the same block.
+                    if let Some(k) = &index_key {
+                        self.tool_index.entry(k.clone()).or_insert(index);
+                    }
+                    if let Some(id) = id {
+                        self.tool_index.entry(id.to_string()).or_insert(index);
+                    }
+                    self.last_tool = Some(index);
                     if is_new {
                         out.push(NormalisedEvent::BlockStart {
                             index,
                             kind: InboundKind::ToolUse,
                             tool: Some(ToolHeader {
-                                id: call
-                                    .get("id")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("")
-                                    .to_string(),
+                                id: id.unwrap_or("").to_string(),
                                 name: call
                                     .pointer("/function/name")
                                     .and_then(Value::as_str)

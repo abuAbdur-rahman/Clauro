@@ -6,7 +6,7 @@
  * re-renders never stack headers.
  */
 import { describe, expect, it, vi } from "vitest";
-import { codeBlockLanguage, enhanceCodeBlocks } from "./codeblocks";
+import { codeBlockLanguage, enhanceCodeBlocks, GRAMMARS } from "./codeblocks";
 
 function host(inner: string): HTMLElement {
   const div = document.createElement("div");
@@ -67,6 +67,24 @@ describe("enhanceCodeBlocks", () => {
     vi.unstubAllGlobals();
     root.remove();
   });
+
+  it("copy without a clipboard API keeps the Copy label (review 33: never lie)", async () => {
+    // `navigator.clipboard` is absent in insecure contexts and some
+    // embeddings. `await clipboard?.writeText(...)` on an undefined
+    // clipboard is a silent no-op that still falls through to "Copied" —
+    // the button claims success without writing anything, exactly what
+    // copyCode's own catch comment says it must not do.
+    vi.stubGlobal("navigator", {});
+    const root = host('<pre><code class="language-js">alert(1)</code></pre>');
+    await enhanceCodeBlocks(root);
+    const btn = root.querySelector(".codeblock-head button") as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    btn.click();
+    await Promise.resolve();
+    expect(btn.textContent).toBe("Copy");
+    vi.unstubAllGlobals();
+    root.remove();
+  });
 });
 
 describe("syntax highlighting", () => {
@@ -88,5 +106,25 @@ describe("syntax highlighting", () => {
     const coloured = [...spans].some((s) => (s as HTMLElement).style.color !== "");
     expect(coloured).toBe(false);
     root.remove();
+  });
+});
+
+describe("grammar loading (bundle-split shape)", () => {
+  // The startup investigation measured ~84% of the entry chunk attributed to
+  // shiki: statically-evaluated grammar modules are parsed on every launch,
+  // not just on first code block. Each GRAMMARS entry must therefore be a
+  // lazy thunk that resolves to its grammar module on demand — a loaded
+  // grammar object here means the split is broken again.
+  it("keeps every grammar (including aliases) behind a lazy thunk", async () => {
+    const values = Object.values(GRAMMARS);
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) {
+      expect(typeof value).toBe("function");
+    }
+    // The thunk must actually resolve to a grammar, not just be a function.
+    const rust = GRAMMARS.rust;
+    if (typeof rust !== "function") throw new Error("rust grammar is not a thunk");
+    const resolved = await rust();
+    expect(resolved).toBeTruthy();
   });
 });

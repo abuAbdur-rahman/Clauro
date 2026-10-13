@@ -55,7 +55,10 @@ export function ProjectDetail({
 
   function commitTitle(): void {
     const trimmed = title.trim();
-    if (trimmed !== "" && trimmed !== project.name) onRename?.(trimmed);
+    // No handler = nothing was saved: snap back instead of looking committed
+    // (review 31 #13 — the old `onRename?.()` no-op left the typed name on
+    // screen as if the edit had landed).
+    if (trimmed !== "" && trimmed !== project.name && onRename !== undefined) onRename(trimmed);
     else setTitle(project.name);
   }
 
@@ -90,7 +93,7 @@ export function ProjectDetail({
             onKeyDown={(e) => {
               if (e.key === "Enter") (e.target as HTMLInputElement).blur();
             }}
-            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 font-serif text-2xl text-neutral-100 outline-none hover:border-neutral-700 focus:border-neutral-500"
+            className="w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 font-serif text-2xl text-foreground outline-none hover:border-border focus:border-ring"
           />
           <div data-testid="project-composer-box" className="rounded-lg border border-border bg-card p-3">
             <Textarea
@@ -125,14 +128,14 @@ export function ProjectDetail({
           </div>
           <h3
             data-testid="project-chats-heading"
-            className="section-heading text-sm font-semibold text-neutral-200"
+            className="section-heading text-sm font-semibold text-foreground"
           >
             Chats
           </h3>
           {chats.length === 0 ? (
             <p
               data-testid="project-chats-empty"
-              className="empty-frame text-sm text-neutral-400"
+              className="empty-frame text-sm text-muted-foreground"
             >
               No chats yet.
             </p>
@@ -143,7 +146,7 @@ export function ProjectDetail({
                   <button
                     type="button"
                     data-testid={`project-chat-${c.id}`}
-                    className="chat-row block w-full truncate bg-card text-left text-sm text-neutral-300 hover:bg-accent"
+                    className="chat-row block w-full truncate bg-card text-left text-sm text-foreground hover:bg-accent"
                     onClick={() => {
                       onOpenChat?.(c.id);
                     }}
@@ -175,7 +178,7 @@ export function ProjectDetail({
                 type="button"
                 size="sm"
                 data-testid="project-instructions-save"
-                disabled={!dirty}
+                disabled={!dirty || onSaveInstructions === undefined}
                 onClick={() => {
                   onSaveInstructions?.(draft);
                 }}
@@ -189,7 +192,7 @@ export function ProjectDetail({
               <CardTitle>Memory</CardTitle>
             </CardHeader>
             <CardContent className="side-card-body">
-              <p className="text-sm text-neutral-400">
+              <p className="text-sm text-muted-foreground">
                 {memoryCount} {memoryCount === 1 ? "topic" : "topics"} kept for this project.
               </p>
             </CardContent>
@@ -201,59 +204,70 @@ export function ProjectDetail({
               </CardHeader>
               <CardContent className="side-card-body">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-neutral-400">
+                  <span className="text-sm text-muted-foreground">
                     {files.length === 0
                       ? "No files yet."
                       : `${String(files.length)} file${files.length === 1 ? "" : "s"}`}
                   </span>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    data-testid="project-add-files"
-                    onClick={() => {
-                      fileInput.current?.click();
-                    }}
-                  >
-                    Add files
-                  </Button>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    multiple
-                    hidden
-                    data-testid="project-file-input"
-                    aria-label="Add knowledge files"
-                    onChange={(e) => {
-                      const picked = Array.from(e.target.files ?? []);
-                      e.target.value = "";
-                      if (picked.length > 0) onAddFiles?.(picked);
-                    }}
-                  />
+                  {/* Wired-or-hidden (UI-GUIDE §7): without a handler the
+                      picker would accept files and drop them silently, so the
+                      affordance does not render; the listing stays read-only. */}
+                  {onAddFiles !== undefined && (
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="project-add-files"
+                        onClick={() => {
+                          fileInput.current?.click();
+                        }}
+                      >
+                        Add files
+                      </Button>
+                      <input
+                        ref={fileInput}
+                        type="file"
+                        multiple
+                        hidden
+                        data-testid="project-file-input"
+                        aria-label="Add knowledge files"
+                        onChange={(e) => {
+                          const picked = Array.from(e.target.files ?? []);
+                          e.target.value = "";
+                          if (picked.length > 0) onAddFiles(picked);
+                        }}
+                      />
+                    </>
+                  )}
                 </div>
                 {files.map((f, i) => (
                   <div key={`${f.name}-${String(i)}`} className="flex items-center gap-2 text-sm">
-                    <FileText aria-hidden="true" className="size-4 flex-none text-neutral-400" />
+                    <FileText aria-hidden="true" className="size-4 flex-none text-muted-foreground" />
                     <span data-testid={`project-file-${String(i)}`} className="min-w-0 flex-1 truncate">
                       {f.name}
                     </span>
-                    <span className="text-xs text-neutral-400">{formatFileSize(f.sizeBytes)}</span>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${f.name}`}
-                      data-testid={`project-file-delete-${String(i)}`}
-                      className="grid size-6 flex-none place-items-center rounded text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100"
-                      onClick={() => {
-                        onDeleteFile?.(i);
-                      }}
-                    >
-                      <Trash2 aria-hidden="true" className="size-4" />
-                    </button>
+                    <span className="text-xs text-muted-foreground">{formatFileSize(f.sizeBytes)}</span>
+                    {/* Same wired-or-hidden rule: no delete affordance
+                        without a handler that actually removes the row. */}
+                    {onDeleteFile !== undefined && (
+                      <button
+                        type="button"
+                        aria-label={`Delete ${f.name}`}
+                        data-testid={`project-file-delete-${String(i)}`}
+                        className="grid size-6 flex-none place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                        onClick={() => {
+                          onDeleteFile(i);
+                        }}
+                      >
+                        <Trash2 aria-hidden="true" className="size-4" />
+                      </button>
+                    )}
                   </div>
                 ))}
                 {usage !== null && (
                   <div>
-                    <p data-testid="project-capacity-label" className="text-xs text-neutral-400">
+                    <p data-testid="project-capacity-label" className="text-xs text-muted-foreground">
                       {usage.label}
                       {capacityBytes === undefined ? " (sample capacity)" : ""}
                     </p>
@@ -268,8 +282,8 @@ export function ProjectDetail({
               <CardTitle>Context</CardTitle>
             </CardHeader>
             <CardContent className="side-card-body">
-              <p className="text-sm text-neutral-400">
-                <span className="text-neutral-100">{usage !== null ? `${String(usage.percent)}%` : contextUsed}</span>{" "}
+              <p className="text-sm text-muted-foreground">
+                <span className="text-foreground">{usage !== null ? `${String(usage.percent)}%` : contextUsed}</span>{" "}
                 of project capacity used
               </p>
             </CardContent>

@@ -86,12 +86,20 @@ fn http_date_epoch(header: &str) -> Option<u64> {
         return None;
     }
     // Days from civil (Howard Hinnant's algorithm), proleptic Gregorian.
-    let y = if month <= 2 { year - 1 } else { year };
+    // All arithmetic in i128: `year` is untrusted wire input, and on `i64`
+    // `era * 146_097` overflows for years past ~6.3e13 — a panic in debug,
+    // silent wrap in release (audit 12). No i64 input can overflow i128.
+    let y = if month <= 2 {
+        i128::from(year.saturating_sub(1))
+    } else {
+        i128::from(year)
+    };
     let era = y.div_euclid(400);
     let yoe = y.rem_euclid(400);
     let mp = (month + 9).rem_euclid(12);
     let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
-    u64::try_from(days * 86_400 + h * 3_600 + m * 60 + s).ok()
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + i128::from(doy);
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + i128::from(h) * 3_600 + i128::from(m) * 60 + i128::from(s);
+    u64::try_from(secs).ok()
 }

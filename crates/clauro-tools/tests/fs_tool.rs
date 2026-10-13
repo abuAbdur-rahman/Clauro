@@ -262,22 +262,39 @@ fn grep_glob_never_follow_junctions_out_of_workspace() {
     #[cfg(not(windows))]
     let junction = std::os::unix::fs::symlink(&outside, t.session.join("escape"));
     #[cfg(windows)]
-    assert!(junction.success(), "junction must be creatable (unprivileged)");
+    assert!(
+        junction.success(),
+        "junction must be creatable (unprivileged)"
+    );
     #[cfg(not(windows))]
     junction.expect("symlink must be creatable");
 
     // grep: the out-of-workspace needle must not appear; the in-workspace one
     // must still be found (so this is not a false pass by breaking grep).
-    let grep = ok_text(run(&reg, epoch, json!({"command": "grep", "pattern": "NEEDLE_"})));
-    assert!(grep.contains("NEEDLE_OK"), "in-workspace grep works: {grep}");
+    let grep = ok_text(run(
+        &reg,
+        epoch,
+        json!({"command": "grep", "pattern": "NEEDLE_"}),
+    ));
+    assert!(
+        grep.contains("NEEDLE_OK"),
+        "in-workspace grep works: {grep}"
+    );
     assert!(
         !grep.contains("NEEDLE_SECRET"),
         "grep leaked a file outside the workspace: {grep}"
     );
 
     // glob: the junction target must not be listed.
-    let glob = ok_text(run(&reg, epoch, json!({"command": "glob", "pattern": "**/*.txt"})));
-    assert!(glob.contains("inside.txt"), "glob lists in-workspace: {glob}");
+    let glob = ok_text(run(
+        &reg,
+        epoch,
+        json!({"command": "glob", "pattern": "**/*.txt"}),
+    ));
+    assert!(
+        glob.contains("inside.txt"),
+        "glob lists in-workspace: {glob}"
+    );
     assert!(
         !glob.contains("secret.txt"),
         "glob leaked a file outside the workspace: {glob}"
@@ -418,4 +435,117 @@ fn lookup_by_id_ignores_the_slug() {
         "kept"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ── audit 10/11: ingest containment, staging sweep, windowed read, lock ─────
+
+fn make_dir_link(link: &Path, target: &Path) {
+    // Unprivileged junction (audit 11): `mklink /J` needs no Developer Mode,
+    // so the real containment branch runs instead of a privileged-symlink
+    // attempt that silently degrades to a no-op.
+    #[cfg(windows)]
+    {
+        let st = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("run mklink");
+        assert!(st.success(), "junction creation must succeed: {link:?}");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::os::unix::fs::symlink(target, link);
+    }
+}
+
+#[test]
+fn ingest_through_a_junction_is_refused() {
+    // audit 11: ingest was the only write path that never went through
+    // `resolve_session` — `session_root.join(rel)` then `fs::write`, no
+    // canonicalisation, no containment. A junction planted at
+    // `attachments/` redirected the copy outside the workspace.
+    let t = trees();
+    let (_reg, h, _epoch) = host(&t, Some("p1"));
+    let src = t.tmp.join("ingest-src.txt");
+    std::fs::write(&src, "payload").expect("seed src");
+    let outside = t.tmp.join("att-outside");
+    std::fs::create_dir_all(&outside).expect("outside");
+    make_dir_link(&t.session.join("attachments"), &outside);
+
+    let res = h.ingest_local_file(&src, "doc.txt");
+    let err = res.expect_err("junction redirect must be refused");
+    assert!(
+        !outside.join("p1").join("doc.txt").exists(),
+        "nothing may land outside: {err}"
+    );
+    assert!(
+        format!("{err}").contains("outside"),
+        "typed containment error: {err}"
+    );
+}
+
+#[test]
+fn stale_tmp_files_are_swept_on_write() {
+    // audit 11 NIT: `.tmp-*` staging files from a crashed run were never
+    // swept — they accumulate beside every target forever.
+    let t = trees();
+    let (reg, _, epoch) = host(&t, None);
+    let sub = t.session.join("sub");
+    std::fs::create_dir_all(&sub).expect("sub");
+    let stale = sub.join(".tmp-99999-stale");
+    std::fs::write(&stale, "crashed").expect("seed stale");
+    let _ = ok_text(run(
+        &reg,
+        epoch,
+        json!({"command": "write", "path": "sub/b.txt", "content": "data"}),
+    ));
+    assert!(
+        !stale.exists(),
+        "a write must sweep stale staging leftovers: {stale:?}"
+    );
+    assert!(sub.join("b.txt").exists(), "the real write still lands");
+}
+
+#[test]
+fn read_windows_the_file_instead_of_buffering_it_all() {
+    // audit 10 NIT: read loaded the WHOLE file before applying
+    // offset/limit — a multi-GB path was a heap DoS — and demanded the entire
+    // file be valid UTF-8 even when the window was lines 1-3. Pin the
+    // windowed semantics: binary bytes past the window do not fail the read.
+    let t = trees();
+    let (reg, _, epoch) = host(&t, None);
+    let mut data = b"alpha\nbeta\ngamma\n".to_vec();
+    data.extend_from_slice(&[0xff, 0xfe, 0x00, 0x99]); // binary tail
+    std::fs::write(t.session.join("win.txt"), &data).expect("seed");
+    let text = ok_text(run(
+        &reg,
+        epoch,
+        json!({"command": "read", "path": "win.txt", "offset": 0, "limit": 3}),
+    ));
+    assert!(text.contains("1: alpha"), "{text}");
+    assert!(text.contains("3: gamma"), "{text}");
+    assert!(!text.contains('4'), "window stops at the limit: {text}");
+}
+
+#[test]
+fn poisoned_store_lock_is_a_typed_error_not_a_panic() {
+    // audit 10 NIT: `.expect("store lock must hold")` turned a poisoned
+    // mutex into a host panic. D55: nothing throws across the tool boundary.
+    let t = trees();
+    let (_reg, h, _epoch) = host(&t, Some("p1"));
+    let src = t.tmp.join("poison-src.txt");
+    std::fs::write(&src, "payload").expect("seed");
+    let s = t.store.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = s.lock().expect("pre-poison");
+        panic!("deliberate poison");
+    })
+    .join();
+    assert!(t.store.is_poisoned(), "the lock must be poisoned now");
+    let res = h.ingest_local_file(&src, "doc.txt");
+    let err = res.expect_err("poisoned lock must be a typed error");
+    assert!(format!("{err}").contains("busy"), "{err}");
 }

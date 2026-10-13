@@ -13,3 +13,15 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
+# ReplaceFileW for the staged swap (D34/D128, audit 11) and the security-descriptor
+# read-backs in tests. User-approved; recorded in TECH_STACK.md §6.2 — the rejected
+# alternatives (hand-rolled FFI, in-place write) live there. windows-link (its only
+# dep) has a `#[cfg(not(windows))]` arm, so the crate compiles inert on the Linux
+# floor; every use in this crate is `#[cfg(windows)]`-gated, so nothing references
+# the Win32 imports off-Windows.
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+] }

@@ -49,11 +49,16 @@ export function ArtifactDrawer({
   publishDoc,
 }: ArtifactDrawerProps) {
   const entry = useDrawerStore((s) => s.drawers[threadId]);
-  const [result, setResult] = useState<PrepareResult | null>(null);
+  // The prepared document belongs to ONE artifact (review 32 NIT): keeping the
+  // result keyed by `artifactId` means a switched artifact derives `null`
+  // below and presents "Compiling…" instead of the previous artifact's frame
+  // (or its failure) while the new prepare runs.
+  const [prepared, setPrepared] = useState<{ key: string; result: PrepareResult } | null>(null);
 
   const artifactId = entry?.artifactId ?? null;
   const version = entry?.version ?? null;
   const state = entry?.state ?? "empty";
+  const result = prepared !== null && prepared.key === artifactId ? prepared.result : null;
 
   useEffect(() => {
     // Prepare when the artifact is *known* (D121): during compiling the
@@ -69,16 +74,19 @@ export function ArtifactDrawer({
     // nothing more.
     prepareArtifact({ source, mediaType, fetchPolicy, createWorker, publishDoc })
       .then((out) => {
-        if (live) setResult(out);
+        if (live) setPrepared({ key: artifactId, result: out });
       })
       .catch((e: unknown) => {
         // `prepareArtifact` is written not to reject, but a rejected promise
         // here would leave the spinner up forever — the one state with no
         // exit. Surface it as a reason instead.
         if (live) {
-          setResult({
-            kind: "failed",
-            reason: e instanceof Error ? e.message : String(e),
+          setPrepared({
+            key: artifactId,
+            result: {
+              kind: "failed",
+              reason: e instanceof Error ? e.message : String(e),
+            },
           });
         }
       });
@@ -91,20 +99,28 @@ export function ArtifactDrawer({
   // screen, and re-attach on every new document — the transferred port dies
   // with the old document, so the handshake must run again for the new one.
   // `onReady` is the frame having claimed its port; an error-level report is
-  // a reason, surfaced through the same failed presentation a prepare
-  // failure gets, because a silent runtime error is the blank-frame bug
-  // again.
+  // the frame's own complaint, shown in a muted status line BESIDE the live
+  // frame — never a teardown (review 14 NIT): a frame-supplied string is
+  // attributed to the frame, and the artifact stays on screen to look at.
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [channelReady, setChannelReady] = useState(false);
+  const [frameReport, setFrameReport] = useState<string | null>(null);
   useEffect(() => {
-    if (result?.kind !== "live") return undefined;
+    // `artifactId` guards the narrowing below and keys any failure it reports
+    // to the artifact actually on screen (same one-artifact rule as above).
+    if (result?.kind !== "live" || artifactId === null) return undefined;
     const frameWindow = frameRef.current?.contentWindow;
     if (!frameWindow) return undefined;
     setChannelReady(false);
+    // A new document starts with a clean status line: the previous frame's
+    // complaint says nothing about this one.
+    setFrameReport(null);
     const host = hostSide({
       frameWindow,
       onLog: (report) => {
-        if (report.level === "error") setResult({ kind: "failed", reason: report.text });
+        if (report.level === "error") {
+          setFrameReport(report.text);
+        }
       },
       onReady: () => {
         setChannelReady(true);
@@ -114,15 +130,17 @@ export function ArtifactDrawer({
       host.dispose();
       setChannelReady(false);
     };
-  }, [result]);
+  }, [result, artifactId]);
 
   const gate = artifactGate(engine);
 
   if (!gate.enabled) {
     return (
-      <aside aria-label="artifact drawer disabled" className="w-80 shrink-0 border-l border-neutral-800 p-4">
-        <p className="font-mono text-xs text-amber-300">{gate.notice}</p>
-        {entry?.notice && <p className="mt-1 font-mono text-xs text-neutral-500">{entry.notice}</p>}
+      <aside aria-label="artifact drawer disabled" className="w-80 shrink-0 border-l border-border p-4">
+        <p className="font-mono text-xs text-destructive">{gate.notice}</p>
+        {entry?.notice && (
+          <p className="mt-1 font-mono text-xs text-muted-foreground">{entry.notice}</p>
+        )}
       </aside>
     );
   }
@@ -136,25 +154,25 @@ export function ArtifactDrawer({
   // for the store to advance would leave a finished compile spinning forever.
   if (result?.kind === "failed") {
     return (
-      <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-neutral-800 p-4">
-        <h2 className="font-mono text-xs text-neutral-200">{title}</h2>
-        <p className="mt-2 font-mono text-xs text-red-400">{result.reason}</p>
+      <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-border p-4">
+        <h2 className="font-mono text-xs text-foreground">{title}</h2>
+        <p className="mt-2 font-mono text-xs text-destructive">{result.reason}</p>
       </aside>
     );
   }
 
   if (result === null) {
     return (
-      <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-neutral-800 p-4">
-        <p className="font-mono text-xs text-neutral-400">Compiling…</p>
+      <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-border p-4">
+        <p className="font-mono text-xs text-muted-foreground">Compiling…</p>
       </aside>
     );
   }
 
   return (
-    <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-neutral-800 p-4">
-      <h2 className="font-mono text-xs text-neutral-200">{title}</h2>
-      <p className="font-mono text-[11px] text-neutral-500">v{version}</p>
+    <aside aria-label="artifact drawer" className="w-80 shrink-0 border-l border-border p-4">
+      <h2 className="font-mono text-xs text-foreground">{title}</h2>
+      <p className="font-mono text-xs text-muted-foreground">v{version}</p>
       <iframe
         ref={frameRef}
         title="artifact-frame"
@@ -163,9 +181,17 @@ export function ArtifactDrawer({
         // sandbox attribute above is still the only boundary — the origin is
         // opaque because of it, not because of how the document arrives.
         src={result.url}
-        className="mt-2 h-96 w-full bg-white"
+        className="mt-2 h-96 w-full bg-background"
         data-artifact-channel={channelReady ? "ready" : "pending"}
       />
+      {frameReport !== null && (
+        <p
+          data-testid="artifact-frame-report"
+          className="mt-2 font-mono text-xs text-muted-foreground"
+        >
+          frame: {frameReport}
+        </p>
+      )}
     </aside>
   );
 }

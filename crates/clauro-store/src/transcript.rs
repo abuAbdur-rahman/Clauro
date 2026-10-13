@@ -108,6 +108,12 @@ pub struct CancelReport {
 
 impl Store {
     /// Every block of a thread in surface order, for I1–I3 checks.
+    ///
+    /// The signature cannot change to `Result` while clauro-loop and
+    /// `src-tauri` consume the `Vec` form, but a silently dropped row would
+    /// feed I1/I3 a truncated transcript and a false "clean" verdict — so
+    /// decode failures refuse loudly instead (review 20; the typed-error
+    /// follow-up needs call-site changes outside this crate).
     pub fn blocks_for_thread(&self, thread_id: &str) -> Vec<FullBlock> {
         let mut stmt = self
             .conn
@@ -130,13 +136,14 @@ impl Store {
             })
         })
         .expect("transcript read must run")
-        .filter_map(Result::ok)
-        .collect()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("transcript rows must decode — a dropped row would truncate the verdict")
     }
 
     /// Every tool result of a thread. Rows the `CHECK` admitted but no known
     /// status parses from are skipped: the schema is the guard, this read is
-    /// not a second validator.
+    /// not a second validator. Row-decode failures refuse loudly, never
+    /// silently (review 20) — same signature reasoning as `blocks_for_thread`.
     pub fn tool_results_for_thread(&self, thread_id: &str) -> Vec<ToolResultRef> {
         let mut stmt = self
             .conn
@@ -144,21 +151,24 @@ impl Store {
                 "SELECT tool_call_id, status FROM tool_result WHERE thread_id = ?1 ORDER BY created_at",
             )
             .expect("result read must prepare");
-        stmt.query_map([thread_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("result read must run")
-        .filter_map(Result::ok)
-        .filter_map(|(tool_call_id, status)| {
-            status
-                .parse::<ToolStatus>()
-                .ok()
-                .map(|parsed| ToolResultRef {
-                    tool_call_id,
-                    status: parsed,
-                })
-        })
-        .collect()
+        let rows = stmt
+            .query_map([thread_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("result read must run")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("tool-result rows must decode — a dropped row would truncate the verdict");
+        rows.into_iter()
+            .filter_map(|(tool_call_id, status)| {
+                status
+                    .parse::<ToolStatus>()
+                    .ok()
+                    .map(|parsed| ToolResultRef {
+                        tool_call_id,
+                        status: parsed,
+                    })
+            })
+            .collect()
     }
 
     /// One result whole, including the bounded-output paths.
@@ -210,7 +220,9 @@ impl Store {
 
     /// Close a turn mid-flight. Every open call without a result is recorded
     /// as `aborted` (D65); calls that already resolved are untouched, and no
-    /// completed row is rewritten or removed (D68). Returns the counts.
+    /// completed row is rewritten or removed (D68). Returns the counts. One
+    /// transaction: a mid-loop failure must not leave part of the dispatched
+    /// calls closed and the rest with no result row at all (review 20).
     pub fn cancel_turn(
         &self,
         thread_id: &str,
@@ -220,9 +232,9 @@ impl Store {
             aborted: 0,
             already_resolved: 0,
         };
+        let tx = self.conn.unchecked_transaction()?;
         for call in open {
-            let exists: bool = self
-                .conn
+            let exists: bool = tx
                 .query_row(
                     "SELECT 1 FROM tool_result WHERE thread_id = ?1 AND tool_call_id = ?2",
                     rusqlite::params![thread_id, call.id],
@@ -234,7 +246,7 @@ impl Store {
                 report.already_resolved += 1;
                 continue;
             }
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO tool_result (id, thread_id, tool_call_id, tool_name, status, preview, output_bytes, created_at) VALUES (?1, ?2, ?3, ?4, 'aborted', ?5, 0, ?6)",
                 rusqlite::params![
                     Store::new_id("tr"),
@@ -247,6 +259,7 @@ impl Store {
             )?;
             report.aborted += 1;
         }
+        tx.commit()?;
         Ok(report)
     }
 }

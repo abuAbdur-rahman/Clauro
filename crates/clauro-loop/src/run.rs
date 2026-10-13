@@ -19,15 +19,16 @@
 
 use crate::queue::{QueuedItem, StopOffer, ThreadQueue};
 use clauro_core::{unbroken_run_end, Effect, PermissionRule, ToolContext, ToolOutcome, ToolStatus};
-use clauro_store::transcript::OpenCall;
+use clauro_store::transcript::{FullBlock, OpenCall};
 use clauro_store::{MessageRole, NewBlock, NewMessage, NewToolResult, NewUsage, Store, StoreError};
 use clauro_tools::{
     bound_output, resolve, resolve_answer, AnswerResolution, ApprovalError, ApprovalQueue,
-    IncomingCall, MaterializedTool, QuestionGate, Registry, INLINE_TOOLS_BETA, QUESTION_REFUSAL,
+    IncomingCall, MaterializedTool, QuestionGate, Registry, INLINE_TOOLS_BETA, PREVIEW_LIMIT_CHARS,
+    QUESTION_REFUSAL,
 };
 use clauro_transport::{
-    build_normal_request, BuiltRequest, InboundKind, NormalBuildInput, NormalisedEvent,
-    ThinkingConfig, ToolHeader,
+    try_build_normal_request, BuiltRequest, InboundKind, NormalBuildError, NormalBuildInput,
+    NormalisedEvent, ThinkingConfig, ToolHeader,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -66,6 +67,23 @@ pub trait Exchange {
         request: &BuiltRequest,
         sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<Vec<NormalisedEvent>, ExchangeFailure>;
+
+    /// Hand the exchange the thread's stop flag before the first step, so a
+    /// long stream can be cancelled mid-read instead of only between steps.
+    /// Default no-op: an implementation that cannot observe the flag keeps
+    /// working exactly as before.
+    fn set_stop_flag(&mut self, _flag: Arc<AtomicBool>) {}
+}
+
+/// Why a question card was not written. The split matters: a malformed card
+/// is a model-shape problem and falls back to a refusal-shaped result, while
+/// a storage failure is the host's fault and must fail the turn typed —
+/// never re-labelled as the model refusing (D55).
+enum CardWriteError {
+    /// The input has no prompt — nothing to ask.
+    Malformed,
+    /// The card insert failed; propagate as `LoopError::Store`.
+    Store(StoreError),
 }
 
 /// Everything the loop needs that is fixed per thread.
@@ -182,6 +200,12 @@ pub enum LoopError {
     ThreadMissing(String),
     Store(StoreError),
     Approval(clauro_tools::ApprovalError),
+    /// `thinking.budget_tokens >= max_tokens` — an Anthropic hard 400,
+    /// rejected client-side before any request is built (audit 12).
+    BudgetNotBelowMax {
+        budget_tokens: u32,
+        max_tokens: u32,
+    },
 }
 
 /// Everything varying per turn. Bundles what `run_turn` needs beyond the
@@ -229,6 +253,22 @@ fn payload_field(payload: &str, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The tool name a held call's verdict must be recorded under, read from the
+/// transcript's own `tool_use` block — the call's stored record of what it
+/// was (review 21: a rejection must name its tool). `None` means the
+/// transcript has no such block; callers fail typed rather than write a
+/// nameless result row.
+#[must_use]
+pub fn tool_name_of_call(blocks: &[FullBlock], tool_call_id: &str) -> Option<String> {
+    blocks
+        .iter()
+        .find(|b| {
+            b.kind == "tool_use"
+                && payload_field(&b.payload, "id") == Some(tool_call_id.to_string())
+        })
+        .and_then(|b| payload_field(&b.payload, "name"))
+}
+
 impl TurnLoop {
     #[must_use]
     pub fn new() -> Self {
@@ -249,6 +289,25 @@ impl TurnLoop {
 
     fn approvals_for(&mut self, thread_id: &str) -> &mut ApprovalQueue {
         self.approvals.entry(thread_id.to_string()).or_default()
+    }
+
+    /// Drop every per-thread map entry (review 21): queues, stop flags,
+    /// approvals and question gates are per-thread state that must not
+    /// outlive the thread. Call when a thread is deleted.
+    pub fn remove_thread(&mut self, thread_id: &str) {
+        self.queues.remove(thread_id);
+        self.stops.remove(thread_id);
+        self.approvals.remove(thread_id);
+        self.gates.remove(thread_id);
+    }
+
+    /// Whether any per-thread map still holds this thread.
+    #[must_use]
+    pub fn tracked(&self, thread_id: &str) -> bool {
+        self.queues.contains_key(thread_id)
+            || self.stops.contains_key(thread_id)
+            || self.approvals.contains_key(thread_id)
+            || self.gates.contains_key(thread_id)
     }
 
     fn gate_for(&mut self, thread_id: &str) -> QuestionGate {
@@ -295,7 +354,11 @@ impl TurnLoop {
                         full_path: Some(bounded.full_path.to_string_lossy().into_owned()),
                     },
                     Err(_) => ToolOutcome::Ok {
-                        preview,
+                        // The bounding write failed: the full text is lost
+                        // either way, but the inline slice still obeys the
+                        // documented cap (review 21) — an unbounded preview
+                        // would be re-sent on every later step (D27).
+                        preview: preview.chars().take(PREVIEW_LIMIT_CHARS).collect(),
                         preview_path: None,
                         full_path: None,
                     },
@@ -407,17 +470,25 @@ impl TurnLoop {
         id: &str,
     ) -> Result<(), ApprovalError> {
         let outcome = self.approvals_for(thread_id).reject(id)?;
-        let (status, message) = match &outcome {
-            ToolOutcome::Rejected { message } => (ToolStatus::Rejected, message.clone()),
-            ToolOutcome::Error { message } => (ToolStatus::Error, message.clone()),
-            _ => (ToolStatus::Error, String::new()),
+        let status = ToolStatus::from(&outcome);
+        let message = match &outcome {
+            ToolOutcome::Ok { preview, .. } => preview.clone(),
+            ToolOutcome::Error { message }
+            | ToolOutcome::Aborted { message }
+            | ToolOutcome::Rejected { message } => message.clone(),
         };
+        // The verdict names its tool from the transcript; a missing block is
+        // a typed failure, never a nameless result row (review 21).
+        let tool_name =
+            tool_name_of_call(&store.blocks_for_thread(thread_id), id).ok_or_else(|| {
+                ApprovalError::Store(format!("no tool_use block for rejected call {id}"))
+            })?;
         store
             .insert_tool_result(NewToolResult {
                 id: Store::new_id("tr"),
                 thread_id: thread_id.to_string(),
                 tool_call_id: id.to_string(),
-                tool_name: String::new(),
+                tool_name,
                 status,
                 preview: message,
                 preview_path: None,
@@ -637,13 +708,13 @@ impl TurnLoop {
         sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, plan.thread_id, plan.prepared)?;
-        // Fresh turn, fresh flag: a stop belongs to the turn it interrupted.
-        self.stop_flag(plan.thread_id)
-            .store(false, Ordering::SeqCst);
+        // The stop flag is the driver's to clear — once, at claim (turn.rs)
+        // — never here: a stop landing during turn preparation must still
+        // halt the turn it interrupted.
 
         let turn_id = Store::new_id("turn");
         let mut seq = max_seq(store, plan.thread_id) + 1;
-        insert_text_message(
+        seq = insert_text_message(
             store,
             plan.thread_id,
             MessageRole::User,
@@ -680,7 +751,8 @@ impl TurnLoop {
         sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<TurnReport, LoopError> {
         self.check_prefix(store, thread_id, prepared)?;
-        self.stop_flag(thread_id).store(false, Ordering::SeqCst);
+        // Same as `run_turn`: the driver clears the flag at claim, so a stop
+        // landing during preparation still halts this continue.
 
         let turn_id = Store::new_id("turn");
         let seq = max_seq(store, thread_id) + 1;
@@ -775,6 +847,9 @@ impl TurnLoop {
             pending_approvals: Vec::new(),
             pending_question: None,
         };
+        // The exchange may observe the stop mid-stream (per read/retry),
+        // not just between steps.
+        exchange.set_stop_flag(self.stop_flag(thread_id));
 
         // Approved held calls dispatch first, in hold order, before any new
         // exchange step. They carry their own message: the tool_use blocks
@@ -791,8 +866,8 @@ impl TurnLoop {
             })
             .collect::<Vec<_>>();
         if !resumed.is_empty() {
-            let msg_id = self.insert_assistant(store, thread_id, seq)?;
-            seq += 1;
+            let (msg_id, used) = self.insert_assistant(store, thread_id, seq)?;
+            seq = used + 1;
             report.assistant_messages += 1;
             for pending in &resumed {
                 self.gate_note(thread_id, &pending.name);
@@ -810,19 +885,19 @@ impl TurnLoop {
             }
             // One assistant message, one gate window (D42, D101).
             self.gate_for(thread_id).reset();
-            let (request, gap) = self.build_request(store, thread_id, prepared);
+            let (request, gap) = self.build_request(store, thread_id, prepared)?;
             let events = match exchange.step(&request, sink) {
                 Ok(events) => events,
                 Err(failure) => {
-                    let msg_id = self.insert_assistant(store, thread_id, seq)?;
+                    let (msg_id, _) = self.insert_assistant(store, thread_id, seq)?;
                     report.assistant_messages += 1;
                     self.insert_notice(store, &msg_id, 0, &failure.message)?;
                     report.end = TurnEnd::TransportError;
                     break;
                 }
             };
-            let msg_id = self.insert_assistant(store, thread_id, seq)?;
-            seq += 1;
+            let (msg_id, used) = self.insert_assistant(store, thread_id, seq)?;
+            seq = used + 1;
             report.assistant_messages += 1;
             // A thinking gap is a property of history, not of this turn, so
             // it is noticed once per gap — never per-turn spam. The marker
@@ -854,7 +929,7 @@ impl TurnLoop {
 
             let mut dispatched_here = Vec::new();
             let mut halted = false;
-            let mut held = false;
+            let mut held_id: Option<String> = None;
             for pending in &pendings {
                 if self.stopped(thread_id) {
                     halted = true;
@@ -898,7 +973,7 @@ impl TurnLoop {
                             .hold_pending(&pending.id, &pending.name, pending_input(pending))
                             .map_err(LoopError::Approval)?;
                         report.pending_approvals.push(pending.id.clone());
-                        held = true;
+                        held_id = Some(pending.id.clone());
                         break;
                     }
                     Effect::Allow => {
@@ -924,7 +999,7 @@ impl TurnLoop {
                                 }
                                 // No prompt to show is a malformed card, not
                                 // a pause: persist the refusal-shaped error.
-                                Err(_) => {
+                                Err(CardWriteError::Malformed) => {
                                     self.persist_result(
                                         store,
                                         thread_id,
@@ -936,6 +1011,11 @@ impl TurnLoop {
                                     )?;
                                     dispatched_here.push(pending.id.clone());
                                     continue;
+                                }
+                                // The host's storage failed: fail the turn
+                                // typed instead of blaming the model.
+                                Err(CardWriteError::Store(err)) => {
+                                    return Err(LoopError::Store(err));
                                 }
                             }
                         }
@@ -951,10 +1031,41 @@ impl TurnLoop {
                 // `answer_question` and resumes the turn.
                 break;
             }
-            if held {
-                // The turn pauses for a decision; nothing dispatched for the
-                // held call, so nothing to close. Approved calls resume on a
-                // later turn.
+            if held_id.is_some() {
+                // Calls still open beside the held one close as aborted, the
+                // way a stop closes them (D65, D68): an unanswered tool_use
+                // would make every later request a provider 400. The held call
+                // alone stays open — approval dispatches it on a later turn.
+                let open: Vec<OpenCall> = pendings
+                    .iter()
+                    .filter(|p| !dispatched_here.contains(&p.id))
+                    .filter(|p| held_id.as_ref() != Some(&p.id))
+                    .map(|p| OpenCall {
+                        id: p.id.clone(),
+                        name: p.name.clone(),
+                    })
+                    .collect();
+                // A failed cancel is a loud turn failure, not a silent gap:
+                // the D65/D68 paths must not lose data without a trace.
+                store
+                    .cancel_turn(thread_id, &open)
+                    .map_err(LoopError::Store)?;
+                for pending in &pendings {
+                    if !dispatched_here.contains(&pending.id)
+                        && held_id.as_ref() != Some(&pending.id)
+                    {
+                        self.insert_tool_block(
+                            store,
+                            &msg_id,
+                            pending,
+                            &ToolOutcome::Aborted {
+                                message:
+                                    "closed while another call in this message awaits approval"
+                                        .to_string(),
+                            },
+                        )?;
+                    }
+                }
                 report.end = TurnEnd::AwaitingApproval;
                 break;
             }
@@ -990,6 +1101,14 @@ impl TurnLoop {
                 break;
             }
             if pendings.is_empty() {
+                // A stop observed mid-stream (the host's per-read check
+                // returns Ok early, review 21) lands here with nothing left
+                // to dispatch: label it Stopped — the same end a between-
+                // steps stop gets — so the stop/continue offer does not
+                // depend on where in the stream the flag flipped.
+                if self.stopped(thread_id) {
+                    report.end = TurnEnd::Stopped;
+                }
                 break;
             }
         }
@@ -1000,23 +1119,15 @@ impl TurnLoop {
         Ok(report)
     }
 
+    /// Insert an assistant message; returns its id and the seq it actually
+    /// landed on (see `insert_message_row` for the probe).
     fn insert_assistant(
         &self,
         store: &Store,
         thread_id: &str,
         seq: i64,
-    ) -> Result<String, LoopError> {
-        let id = Store::new_id("m");
-        store
-            .insert_message(NewMessage {
-                id: id.clone(),
-                thread_id: thread_id.to_string(),
-                seq,
-                role: MessageRole::Assistant,
-                created_at: now_ms(),
-            })
-            .map_err(LoopError::Store)?;
-        Ok(id)
+    ) -> Result<(String, i64), LoopError> {
+        insert_message_row(store, thread_id, MessageRole::Assistant, seq)
     }
 
     /// Persist one step's events; return the closed tool calls in order.
@@ -1029,7 +1140,6 @@ impl TurnLoop {
         events: &[NormalisedEvent],
     ) -> Result<Vec<PendingTool>, LoopError> {
         let mut open: BTreeMap<u32, OpenBlock> = BTreeMap::new();
-        let mut order: Vec<u32> = Vec::new();
         let mut block_seq = self.next_block_seq(store, msg_id);
         let mut pendings: Vec<PendingTool> = Vec::new();
 
@@ -1045,7 +1155,6 @@ impl TurnLoop {
                             tool: tool.clone(),
                         },
                     );
-                    order.push(*index);
                 }
                 NormalisedEvent::BlockDelta {
                     index,
@@ -1198,21 +1307,23 @@ impl TurnLoop {
     /// Persist a question card for a sole, valid `question` call. The tool_use
     /// block already exists (written at `BlockStop`); the card carries what
     /// the view needs to ask: prompt, options, free-text allowance. Returns
-    /// `Err(())` when the input has no prompt — a card with nothing to ask is
-    /// malformed, and the caller falls back to a refusal result instead of
-    /// pausing the turn on nothing.
+    /// `Malformed` when the input has no prompt — a card with nothing to ask
+    /// is malformed, and the caller falls back to a refusal result instead of
+    /// pausing the turn on nothing. A store failure returns `Store`, which
+    /// the caller propagates typed.
     fn insert_question_card(
         &self,
         store: &Store,
         msg_id: &str,
         pending: &PendingTool,
-    ) -> Result<(), ()> {
-        let input: Value = serde_json::from_str(&pending.input).map_err(|_| ())?;
+    ) -> Result<(), CardWriteError> {
+        let input: Value =
+            serde_json::from_str(&pending.input).map_err(|_| CardWriteError::Malformed)?;
         let prompt = input
             .get("prompt")
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
-            .ok_or(())?;
+            .ok_or(CardWriteError::Malformed)?;
         let options = input.get("options").cloned().unwrap_or(Value::Null);
         let allow_free = input
             .get("allowFreeText")
@@ -1239,7 +1350,7 @@ impl TurnLoop {
                 signature: None,
                 dropped: false,
             })
-            .map_err(|_| ())?;
+            .map_err(CardWriteError::Store)?;
         Ok(())
     }
 
@@ -1305,22 +1416,16 @@ impl TurnLoop {
         pending: &PendingTool,
         outcome: &ToolOutcome,
     ) -> Result<(), LoopError> {
-        let (status, preview, preview_path, full_path) = match outcome {
+        let status = ToolStatus::from(outcome);
+        let (preview, preview_path, full_path) = match outcome {
             ToolOutcome::Ok {
                 preview,
                 preview_path,
                 full_path,
-            } => (
-                ToolStatus::Ok,
-                preview.clone(),
-                preview_path.clone(),
-                full_path.clone(),
-            ),
-            ToolOutcome::Error { message } => (ToolStatus::Error, message.clone(), None, None),
-            ToolOutcome::Aborted { message } => (ToolStatus::Aborted, message.clone(), None, None),
-            ToolOutcome::Rejected { message } => {
-                (ToolStatus::Rejected, message.clone(), None, None)
-            }
+            } => (preview.clone(), preview_path.clone(), full_path.clone()),
+            ToolOutcome::Error { message }
+            | ToolOutcome::Aborted { message }
+            | ToolOutcome::Rejected { message } => (message.clone(), None, None),
         };
         store
             .insert_tool_result(NewToolResult {
@@ -1341,16 +1446,21 @@ impl TurnLoop {
     }
 
     /// Build this step's provider request from the stored transcript.
+    /// The budget/max_tokens pair is validated here: an Anthropic hard-400
+    /// never leaves the process (audit 12).
     fn build_request(
         &self,
         store: &Store,
         thread_id: &str,
         prepared: &PreparedThread,
-    ) -> (BuiltRequest, Option<ThinkingGap>) {
+    ) -> Result<(BuiltRequest, Option<ThinkingGap>), LoopError> {
         let tools: Vec<Value> = prepared
             .tools
             .iter()
             .filter(|t| t.name != "compact")
+            // D26: a denied tool is removed from the request, not filtered
+            // from the results — the model must never be told it exists.
+            .filter(|t| resolve(&t.name, &prepared.rules) != Effect::Deny)
             .map(|t| {
                 let mut v = json!({
                     "name": t.name,
@@ -1364,7 +1474,7 @@ impl TurnLoop {
             })
             .collect();
         let (messages, gap) = assemble_messages(store, thread_id);
-        let mut request = build_normal_request(NormalBuildInput {
+        let mut request = try_build_normal_request(NormalBuildInput {
             model: prepared.model.clone(),
             max_tokens: prepared.max_tokens,
             system: prepared.system_text.clone(),
@@ -1375,7 +1485,16 @@ impl TurnLoop {
                 display: None,
             },
             tool_choice: json!({"type": "auto"}),
-        });
+        })
+        .map_err(|e| match e {
+            NormalBuildError::BudgetNotBelowMax {
+                budget_tokens,
+                max_tokens,
+            } => LoopError::BudgetNotBelowMax {
+                budget_tokens,
+                max_tokens,
+            },
+        })?;
         // Availability rides the beta header (D94); comma-joined onto the
         // existing entry rather than a second header line.
         for (name, value) in request.headers.iter_mut() {
@@ -1384,7 +1503,7 @@ impl TurnLoop {
                 value.push_str(INLINE_TOOLS_BETA);
             }
         }
-        (request, gap)
+        Ok((request, gap))
     }
 }
 
@@ -1432,6 +1551,49 @@ fn max_seq(store: &Store, thread_id: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// How far a message insert may walk past the computed seq. An occupied seq
+/// belongs to an earlier message (history is append-only), so the first free
+/// position after it is a later slot, never a rewrite of anything stored.
+const SEQ_PROBE_LIMIT: i64 = 64;
+
+/// Insert a message row, probing past seqs already taken.
+///
+/// `max_seq` reads the blocks-only join, so a message with no blocks — an
+/// empty provider reply, or a turn that died between the message and its
+/// first block — is invisible to it, and the computed seq can collide with
+/// `idx_message_seq`. One collision used to be typed and permanent: every
+/// later turn recomputed the same losing seq and the thread bricked. The
+/// insert walks forward instead, bounded, and returns the last failure typed
+/// when every candidate is taken — clauro-loop cannot classify a UNIQUE
+/// violation (no rusqlite dependency), so it never claims to: a genuine
+/// store failure recurs on the next probe and is returned as `Err`.
+fn insert_message_row(
+    store: &Store,
+    thread_id: &str,
+    role: MessageRole,
+    seq: i64,
+) -> Result<(String, i64), LoopError> {
+    let mut attempt = seq;
+    loop {
+        let id = Store::new_id("m");
+        match store.insert_message(NewMessage {
+            id: id.clone(),
+            thread_id: thread_id.to_string(),
+            seq: attempt,
+            role,
+            created_at: now_ms(),
+        }) {
+            Ok(()) => return Ok((id, attempt)),
+            Err(err) => {
+                if attempt - seq >= SEQ_PROBE_LIMIT {
+                    return Err(LoopError::Store(err));
+                }
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// Latest user text in surface order, for `regenerate_last` (D99). Reads the
 /// stored rows — never the in-flight plan — so a regenerated turn repeats what
 /// the user actually said. Absent or unreadable rows are a typed store error,
@@ -1454,23 +1616,16 @@ fn last_user_text(store: &Store, thread_id: &str) -> Result<String, LoopError> {
         })
 }
 
+/// Insert a text message; returns the seq it actually landed on (the probe
+/// may place it past an occupied slot — see `insert_message_row`).
 fn insert_text_message(
     store: &Store,
     thread_id: &str,
     role: MessageRole,
     seq: i64,
     text: &str,
-) -> Result<(), LoopError> {
-    let id = Store::new_id("m");
-    store
-        .insert_message(NewMessage {
-            id: id.clone(),
-            thread_id: thread_id.to_string(),
-            seq,
-            role,
-            created_at: now_ms(),
-        })
-        .map_err(LoopError::Store)?;
+) -> Result<i64, LoopError> {
+    let (id, seq) = insert_message_row(store, thread_id, role, seq)?;
     store
         .insert_block(NewBlock {
             id: Store::new_id("b"),
@@ -1484,7 +1639,8 @@ fn insert_text_message(
             signature: None,
             dropped: false,
         })
-        .map_err(LoopError::Store)
+        .map_err(LoopError::Store)?;
+    Ok(seq)
 }
 
 /// Rebuild provider messages from the stored transcript: user text, assistant

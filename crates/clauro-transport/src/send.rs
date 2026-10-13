@@ -24,6 +24,7 @@
 use crate::anthropic::{NormalisedEvent, StreamParser};
 use crate::retry::{retry_delay, MAX_ATTEMPTS};
 use crate::sse::SseFramer;
+use crate::TransportError;
 
 /// A sink for one step's events. Called once per event, in order, as the event
 /// is produced — this is what makes a turn render instead of appearing whole at
@@ -51,6 +52,9 @@ pub enum SendError {
     /// The framer refused a line. Drop the framer: resuming mid-line would
     /// replay a prefix the transcript already judged.
     Frame(String),
+    /// A 2xx body ended before any `Stop` event: mid-body server death would
+    /// otherwise be a silently truncated transcript (D80).
+    Truncated,
 }
 
 impl std::fmt::Display for SendError {
@@ -65,11 +69,76 @@ impl std::fmt::Display for SendError {
             },
             Self::Transport(reason) => write!(f, "connection failed: {reason}"),
             Self::Frame(reason) => write!(f, "stream framing failed: {reason}"),
+            Self::Truncated => write!(f, "stream ended before a stop event (truncated body)"),
         }
     }
 }
 
 impl std::error::Error for SendError {}
+
+/// Run one send under the D56 policy, hard-enforcing [`MAX_ATTEMPTS`].
+///
+/// The injected closure makes one attempt (receiving the zero-based attempt
+/// index). A retryable status — `retry_delay`'s 408/429/5xx — is retried
+/// with exponential backoff honouring `Retry-After`; the attempt budget caps
+/// **tries**, not only delays: after [`MAX_ATTEMPTS`] tries the outcome is
+/// [`TransportError::RetriesExhausted`], naming the status actually seen. A
+/// non-retryable status or a transport-level failure passes through
+/// unchanged after a single attempt — there is no status to back off on.
+///
+/// This is the seam a live turn loop must be routed through: a provider that
+/// answers every request with a retryable status must end the turn at the
+/// cap, not sleep forever (audit 12 #14; review file deleted at audit closeout 2026-10-13).
+pub fn run_with_retry<T>(
+    mut attempt_fn: impl FnMut(u32) -> Result<T, SendError>,
+) -> Result<T, TransportError> {
+    let mut now = epoch_secs();
+    let mut attempt: u32 = 0;
+    let mut last: Option<(u16, Option<String>)> = None;
+    loop {
+        if attempt >= MAX_ATTEMPTS {
+            let (status, retry_after) = last.unwrap_or((429, None));
+            return Err(TransportError::RetriesExhausted {
+                attempts: MAX_ATTEMPTS,
+                status,
+                retry_after,
+            });
+        }
+        match attempt_fn(attempt) {
+            Ok(value) => return Ok(value),
+            Err(SendError::Status {
+                status,
+                retry_after,
+            }) => {
+                last = Some((status, retry_after.clone()));
+                match retry_delay(status, retry_after.as_deref(), attempt, now) {
+                    Some(delay) => {
+                        attempt += 1;
+                        // Never sleep after the last allowed attempt: the
+                        // cap would fire anyway, and the sleep is dead
+                        // waiting on a turn that is already over.
+                        if attempt >= MAX_ATTEMPTS {
+                            return Err(TransportError::RetriesExhausted {
+                                attempts: MAX_ATTEMPTS,
+                                status,
+                                retry_after,
+                            });
+                        }
+                        sleep(delay);
+                        now = epoch_secs();
+                    }
+                    None => {
+                        return Err(TransportError::Send(SendError::Status {
+                            status,
+                            retry_after,
+                        }));
+                    }
+                }
+            }
+            Err(other) => return Err(TransportError::Send(other)),
+        }
+    }
+}
 
 /// The network half of one step. Implemented over `reqwest::blocking` in the
 /// shell crate, and over fixture bytes in tests.
@@ -99,6 +168,14 @@ pub fn stream_step(
     // The status we last saw, so hitting the cap reports what actually
     // happened rather than a synthesised one.
     let mut last: Option<(u16, Option<String>)> = None;
+    // D80: a 2xx body that ends before `Stop` is truncated, not a success.
+    let mut stopped = false;
+    let mut observe = |event: NormalisedEvent| {
+        if matches!(event, NormalisedEvent::Stop { .. }) {
+            stopped = true;
+        }
+        sink(event);
+    };
     loop {
         if attempt >= MAX_ATTEMPTS {
             let (status, retry_after) = last.unwrap_or((429, None));
@@ -109,13 +186,43 @@ pub fn stream_step(
         }
         match source.attempt() {
             Ok(ok) => {
+                if !(200..300).contains(&ok.status) {
+                    // `ByteSource` is contracted to report non-2xx as an
+                    // error; an `Ok` carrying one anyway must not have its
+                    // body framed as transcript — it goes down the same
+                    // status path as the `Err` half.
+                    let (status, retry_after) = (ok.status, ok.retry_after);
+                    last = Some((status, retry_after.clone()));
+                    match retry_delay(status, retry_after.as_deref(), attempt, now) {
+                        Some(d) => {
+                            attempt += 1;
+                            // No sleep after the last allowed attempt: the
+                            // cap fires anyway, and the wait is dead time.
+                            if attempt >= MAX_ATTEMPTS {
+                                return Err(SendError::Status {
+                                    status,
+                                    retry_after,
+                                });
+                            }
+                            sleep(d);
+                            now = epoch_secs();
+                        }
+                        None => {
+                            return Err(SendError::Status {
+                                status,
+                                retry_after,
+                            })
+                        }
+                    }
+                    continue;
+                }
                 for chunk in ok.chunks {
                     let raw = framer
                         .feed(&chunk)
                         .map_err(|e| SendError::Frame(e.to_string()))?;
                     for event in raw {
                         for normalised in parser.feed(&event) {
-                            sink(normalised);
+                            observe(normalised);
                         }
                     }
                 }
@@ -124,8 +231,11 @@ pub fn stream_step(
                 let tail = framer.finish();
                 for event in tail {
                     for normalised in parser.feed(&event) {
-                        sink(normalised);
+                        observe(normalised);
                     }
+                }
+                if !stopped {
+                    return Err(SendError::Truncated);
                 }
                 return Ok(attempt + 1);
             }
@@ -143,9 +253,17 @@ pub fn stream_step(
                 let delay = retry_delay(status, retry_after.as_deref(), attempt, now);
                 match delay {
                     Some(d) => {
+                        attempt += 1;
+                        // No sleep after the last allowed attempt: the cap
+                        // fires anyway, and the wait is dead time.
+                        if attempt >= MAX_ATTEMPTS {
+                            return Err(SendError::Status {
+                                status,
+                                retry_after,
+                            });
+                        }
                         sleep(d);
                         now = epoch_secs();
-                        attempt += 1;
                     }
                     None => {
                         return Err(SendError::Status {

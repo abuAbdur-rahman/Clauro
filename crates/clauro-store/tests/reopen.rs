@@ -24,7 +24,7 @@ fn reopening_the_same_file_succeeds() {
 
 #[test]
 fn reopened_store_keeps_prior_rows() {
-    use clauro_store::{NewProject, NewThread};
+    use clauro_store::{MessageRole, NewBlock, NewMessage, NewProject, NewThread};
     let path: PathBuf = std::env::temp_dir().join(format!(
         "clauro-reopen2-{}-{}.db",
         std::process::id(),
@@ -53,16 +53,54 @@ fn reopened_store_keeps_prior_rows() {
             tools_frozen: "[]".to_string(),
         })
         .expect("seed");
+    first
+        .insert_message(NewMessage {
+            id: "m1".to_string(),
+            thread_id: "t1".to_string(),
+            seq: 1,
+            role: MessageRole::User,
+            created_at: 1,
+        })
+        .expect("seed");
+    first
+        .insert_block(NewBlock {
+            id: "b1".to_string(),
+            message_id: "m1".to_string(),
+            seq: 0,
+            kind: "text".to_string(),
+            payload: r#"{"text":"persisted"}"#.to_string(),
+            boundary: None,
+            is_summary: false,
+            generation: 0,
+            signature: None,
+            dropped: false,
+        })
+        .expect("seed");
     drop(first);
     let second = Store::open(&path).expect("reopen");
     assert!(
         second.table_names().contains(&"thread".to_string()),
         "schema intact across restart"
     );
+    // Review 20 NIT: the reopen test asserted schema and absence only. The
+    // seeded rows must read back through the same paths the app uses.
     assert_eq!(
-        second.blocks_for_thread("t1").len(),
+        second.get_project("p1").expect("read").as_deref(),
+        Some("proj"),
+        "project row survives the restart"
+    );
+    let thread = second
+        .get_thread("t1")
+        .expect("read")
+        .expect("thread row survives the restart");
+    assert_eq!(thread.system_frozen, "s");
+    let blocks = second.blocks_for_thread("t1");
+    assert_eq!(blocks.len(), 1, "the seeded block reads back");
+    assert_eq!(blocks[0].payload, r#"{"text":"persisted"}"#);
+    assert_eq!(
+        second.blocks_for_thread("t-never-used").len(),
         0,
-        "no rows yet, but the thread's absence must not error"
+        "an absent thread reads empty, not an error"
     );
     let _ = std::fs::remove_file(&path);
 }

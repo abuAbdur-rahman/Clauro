@@ -15,7 +15,8 @@
         "title": "Clauro",
         "width": 1200,
         "height": 800,
-        "decorations": false
+        "decorations": false,
+        "backgroundColor": "#1b1b1b"
       }
     ],
     "security": {

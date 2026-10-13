@@ -1,9 +1,8 @@
 //! Task 018 rail on shadcn primitives (UI-GUIDE §6).
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, within, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { UserEvent } from "@testing-library/user-event";
 import { ProjectsRail, groupRailChats, projectColor } from "./ProjectsRail";
 import { useSettingsStore } from "../shell/settings";
 
@@ -198,9 +197,13 @@ describe("ProjectsRail date groups", () => {
     expect(groups.map(([label]) => label)).toEqual(["TODAY", "OLDER"]);
   });
 
-  it("projectColor follows the prototype wheel by project index", () => {
-    expect(projectColor("p1", [...GROUP_PROJECTS])).toBe("#c96442");
-    expect(projectColor("p2", [...GROUP_PROJECTS])).toBe("#0067c0");
+  it("projectColor hashes the id — reordering cannot repaint a dot", () => {
+    // Review 31: the rail used to index into its wheel by position, so
+    // reordering the project list repainted every dot. The shared hash from
+    // projects.ts makes colour a property of the id alone.
+    const forward = projectColor("p1", [...GROUP_PROJECTS]);
+    expect(forward).toBe(projectColor("p1", [...GROUP_PROJECTS].reverse()));
+    expect(forward).toBeDefined();
     expect(projectColor(null, [...GROUP_PROJECTS])).toBeUndefined();
     expect(projectColor("unknown", [...GROUP_PROJECTS])).toBeUndefined();
   });
@@ -218,7 +221,8 @@ describe("ProjectsRail date groups", () => {
   it("rows show the project color dot and the active accent bar", () => {
     renderGrouped({ activeThreadId: "c2" });
     const dot = screen.getByTestId("thread-dot-c2");
-    expect(dot.style.backgroundColor).toBe("rgb(201, 100, 66)");
+    // #8b5cf6 — the shared djb2 hash of "p1" into the projects palette.
+    expect(dot.style.backgroundColor).toBe("rgb(139, 92, 246)");
     expect(screen.getByTestId("thread-accent-c2")).toBeDefined();
     // No-project rows carry no dot.
     expect(screen.queryByTestId("thread-dot-c3")).toBeNull();
@@ -257,33 +261,15 @@ describe("ProjectsRail row menu", () => {
     expect(onPinThread).toHaveBeenCalledWith("c1", false);
   });
 
-  async function openMoveSubmenu(user: UserEvent): Promise<void> {
-    // Radix opens the submenu on ArrowRight (hover is flaky under jsdom:
-    // all rects are zero-size, so pointer routing is unreliable).
+  it("hides Move: no move primitive exists in the store or host (review 31)", async () => {
+    // A visible control that does nothing is a placebo (UI-GUIDE §7). There is
+    // no `moveThread` in the thread store and no Tauri command for it, so the
+    // row menu must not offer it. When a real primitive lands, this flips to
+    // "renders when onMoveThread is supplied" and the App wires a handler.
+    const user = userEvent.setup();
+    renderGrouped({});
     await user.click(screen.getByTestId("thread-menu-c2"));
-    const sub = screen.getByRole("menuitem", { name: "Move to project" });
-    sub.focus();
-    await user.keyboard("{ArrowRight}");
-  }
-
-  it("move-to-project submenu offers No project", async () => {
-    const user = userEvent.setup();
-    const onMoveThread = vi.fn();
-    renderGrouped({ onMoveThread });
-    await openMoveSubmenu(user);
-    // Radix sub-items need a raw click event under jsdom (pointer-up
-    // select does not fire through user-event here).
-    fireEvent.click(screen.getByRole("menuitem", { name: "No project" }));
-    expect(onMoveThread).toHaveBeenCalledWith("c2", null);
-  });
-
-  it("move-to-project submenu lists every project", async () => {
-    const user = userEvent.setup();
-    const onMoveThread = vi.fn();
-    renderGrouped({ onMoveThread });
-    await openMoveSubmenu(user);
-    fireEvent.click(screen.getByRole("menuitem", { name: "Client dashboard" }));
-    expect(onMoveThread).toHaveBeenCalledWith("c2", "p2");
+    expect(screen.queryByRole("menuitem", { name: "Move to project" })).toBeNull();
   });
 
   it("rename opens an inline input; Enter saves, Escape cancels", async () => {
@@ -397,7 +383,8 @@ describe("ProjectsRail folders", () => {
     renderFolders();
     expect(screen.getByTestId("project-folder-p1")).toBeDefined();
     const dot = screen.getByTestId("project-dot-p1");
-    expect(dot.style.backgroundColor).toBe("rgb(201, 100, 66)");
+    // Same hash as the thread dots: one colour per id, everywhere.
+    expect(dot.style.backgroundColor).toBe("rgb(139, 92, 246)");
   });
 
   it("project threads are expanded by default with aria-expanded", () => {

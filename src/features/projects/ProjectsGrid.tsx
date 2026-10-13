@@ -130,12 +130,12 @@ export function ProjectsGrid({
   projects: readonly Project[];
   onNew: () => void;
   onOpen: (id: string) => void;
-  chatCountByProject?: Record<string, number>;
-  now?: number;
+  chatCountByProject?: Record<string, number> | undefined;
+  now?: number | undefined;
   /** Dialog wiring owned by the App agent; exposed here only. */
-  dialogOpen?: boolean;
-  onDialogChange?: (open: boolean) => void;
-  onCreate?: (input: NewProjectInput) => void;
+  dialogOpen?: boolean | undefined;
+  onDialogChange?: ((open: boolean) => void) | undefined;
+  onCreate?: ((input: NewProjectInput) => void) | undefined;
 }): React.JSX.Element {
   const [q, setQ] = useState("");
   const needle = q.toLowerCase();
@@ -146,7 +146,7 @@ export function ProjectsGrid({
     <div className="page-frame">
       <div className="page-col">
       <div className="mb-3 flex items-center justify-between">
-        <h1 className="font-serif text-2xl text-neutral-100">Projects</h1>
+        <h1 className="font-serif text-2xl text-foreground">Projects</h1>
         <Button onClick={onNew}>
           <Plus aria-hidden="true" />
           New project
@@ -197,7 +197,7 @@ export function ProjectsGrid({
                 )}
                 <p
                   data-testid={`project-meta-${p.id}`}
-                  className="mt-auto text-xs text-neutral-400"
+                  className="mt-auto text-xs text-muted-foreground"
                 >
                   {meta}
                 </p>
@@ -208,7 +208,7 @@ export function ProjectsGrid({
       </div>
       {visible.length === 0 && (
         <div className="empty-frame">
-          <p data-testid="projects-empty" className="text-sm text-neutral-400">
+          <p data-testid="projects-empty" className="text-sm text-muted-foreground">
             No projects found.
           </p>
         </div>

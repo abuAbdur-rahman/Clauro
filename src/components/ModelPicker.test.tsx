@@ -4,6 +4,7 @@ import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ModelPicker from "./ModelPicker";
 import { useThreadStore } from "../features/catalogue/thread";
+import { invalidateModelEntries } from "../features/providers/modelEntries";
 import type { EnrichedModel } from "../features/providers/providers";
 
 /**
@@ -62,6 +63,10 @@ function unknown(id: string): EnrichedModel {
 beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
+  // Prefs are global (Settings → Models writes them) and so is the shared
+  // load: both must be pristine or one test's answers leak into the next.
+  localStorage.clear();
+  invalidateModelEntries();
   useThreadStore.getState().reset();
   useThreadStore.getState().openThread(THREAD);
   vi.mocked(providerList).mockResolvedValue([
@@ -175,5 +180,90 @@ describe("ModelPicker on Select", () => {
     const listbox = await screen.findByRole("listbox");
     expect(within(listbox).getByRole("option", { name: /opus/i })).not.toBeNull();
     expect(within(listbox).queryByRole("option", { name: /haiku/i })).toBeNull();
+  });
+});
+
+describe("one shared load for every mounted picker (review 32 startup perf)", () => {
+  it("two mounts trigger ONE provider list and ONE enrichment per provider", async () => {
+    render(
+      <>
+        <ModelPicker threadId={THREAD} />
+        <ModelPicker threadId={THREAD} compact />
+      </>,
+    );
+    expect((await screen.findAllByRole("combobox")).length).toBe(2);
+    expect(providerList).toHaveBeenCalledTimes(1);
+    expect(providerModelsEnriched).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("keyboard reach into the Select (review 32 / 61 a11y)", () => {
+  it("Escape still closes the picker after a filter character", async () => {
+    const user = userEvent.setup();
+    render(<ModelPicker threadId={THREAD} />);
+    await user.click(await screen.findByRole("combobox"));
+    await screen.findByRole("listbox");
+    await user.type(screen.getByLabelText(/search models/i), "h");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("arrow keys and Enter reach the Select from inside the filter box", async () => {
+    const user = userEvent.setup();
+    render(<ModelPicker threadId={THREAD} />);
+    await user.click(await screen.findByRole("combobox"));
+    await screen.findByRole("listbox");
+    const box = screen.getByLabelText(/search models/i);
+    await user.click(box);
+    await user.type(box, "hai");
+    // ArrowDown escapes the input (the trap's position): Radix moves real DOM
+    // focus onto an option. Pre-fix the blanket stopPropagation kept it here.
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement?.getAttribute("role")).toBe("option");
+    // Back up onto the model, then commit it with Enter — both keys, one path.
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(useThreadStore.getState().threads[THREAD]?.model?.id).toBe("claude-haiku-4-5");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  }, 30000);
+
+  it("Enter in the filter selects the matching model", async () => {
+    const user = userEvent.setup();
+    render(<ModelPicker threadId={THREAD} />);
+    await user.click(await screen.findByRole("combobox"));
+    await screen.findByRole("listbox");
+    await user.type(screen.getByLabelText(/search models/i), "hai");
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("combobox").textContent).toMatch(/haiku/i);
+    expect(useThreadStore.getState().threads[THREAD]?.model?.id).toBe("claude-haiku-4-5");
+  });
+});
+
+describe("pref readers (review 30/31 owner TODO)", () => {
+  it("clauro.models.hidden keeps a hidden model out of the list", async () => {
+    localStorage.setItem(
+      "clauro.models.hidden",
+      JSON.stringify({ "anthropic:claude-haiku-4-5": true }),
+    );
+    vi.mocked(providerModelsEnriched).mockResolvedValue([
+      known("claude-haiku-4-5", "Haiku"),
+      known("claude-opus-4-5", "Opus"),
+    ]);
+    const user = userEvent.setup();
+    render(<ModelPicker threadId={THREAD} />);
+    await user.click(await screen.findByRole("combobox"));
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).queryByRole("option", { name: /haiku/i })).toBeNull();
+    expect(within(listbox).getByRole("option", { name: /opus/i })).not.toBeNull();
+  });
+
+  it("clauro.prefs.defaultModel selects the stored model for a model-less thread", async () => {
+    localStorage.setItem("clauro.prefs.defaultModel", "anthropic:claude-haiku-4-5");
+    render(<ModelPicker threadId={THREAD} />);
+    expect(await screen.findByRole("combobox")).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(screen.getByRole("combobox").textContent).toMatch(/haiku/i);
+    });
+    expect(useThreadStore.getState().threads[THREAD]?.model?.id).toBe("claude-haiku-4-5");
   });
 });

@@ -53,7 +53,57 @@ fn benign_lookalikes_allowed() {
         "passphrase is a word here", // no assignment, no secret material
         "remember 2-3 ideas for dinner",
         "id 42",
+        // `sk-` inside a longer word is not a key prefix (audit 10 NIT):
+        // hyphenated ordinary words must not silently refuse.
+        "the task-is-pending list",
+        "ask-for directions",
     ] {
         assert!(!looks_secret(s), "must allow: {s}");
+    }
+}
+
+#[test]
+fn key_prefixes_require_a_word_boundary() {
+    // Real keys stand alone; `task-x` must not be eaten by the `sk-` check.
+    for s in [
+        "sk-live-abc123xyz456789",
+        "the key is sk-live-abc123xyz456789 ok",
+        "\"sk-live-abc123xyz456789\"",
+        "=sk-live-abc123xyz456789",
+    ] {
+        assert!(looks_secret(s), "must refuse: {s}");
+    }
+    for s in [
+        "the task-is-pending list",
+        "ask-for directions",
+        "a1AKIAIOSFODNN7EXAMPLEa1", // embedded, no boundary
+    ] {
+        assert!(!looks_secret(s), "must allow: {s}");
+    }
+}
+
+#[test]
+fn multibyte_input_never_panics_at_any_byte_index() {
+    // audit 10 / 01 critical 13: the assignment window after
+    // `passphrase` / `private key` / `private_key` was sliced by raw byte
+    // count; a multi-byte char inside the window split a codepoint and
+    // PANICKED — while the caller's shared Store mutex was held, poisoning
+    // it and bricking every handler until restart. Every offset must be
+    // boundary-safe now. "ø"(2B) "你"(3B) "𝄞"(4B) cover all widths.
+    for word in ["passphrase", "private key", "private_key"] {
+        for len in 0..48usize {
+            let filler: String = "ø你𝄞".chars().cycle().take(len).collect();
+            for tail in ["", "=", ":", " = x", "：密", "你"] {
+                let s = format!("{word}{filler}{tail}");
+                let _ = looks_secret(&s); // must not panic
+            }
+        }
+    }
+    // Same shapes at the top level and preceded by arbitrary text, so the
+    // find-position is not always zero.
+    for pad in 0..8usize {
+        let prefix = "a".repeat(pad);
+        let s = format!("{prefix}note: passphrase {}", "ø".repeat(30));
+        let _ = looks_secret(&s);
     }
 }

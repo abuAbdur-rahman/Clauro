@@ -205,7 +205,16 @@ instinct to hand-roll is the expensive one.
    six hundred thousand downloads with no release since 2022. Prefer the boring, currently-shipped
    dependency.
 5. **A dependency crossing a boundary needs a D-number.** Anything added inside the artifact sandbox
-   or the tool host is a security-surface change, not a convenience — see `AGENTS.md` §8.
+   or the tool host is a security-surface change, not a convenience - see `AGENTS.md` §8.
+
+### 6.2 Adoption record
+
+Every adopted dependency gets its §6.1 row here: name, version, licence, URL, maintenance date
+checked, and the alternative that was rejected.
+
+| Adopted | Version · licence · maintained | Why it is in | Rejected alternative, and why |
+|---|---|---|---|
+| `windows-sys` (windows-rs) — https://crates.io/crates/windows-sys · https://github.com/microsoft/windows-rs | **0.61.2**, MIT OR Apache-2.0, last release **2025-10-06** (checked 2026-10-12); MSRV 1.71, fine on the pinned 1.96 toolchain | The swap half of `clauro-tools`' staged write (audit 11, **D128**): `ReplaceFileW` is the only supported Win32 call that replaces a file while keeping the *replaced* file's DACL, attributes, owner, primary group and named streams — the mechanism that makes **D34**'s "replacement writes preserve the target's existing DACL" literally true. Every use is `#[cfg(windows)]`-gated; its single dependency (`windows-link`) compiles to inert declarations off-Windows, so the Linux floor never links a Win32 import. **User-approved** (escalated from the audit as a §5a/§8 review item). | **Hand-rolled `extern "system"` FFI for `ReplaceFileW`** — rejected: unsafe code we own inside the tool host, instead of vetted, maintained bindings from Microsoft's windows-rs. **In-place write when an explicit DACL exists** — rejected: it contradicts D34's staging rule (would need a new D-number to overturn) and loses the fsync-before-swap commit point audit 11 added for crash safety. |
 
 ## 7. Version pinning
 
@@ -218,7 +227,7 @@ via the `packageManager` field in `package.json` (`pnpm@11.6.0`) — CI installs
 `pnpm install --frozen-lockfile` and fails on drift rather than warning. The Rust pin lives only in
 `rust-toolchain.toml`; CI extracts the channel from that file instead of hardcoding a second copy.
 
-### 7.1 Pinned versions, verified 2026-10-04
+### 7.1 Pinned versions, verified 2026-10-04 · last re-checked 2026-10-12
 
 Recorded so a reader can tell a stale claim from a deliberate one. **The spec states the rules; this
 table is the evidence that the rules were applied.**
@@ -246,7 +255,7 @@ table is the evidence that the rules were applied.**
 | `@testing-library/react` | `^16` | React 19-compatible renderer queries. Alternative (manual DOM asserts) rejected: role-based queries match the a11y contract. |
 | `keyring` (Rust) | `4.x` → **4.2.0** | MIT/Apache-2.0, released 2026-08. `docs/dependencies.md` §4.1. |
 | `sucrase` (JS) | `^3.35` → **3.35.1** | The JSX/TS transform for artifacts, in a Worker (**D4**). MIT. Alternatives rejected: Babel (`@babel/standalone` is ~3 MB against a 202 kB transform, and its plugin set is the wrong shape for one job); TypeScript's own compiler (~8 MB, and `transpileModule` still emits `React.createElement`-shaped output with no pragma control); esbuild-wasm (a WASM runtime to do what Sucrase does in JS). Measured, not assumed — see `docs/build-baseline.md`. Last release 2025-11-19; the newest of the three candidate transforms by a wide margin. |
-| `shadcn` primitives (vendored copy, app-shell only) | Radix `dialog **1.1.23**` · `select **2.3.7**` · `separator **1.1.15**` · `slot **1.3.3**` · `tooltip **1.2.16**` · `collapsible **1.1.20**` · `label **2.1.15** + `cva **0.7.1**` + `clsx **2.1.1**` + `tailwind-merge **3.7.0**` + `tw-animate-css **1.4.0**` | **D112.** Sidebar/Dialog/Select instead of hand-rolled — a hand-rolled dialog re-opens the focus-trap bugs Radix closed. Copy, not a package: vendoring *is* the install. All MIT except `cva` (Apache-2.0) — both MIT-compatible. Scope is the app shell exactly like `lucide-react` (**D96**): nothing Radix ever enters the artifact frame (`D2`, `D3`, `D83`). Full record in `docs/dependencies.md` §7. |
+| `shadcn` primitives (vendored copy, app-shell only) | Radix `dialog **1.1.23**` · `select **2.3.7**` · `separator **1.1.15**` · `slot **1.3.3**` · `tooltip **1.2.16**` · `collapsible **1.1.20**` · `label **2.1.15** + `cva **0.7.1**` + `clsx **2.1.1**` + `tailwind-merge **3.7.0**` + `tw-animate-css **1.4.0**` | **D112, D127.** Sidebar/Dialog/Select instead of hand-rolled — a hand-rolled dialog re-opens the focus-trap bugs Radix closed. Copy, not a package: vendoring *is* the install, which is why **D127** names shadcn/ui (https://github.com/shadcn-ui/ui, MIT) as a fourth portable source scoped to **component code only**. All MIT except `cva` (Apache-2.0) — both MIT-compatible. Scope is the app shell exactly like `lucide-react` (**D96**): nothing Radix ever enters the artifact frame (`D2`, `D3`, `D83`). Full record in `docs/dependencies.md` §7. |
 | `@testing-library/user-event` (dev) | `^14.6.7` | MIT. Real pointer/keyboard dispatch for Radix `Select` interaction tests. Alternative rejected (`fireEvent` only): Radix opens on pointer events jsdom `click` does not reproduce. |
 | Radix `avatar **1.2.6**` · `dropdown-menu **2.1.24**` · `progress **1.1.16**` · `scroll-area **1.2.18**` | MIT, Radix line | **D112, `Tasks/026`.** Message-row avatars, message actions, transcript scrollbars, compaction progress. Alternatives rejected: hand-rolled menu/focus wiring (the 025 argument, unchanged); `native-scroll` styling (scrollbars stay native-unbranded and unthemeable). Full record in `docs/dependencies.md` §7. |
 | `dompurify` (JS) | `^3.4` → **3.4.16** | SVG sanitisation, dynamically imported so it is never in the main chunk (**D4**). Alternatives rejected: hand-rolled allowlists (a sanitiser is a bug farm, and this one has a CVE history we would be re-opening); the browser's own `Sanitizer` API (not in any shipping engine). **Licence is `(MPL-2.0 OR Apache-2.0)` and we take the Apache-2.0 option**, which is MIT-compatible; recorded explicitly because MPL is file-level copyleft and a reviewer should not have to go looking. Last release 2026-09-23. |

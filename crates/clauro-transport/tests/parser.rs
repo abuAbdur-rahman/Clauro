@@ -129,6 +129,89 @@ fn compaction_usage_comes_from_iterations_not_top_level() {
     assert_eq!(usage.iterations.len(), 2);
 }
 
+// ── Audit 12/finding 7 — the compaction path asserts its interesting property ──
+
+/// `InboundKind::Compaction` must be recognised at its block start; every
+/// other fixture asserts its interesting property, this one now does too.
+#[test]
+fn compaction_block_start_is_recognised() {
+    let events = run(4096, &fixture("compaction_response.sse"));
+    assert!(
+        events.contains(&NormalisedEvent::BlockStart {
+            index: 0,
+            kind: InboundKind::Compaction,
+            tool: None,
+        }),
+        "BlockStart{{kind:Compaction,index:0}} must surface: {events:?}"
+    );
+}
+
+// ── Audit 12/finding 8 — an oversize wire index never aliases block 0 ────────
+
+/// A wire index ≥ 2³² truncated (`as u32`) to 0 and hijacked the first
+/// block. Oversize is nonsense from a provider: `Ignored`, never an alias.
+#[test]
+fn oversize_wire_index_never_aliases_block_zero() {
+    let mut parser = AnthropicParser::new();
+    let mut framer = SseFramer::new();
+    for raw in framer
+        .feed(
+            b"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":4294967296,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+              event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":4294967296,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n\
+              event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":4294967296}\n\n",
+        )
+        .expect("inline feed is small valid UTF-8")
+    {
+        for event in parser.feed(&raw) {
+            assert!(
+                !matches!(
+                    &event,
+                    NormalisedEvent::BlockStart { index: 0, .. }
+                        | NormalisedEvent::BlockDelta { index: 0, .. }
+                        | NormalisedEvent::BlockStop { index: 0 }
+                ),
+                "2^32 must not alias block 0: {event:?}"
+            );
+            assert!(
+                matches!(event, NormalisedEvent::Ignored { .. }),
+                "oversize index degrades to Ignored, never fatal: {event:?}"
+            );
+        }
+    }
+}
+
+// ── Audit 12/finding 9 — untrusted sums saturate, never overflow ─────────────
+
+#[test]
+fn untrusted_sums_saturate_instead_of_overflowing() {
+    let mut parser = AnthropicParser::new();
+    let mut framer = SseFramer::new();
+    for raw in framer
+        .feed(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"x\",\"content\":[],\"input_transformations\":[{\"dropped_thinking_blocks\":18446744073709551615},{\"dropped_thinking_blocks\":5}]}}\n\n\
+              event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{},\"usage\":{\"iterations\":[{\"input_tokens\":18446744073709551615,\"output_tokens\":18446744073709551615},{\"input_tokens\":1,\"output_tokens\":1}]}}\n\n",
+        )
+        .expect("inline feed is small valid UTF-8")
+    {
+        for event in parser.feed(&raw) {
+            match event {
+                NormalisedEvent::InputTransformed { dropped } => {
+                    assert_eq!(
+                        dropped,
+                        u64::MAX,
+                        "hostile counts saturate, never panic"
+                    );
+                }
+                NormalisedEvent::Usage { usage } => {
+                    assert_eq!(usage.billing_input_tokens, u64::MAX);
+                    assert_eq!(usage.billing_output_tokens, u64::MAX);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 // ── P3: dropped thinking ─────────────────────────────────────────────────────
 
 #[test]

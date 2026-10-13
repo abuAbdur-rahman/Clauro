@@ -288,13 +288,77 @@ describe("SettingsDialog", () => {
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
-  it("data clears chats through the thread store", async () => {
+  it("clear all chats confirms first, then resets the store", async () => {
     const user = userEvent.setup();
+    const { useThreadStore } = await import("../catalogue/thread");
+    useThreadStore.getState().openThread("to-be-cleared");
     useSettingsStore.getState().openSettings("data");
     render(<SettingsDialog threadId="t1" />);
     await user.click(screen.getByRole("button", { name: /^Clear$/ }));
+    // Destructive actions confirm (UI-GUIDE §7): nothing dies before the
+    // nested confirm says so.
+    expect(useThreadStore.getState().threads["to-be-cleared"]).toBeDefined();
+    await user.click(screen.getByTestId("confirm-clear-chats"));
+    expect(useThreadStore.getState().threads).toEqual({});
     expect(screen.getByText(/cleared all chats/i)).toBeTruthy();
     expect(screen.getByText(/local storage/i)).toBeTruthy();
+  });
+
+  it("reset app confirms first, then clears local storage", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("clauro.theme.mode", "dark");
+    useSettingsStore.getState().openSettings("data");
+    render(<SettingsDialog threadId="t1" />);
+    await user.click(screen.getByRole("button", { name: /^Reset$/ }));
+    // Storage survives the click; only the confirm wipes it.
+    expect(window.localStorage.getItem("clauro.theme.mode")).toBe("dark");
+    await user.click(screen.getByTestId("confirm-reset-app"));
+    expect(window.localStorage.getItem("clauro.theme.mode")).toBeNull();
+    expect(screen.getByText(/reset local settings/i)).toBeTruthy();
+  });
+
+  it("display name flows into the settings store (review 31: setDisplayName had no callers)", async () => {
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("general");
+    render(<SettingsDialog threadId="t1" />);
+    const input = screen.getByLabelText("Display name");
+    await user.clear(input);
+    await user.type(input, "Dana");
+    expect(useSettingsStore.getState().displayName).toBe("Dana");
+    // Clearing the field falls back to the greeting default, never blank.
+    await user.clear(input);
+    expect(useSettingsStore.getState().displayName).toBe("Abu");
+  });
+
+  it("Open Providers CTA closes settings and opens the providers surface", async () => {
+    // The old CTA re-opened the section already on screen (review 31).
+    const user = userEvent.setup();
+    useSettingsStore.getState().openSettings("providers");
+    render(<SettingsDialog threadId="t1" />);
+    await user.click(screen.getByTestId("open-providers-cta"));
+    expect(useSettingsStore.getState().open).toBe(false);
+    expect(useSettingsStore.getState().providersOpen).toBe(true);
+  });
+
+  it("export names the file from the chat title, sanitised", async () => {
+    const user = userEvent.setup();
+    vi.mocked(transcriptRead).mockResolvedValue([threadText("b1", "kept")]);
+    window.URL.createObjectURL = vi.fn(() => "blob:mock");
+    window.URL.revokeObjectURL = vi.fn();
+    // Intercept the anchor click to read the filename the download would use.
+    const downloads: string[] = [];
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push(this.getAttribute("download") ?? "");
+      });
+    useSettingsStore.getState().openSettings("data");
+    render(<SettingsDialog threadId="t1" title="Q3: roadmap/plan?" />);
+    await user.click(screen.getByRole("button", { name: /export markdown/i }));
+    await waitFor(() => {
+      expect(downloads).toEqual(["Q3 roadmapplan.md"]);
+    });
+    clickSpy.mockRestore();
   });
 });
 

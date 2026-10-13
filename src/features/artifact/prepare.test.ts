@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { newNonce, prepareArtifact } from "./prepare";
+import { newNonce, prepareArtifact, SOURCE_MAX_BYTES } from "./prepare";
 import type { WorkerLike } from "./compile";
 import { transformJsx } from "./compile.transform";
 
@@ -268,5 +268,148 @@ describe("publishing to the host (D123)", () => {
     expect(out.kind).toBe("failed");
     if (out.kind !== "failed") return;
     expect(out.reason).toMatch(/no artifact document URL/i);
+  });
+
+  for (const hostile of [
+    "javascript:alert(1)",
+    "data:text/html,<h1>spoofed</h1>",
+    "https://evil.example/artifact",
+    "http://tauri.localhost/index.html",
+    "//evil.example/x",
+    "http://artifact.localhost/other/route",
+    "http://artifact.localhost/__clauro/doc/../escape",
+  ]) {
+    it(`refuses a published URL outside the document host: ${hostile.slice(0, 48)}`, async () => {
+      // The URL is the frame's `src`: anything but the document host would
+      // render without the Rust-assembled policy (D3/D123).
+      const out = await prepareArtifact({
+        source: "<h1>x</h1>",
+        mediaType: "text/html",
+        fetchPolicy: policy,
+        publishDoc: () => Promise.resolve(hostile),
+      });
+      expect(out.kind).toBe("failed");
+      if (out.kind !== "failed") return;
+      expect(out.reason).toMatch(/URL/i);
+    });
+  }
+
+  it("accepts the URL shape artifact_doc.rs answers with, on both origins", async () => {
+    for (const url of [
+      "http://artifact.localhost/__clauro/doc/n-1_2",
+      "artifact://localhost/__clauro/doc/n-1_2",
+    ]) {
+      const out = await prepareArtifact({
+        source: "<h1>x</h1>",
+        mediaType: "text/html",
+        fetchPolicy: policy,
+        publishDoc: () => Promise.resolve(url),
+      });
+      expect(out.kind).toBe("live");
+      if (out.kind === "live") expect(out.url).toBe(url);
+    }
+  });
+});
+
+describe("meta refresh cannot navigate the frame (audit 14, IMPORTANT)", () => {
+  it("is stripped from the document before publish", async () => {
+    const pub = publisher();
+    const out = await prepareArtifact({
+      source:
+        '<meta http-equiv="refresh" content="0;url=https://evil.example/">' +
+        "<h1>x</h1><META HTTP-EQUIV = 'Refresh' content=\"1;url=https://evil2.example/\">",
+      mediaType: "text/html",
+      fetchPolicy: policy,
+      publishDoc: pub.publishDoc,
+    });
+    expect(out.kind).toBe("live");
+    expect(pub.published).toHaveLength(1);
+    const doc = pub.published[0]?.doc ?? "";
+    expect(doc).not.toMatch(/http-equiv\s*=\s*["']?refresh/i);
+    expect(doc).not.toMatch(/evil2?\.example/);
+    expect(doc).toContain("<h1>x</h1>");
+  });
+});
+
+describe("source is bounded on the way in (D27)", () => {
+  it("refuses source over the byte cap before anything is fetched or compiled", async () => {
+    const pub = publisher();
+    const fetchPolicy = vi.fn(policy);
+    const out = await prepareArtifact({
+      source: "x".repeat(SOURCE_MAX_BYTES + 1),
+      mediaType: "text/html",
+      fetchPolicy,
+      publishDoc: pub.publishDoc,
+    });
+    expect(out.kind).toBe("failed");
+    if (out.kind !== "failed") return;
+    expect(out.reason).toMatch(/cap|too (large|big)/i);
+    expect(pub.published).toHaveLength(0);
+    expect(fetchPolicy).not.toHaveBeenCalled();
+  });
+
+  it("a source just under the cap still prepares", async () => {
+    const pub = publisher();
+    const out = await prepareArtifact({
+      source: "<h1>x</h1>".padEnd(SOURCE_MAX_BYTES - 1, " "),
+      mediaType: "text/html",
+      fetchPolicy: policy,
+      publishDoc: pub.publishDoc,
+    });
+    expect(out.kind).toBe("live");
+  });
+});
+
+describe("media type is parsed, not string-compared (audit 14, NIT)", () => {
+  it("image/svg+xml; charset=utf-8 is sanitised like image/svg+xml", async () => {
+    const pub = publisher();
+    const out = await prepareArtifact({
+      source:
+        '<svg viewBox="0 0 4 4"><script>alert(1)</script><rect width="4" height="4"/></svg>',
+      mediaType: "image/svg+xml; charset=utf-8",
+      fetchPolicy: policy,
+      publishDoc: pub.publishDoc,
+    });
+    expect(out.kind).toBe("live");
+    expect(pub.published).toHaveLength(1);
+    const doc = pub.published[0]?.doc ?? "";
+    // The exact-string match used to send this down the HTML path: the svg,
+    // script included, straight into the document unsanitised.
+    expect(doc).not.toMatch(/<script>alert/);
+    expect(doc).toMatch(/<rect/);
+  });
+});
+
+describe("the D45 gate holds at the prepare boundary (audit 14, IMPORTANT)", () => {
+  it("refuses to prepare on an unproven Linux engine", async () => {
+    const pub = publisher();
+    const out = await prepareArtifact({
+      source: "<h1>x</h1>",
+      mediaType: "text/html",
+      fetchPolicy: policy,
+      publishDoc: pub.publishDoc,
+      engine: { platform: "linux", opaqueProven: false },
+    });
+    expect(out.kind).toBe("failed");
+    if (out.kind !== "failed") return;
+    expect(out.reason).toMatch(/Linux/);
+    expect(pub.published).toHaveLength(0);
+  });
+
+  it("prepares on Windows and on proven Linux", async () => {
+    for (const engine of [
+      { platform: "windows" as const, opaqueProven: false },
+      { platform: "linux" as const, opaqueProven: true },
+    ]) {
+      const pub = publisher();
+      const out = await prepareArtifact({
+        source: "<h1>x</h1>",
+        mediaType: "text/html",
+        fetchPolicy: policy,
+        publishDoc: pub.publishDoc,
+        engine,
+      });
+      expect(out.kind).toBe("live");
+    }
   });
 });

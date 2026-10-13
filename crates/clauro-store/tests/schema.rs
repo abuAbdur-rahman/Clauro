@@ -204,6 +204,61 @@ fn seq_gaps_are_legal() {
     let rows = store.blocks_for_message("m2");
     assert_eq!(rows.len(), 1, "gapped seq rows must both persist");
     assert_eq!(rows[0].generation, 0);
+    // Review 20 NIT: the test claimed persistence of both gapped rows but
+    // only ever read one back. Both must survive, and the messages with them.
+    let first = store.blocks_for_message("m1");
+    assert_eq!(first.len(), 1, "the seq-1 row must persist too");
+    assert_eq!(first[0].id, "b1");
+    assert_eq!(store.thread_message_count(&t).unwrap(), 2);
+}
+
+/// V6 audit 24 (`40` CRITICAL, D19): the source scan in `tests/append_only.rs`
+/// is textual — this proves the *engine* refuses a rewrite attempt against a
+/// live database, whatever SQL the caller spelled. The triggers do the work;
+/// DELETE is deliberately not trigger-banned because `delete_thread` /
+/// `delete_project` must still remove these rows (D10, `tests/retention.rs`).
+#[test]
+fn the_engine_refuses_live_rewrites_of_message_and_block() {
+    let dir = TestDir::fresh();
+    let (store, t) = seeded(&dir);
+    msg(&store, "m1", &t, 1);
+    block(&store, "b1", "m1", 0, 0);
+    let raw = rusqlite::Connection::open(dir.db()).expect("raw connection");
+    let err = raw
+        .execute("UPDATE message SET role = 'assistant' WHERE id = 'm1'", [])
+        .expect_err("message is append-only: the engine must abort the rewrite");
+    assert!(
+        err.to_string().contains("append-only"),
+        "the RAISE(ABORT) text must name the guarantee, got: {err}"
+    );
+    let err = raw
+        .execute("UPDATE block SET payload = '{}' WHERE id = 'b1'", [])
+        .expect_err("block is append-only: the engine must abort the rewrite");
+    assert!(err.to_string().contains("append-only"), "got: {err}");
+    drop(raw);
+    // The legitimate delete path must still work: triggers ban rewrites only.
+    store.delete_thread(&t).expect("D10 delete still succeeds");
+    assert_eq!(store.thread_message_count(&t).unwrap(), 0);
+}
+
+/// A file stamped by a newer build must refuse to open, not fall through the
+/// version ladder silently (review 20, `init`).
+#[test]
+fn a_newer_schema_version_is_refused_not_misopened() {
+    let dir = TestDir::fresh();
+    {
+        let raw = rusqlite::Connection::open(dir.db()).expect("raw create");
+        raw.pragma_update(None, "user_version", 99)
+            .expect("stamp future version");
+    }
+    let err = match Store::open(&dir.db()) {
+        Ok(_) => panic!("a future schema must not open silently"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("99"),
+        "error names the version: {err}"
+    );
 }
 
 #[test]
@@ -255,7 +310,7 @@ fn summary_channel_is_never_folded_into_totals() {
             created_at: now_ms(),
         })
         .expect("usage insert must succeed");
-    let totals = store.usage_totals(&t);
+    let totals = store.usage_totals(&t).expect("usage sums must read");
     assert_eq!(totals.input_tokens, 100);
     assert_eq!(totals.output_tokens, 50);
     assert_eq!(totals.cache_write_tokens, 10);
@@ -288,6 +343,125 @@ fn tool_result_pair_is_unique_per_thread_and_call() {
         .insert_tool_result(mk("r2"))
         .expect_err("duplicate (thread_id, tool_call_id) must fail");
 }
+
+/// Review 20, IMPORTANT 3: `artifact.id` is not unique (PK is
+/// `(thread_id, id, version)`), so `set_artifact_compiled_path` matching on
+/// `id` alone stamped every version in every thread. The predicate must name
+/// the exact row.
+#[test]
+fn set_artifact_compiled_path_touches_only_the_named_row() {
+    let dir = TestDir::fresh();
+    let (store, t) = seeded(&dir);
+    store
+        .insert_thread(NewThread {
+            id: "t2".to_string(),
+            project_id: Some("p1".to_string()),
+            title: None,
+            incognito: false,
+            memory_off: false,
+            system_frozen: "sys".to_string(),
+            tools_frozen: "[]".to_string(),
+        })
+        .expect("second thread");
+    let mk = |thread: &str, version: i64| NewArtifact {
+        id: "a1".to_string(),
+        thread_id: thread.to_string(),
+        title: "demo".to_string(),
+        media_type: "text/html".to_string(),
+        source_path: format!("artifacts/a1/{version}/source"),
+        created_at: version,
+    };
+    for (thread, version) in [("t1", 1), ("t1", 2), ("t2", 1)] {
+        store
+            .insert_artifact_version(&mk(thread, version), version)
+            .expect("artifact version");
+    }
+    store
+        .set_artifact_compiled_path(&t, "a1", 1, "artifacts/a1/1/compiled")
+        .expect("compiled path is set");
+    let raw = rusqlite::Connection::open(dir.db()).expect("raw connection");
+    let compiled = |thread: &str, version: i64| -> Option<String> {
+        raw.query_row(
+            "SELECT compiled_path FROM artifact WHERE thread_id = ?1 AND id = 'a1' AND version = ?2",
+            rusqlite::params![thread, version],
+            |row| row.get(0),
+        )
+        .expect("row exists")
+    };
+    assert_eq!(
+        compiled(&t, 1).as_deref(),
+        Some("artifacts/a1/1/compiled"),
+        "the named version gets the path"
+    );
+    assert_eq!(
+        compiled(&t, 2),
+        None,
+        "the newer version of the same artifact must stay unset"
+    );
+    assert_eq!(
+        compiled("t2", 1),
+        None,
+        "another thread's artifact with the same id must stay unset"
+    );
+}
+
+/// Review 20, IMPORTANT 6: a malformed row must never be silently dropped
+/// from a read — a truncated transcript feeds I1/I3 a partial prefix and they
+/// report "clean". Loud refusal until the readers grow typed error returns
+/// (that follow-up needs clauro-loop call-site changes).
+#[test]
+#[should_panic(expected = "block rows must decode")]
+fn a_malformed_block_row_fails_loud_instead_of_truncating() {
+    let dir = TestDir::fresh();
+    let (store, t) = seeded(&dir);
+    msg(&store, "m1", &t, 1);
+    block(&store, "b1", "m1", 0, 0);
+    {
+        let raw = rusqlite::Connection::open(dir.db()).expect("raw connection");
+        raw.execute(
+            "INSERT INTO message (id, thread_id, seq, role, created_at) VALUES ('m-bad', ?1, 99, 'user', 0)",
+            [&t],
+        )
+        .expect("corrupt-seeded message");
+        raw.execute(
+            "INSERT INTO block (id, message_id, seq, kind, payload, generation) VALUES ('b-bad', 'm-bad', 0, 'text', '{}', 'not-a-number')",
+            [],
+        )
+        .expect("corrupt-seeded block");
+    }
+    // The block's `generation` is TEXT in a tampered file; decoding it as
+    // i64 fails. Returning a short Vec here would hide the corruption.
+    let _ = store.blocks_for_message("m-bad");
+}
+
+/// Review 20, IMPORTANT 6 — the panic half of the same finding. A reader that
+/// `.expect`s a query result poisons the store mutex (`turn.rs:491`) and
+/// takes every handler down with it; a typed error lets the caller report and
+/// carry on. A missing or tampered table is the worst case a reader can meet
+/// on a corrupt file, so it must come back as `Err`, never as a panic.
+#[test]
+fn a_missing_table_yields_a_typed_error_instead_of_a_panic() {
+    let dir = TestDir::fresh();
+    let (store, t) = seeded(&dir);
+    {
+        let raw = rusqlite::Connection::open(dir.db()).expect("raw connection");
+        for table in ["usage", "memory", "compaction_event"] {
+            raw.execute(&format!("DROP TABLE {table}"), [])
+                .expect("corrupt-seeded table drop");
+        }
+    }
+    let _ = store
+        .usage_totals(&t)
+        .expect_err("usage sums must be a typed error, not a panic");
+    let _ = store
+        .get_memory("mem1")
+        .expect_err("memory read must be a typed error, not a panic");
+    let _ = store
+        .compaction_generations(&t)
+        .expect_err("ledger read must be a typed error, not a panic");
+}
+
+// ── the single write path per mutable column ────────────────────────────────
 
 #[test]
 fn every_mutable_column_has_its_single_write_path() {
@@ -326,7 +500,10 @@ fn every_mutable_column_has_its_single_write_path() {
         rev, 2,
         "str_replace bumps revision, never rewrites blind (D7)"
     );
-    let mem = store.get_memory("mem1").expect("memory must be readable");
+    let mem = store
+        .get_memory("mem1")
+        .expect("memory read must not fail")
+        .expect("memory must be present");
     assert_eq!(mem.body, "v2");
     assert_eq!(mem.revision, 2);
     store
@@ -349,7 +526,7 @@ fn every_mutable_column_has_its_single_write_path() {
         })
         .expect("artifact insert must work");
     store
-        .set_artifact_compiled_path("a1", "artifacts/a1/1/compiled")
+        .set_artifact_compiled_path("t1", "a1", 1, "artifacts/a1/1/compiled")
         .expect("compiled_path is set once after the Worker transform");
 }
 
@@ -496,5 +673,8 @@ fn compaction_generation_advances_strictly_by_one() {
     store
         .insert_compaction_event(mk("c2", 2))
         .expect("generation 2 must commit");
-    assert_eq!(store.compaction_generations(&t), vec![1, 2]);
+    assert_eq!(
+        store.compaction_generations(&t).expect("ledger must read"),
+        vec![1, 2]
+    );
 }

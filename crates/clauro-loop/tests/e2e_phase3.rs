@@ -194,7 +194,7 @@ fn fixture(granted: &[&str], rules: Vec<clauro_core::PermissionRule>) -> Fixture
             model: "claude-x".to_string(),
             max_tokens: 1024,
             tools: granted_tools,
-            thinking_budget: 10_000,
+            thinking_budget: 512,
             rules,
         },
         turn_loop: TurnLoop::new(),

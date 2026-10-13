@@ -317,65 +317,100 @@ async function main() {
     rendered === "PROOF-OK", `proof-target=${JSON.stringify(rendered)}`);
 
   // ── claims 1–4, probed from inside the real frame ──────────────────────
-  // The context is already the frame (switched above for the render proof,
-  // and nothing since has left it) and the document has arrived, so these
-  // are answerable regardless of handshake state.
-  // ── claim 1: the frame's internals are present but inert (D124) ────────
+  // The render proof left the context in the frame; claim 1 needs the shell
+  // for its baseline and its read-back, and claims 1b–4 need the frame, so
+  // claim 1 moves between the two and hands the frame back at the end.
+  //
+  // ── claim 1: sentinel-effect test (D124) ─────────────────────────────
   // wry's WebView2 backend injects the host init scripts into every frame —
   // it ignores `for_main_frame_only` — so the frame owns a
-  // `__TAURI_INTERNALS__` object. Absence is unachievable on this floor; the
-  // proven property is inertness instead. The document host is remote to
-  // Tauri's IPC by construction and no capability grants a remote context
-  // (both pinned in `artifact_doc`'s tests), so an invoke from the frame must
-  // fail closed at the host's ACL check while the shell's own invoke works.
+  // `__TAURI_INTERNALS__` object with a working-shaped `invoke`. What an
+  // invoke from the frame *does* cannot be read from inside the frame: a
+  // host rejection, a lost response, and a silent success all read the same
+  // (response callbacks eval in the main frame only). The proof is therefore
+  // an EFFECT, not a frame-side signal: the frame attempts a real,
+  // state-touching command (`provider_add_custom` inserting a sentinel row
+  // into SQLite), then the shell reads the world back through its own
+  // healthy IPC. If the sentinel row exists afterwards, the frame dispatched
+  // a host command — the dangerous case, regardless of what the frame saw.
+  const SENTINEL_ID = "proof-sentinel";
+
+  /** Invoke a command in the CURRENT frame context; resolves
+   * 'resolved:'+value | 'rejected:'+msg | 'threw:'+name | 'unresolved'. */
+  async function invokeViaScript(cmd, argsJson, timeoutMs = 15000) {
+    return execAsyncScript(
+      "var done = arguments[arguments.length - 1];" +
+      "var t = setTimeout(function () { done('unresolved'); }, 8000);" +
+      "try {" +
+      `  window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${argsJson}).then(` +
+      "    function (v) { clearTimeout(t); done('resolved:' + JSON.stringify(v)); }," +
+      "    function (e) { clearTimeout(t); done('rejected:' + String((e && e.message) || e)); });" +
+      "} catch (e) { clearTimeout(t); done('threw:' + e.name); }",
+      timeoutMs,
+    );
+  }
+
+  function sentinelPresentIn(listResult) {
+    if (!listResult.startsWith("resolved:[")) return null;
+    const rows = JSON.parse(listResult.slice("resolved:".length));
+    return rows.some((r) => r.id === SENTINEL_ID);
+  }
+
+  // Shell baseline: no sentinel row before the attempt, or the run means
+  // nothing. `provider_remove` is idempotent — clearing a leftover is fine.
+  await switchFrame(null);
+  await invokeViaScript("provider_remove", `{ id: ${JSON.stringify(SENTINEL_ID)} }`);
+  const baselineList = await invokeViaScript("provider_list", "{}");
+  const baselineOk = baselineList.startsWith("resolved:[") && !sentinelPresentIn(baselineList);
+
+  // Frame: record the injected surface, then attempt the sentinel command.
+  // The frame-side outcome is diagnostic only — the effect decides.
+  await switchFrame(await findElement('iframe[title="artifact-frame"]'));
   const internals = await execSyncScript(
     "return JSON.stringify({ type: typeof window.__TAURI_INTERNALS__," +
     " keys: window.__TAURI_INTERNALS__ ? Object.keys(window.__TAURI_INTERNALS__) : []," +
     " invoke: typeof (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke)," +
     " ipc: typeof window.ipc });",
   );
-  const surface = JSON.parse(internals);
+  const frameAttempt = await invokeViaScript(
+    "provider_add_custom",
+    `{ id: ${JSON.stringify(SENTINEL_ID)}, displayName: "Proof Sentinel",` +
+    " baseUrl: \"https://sentinel.invalid/v1\" }",
+    15000,
+  );
+
+  // Shell read-back: the shell's own invoke must work (positive control),
+  // and the sentinel must be absent — checked twice, a grace period apart,
+  // so a late dispatch cannot squeak past the first poll.
+  await switchFrame(null);
+  const shellControl = await invokeViaScript("webview_status", "{}");
+  const afterFirst = await invokeViaScript("provider_list", "{}");
+  await new Promise((r) => setTimeout(r, 3000));
+  const afterSecond = await invokeViaScript("provider_list", "{}");
+  // Cleanup, always: the sentinel must not outlive the probe either way.
+  await invokeViaScript("provider_remove", `{ id: ${JSON.stringify(SENTINEL_ID)} }`);
+
+  const sentinelAfter = [sentinelPresentIn(afterFirst), sentinelPresentIn(afterSecond)];
   let claim1Pass = false;
-  let claim1Detail = `surface=${internals}`;
-  if (surface.type === "undefined") {
-    claim1Pass = true;
-    claim1Detail += " — absent outright (stronger than D124 needs)";
-  } else if (surface.invoke !== "function") {
-    // An internals object with no invoke entry cannot reach a command.
-    claim1Pass = true;
-    claim1Detail += " — no invoke entry, no command path";
+  let claim1Detail =
+    `surface=${internals}, frame invoke ${frameAttempt},` +
+    ` shell control ${shellControl}, sentinel after attempt ${JSON.stringify(sentinelAfter)}`;
+  if (!baselineOk) {
+    claim1Detail += " — shell baseline failed; INCONCLUSIVE";
+  } else if (sentinelAfter.some((v) => v === null)) {
+    claim1Detail += " — shell could not read provider_list back; INCONCLUSIVE";
+  } else if (sentinelAfter.some(Boolean)) {
+    // The dangerous case: the effect happened. A hang or even a frame-side
+    // error does NOT make this pass — dispatch is what was tested.
+    claim1Detail += " — SENTINEL EFFECT OBSERVED: the frame dispatched a host command";
   } else {
-    // invoke exists: attempt a harmless command from the frame. It must never
-    // resolve — the host rejects it (remote origin, no remote capabilities).
-    // Frame-side a rejection and a lost response both read as a hang, so the
-    // shell runs the same invoke as a positive control: IPC itself works.
-    const frameAttempt = await execAsyncScript(
-      "var done = arguments[arguments.length - 1];" +
-      "var t = setTimeout(function () { done('unresolved'); }, 8000);" +
-      "try {" +
-      "  window.__TAURI_INTERNALS__.invoke('webview_status').then(" +
-      "    function (v) { clearTimeout(t); done('resolved:' + JSON.stringify(v)); }," +
-      "    function (e) { clearTimeout(t); done('rejected:' + String((e && e.message) || e)); });" +
-      "} catch (e) { clearTimeout(t); done('threw:' + e.name); }",
-      15000,
-    );
-    await switchFrame(null);
-    const shellControl = await execAsyncScript(
-      "var done = arguments[arguments.length - 1];" +
-      "var t = setTimeout(function () { done('unresolved'); }, 8000);" +
-      "try {" +
-      "  window.__TAURI_INTERNALS__.invoke('webview_status').then(" +
-      "    function (v) { clearTimeout(t); done('resolved:' + (v && typeof v)); }," +
-      "    function (e) { clearTimeout(t); done('rejected:' + String((e && e.message) || e)); });" +
-      "} catch (e) { clearTimeout(t); done('threw:' + e.name); }",
-      15000,
-    );
-    await switchFrame(await findElement('iframe[title="artifact-frame"]'));
-    claim1Pass = frameAttempt === "unresolved" && shellControl.startsWith("resolved:");
-    claim1Detail += ` — frame invoke ${frameAttempt}, shell control ${shellControl}`;
+    claim1Pass = shellControl.startsWith("resolved:");
+    claim1Detail += " — no effect from the frame while the shell's IPC is healthy";
   }
-  claim("claim 1: the frame cannot reach a host command (D124: present but inert)",
+  claim("claim 1: the frame cannot reach a host command (D124: sentinel-effect probe)",
     claim1Pass, claim1Detail);
+  // Claims 1b–4 continue from inside the frame.
+  await switchFrame(await findElement('iframe[title="artifact-frame"]'));
 
   const viaParent = await execSyncScript(
     "try { var api = window.parent.__TAURI_INTERNALS__; return api === undefined ? 'undefined' : 'reachable'; }" +
@@ -408,6 +443,41 @@ async function main() {
   );
   claim("claim 4: a network request from inside the frame fails",
     fetchResult.startsWith("failed:"), fetchResult);
+
+  // Claim 4b (D123): the served document enforces `connect-src 'none'` "in so
+  // many words". The browser reports the exact policy text that blocked, in
+  // `SecurityPolicyViolationEvent.originalPolicy`, so the assertion reads the
+  // directive AND its text — a plain failed fetch would not discriminate CSP
+  // from DNS (review 42's open gap). The envelope carries the policy twice —
+  // response header (artifact_doc.rs, pinned Rust-side by
+  // `the_document_response_carries_one_header_policy_and_the_body`; page JS
+  // cannot observe response headers, so the header carrier is proven at the
+  // Rust seam) and a first-in-head `<meta http-equiv>` (envelope.ts:77) —
+  // so the meta carrier is asserted here as the visible half.
+  const cspProbe = await execAsyncScript(
+    "var done = arguments[arguments.length - 1];" +
+    "var seen = null;" +
+    "document.addEventListener('securitypolicyviolation', function handler(e) {" +
+    "  if (e.violatedDirective && e.violatedDirective.indexOf('connect-src') === 0) {" +
+    "    seen = { directive: e.violatedDirective, disposition: e.disposition, policy: e.originalPolicy };" +
+    "    document.removeEventListener('securitypolicyviolation', handler);" +
+    "  }" +
+    "});" +
+    "var metaEl = document.querySelector('meta[http-equiv=\"Content-Security-Policy\"]');" +
+    "var report = function (outcome) { setTimeout(function () { done(JSON.stringify({ seen: seen, meta: metaEl ? metaEl.getAttribute('content') : null, outcome: outcome })); }, 250); };" +
+    "fetch('http://csp-proof.invalid/probe').then(function () { report('reached'); }, function () { report('failed'); });",
+  );
+  const cspState = JSON.parse(cspProbe);
+  claim("claim 4b: the served document enforces connect-src 'none' (D123, policy text observed)",
+    cspState.seen !== null &&
+      cspState.seen.directive.indexOf("connect-src") === 0 &&
+      cspState.seen.disposition === "enforce" &&
+      typeof cspState.seen.policy === "string" &&
+      cspState.seen.policy.indexOf("connect-src 'none'") !== -1 &&
+      typeof cspState.meta === "string" &&
+      cspState.meta.indexOf("connect-src 'none'") !== -1 &&
+      cspState.outcome === "failed",
+    `violation=${JSON.stringify(cspState.seen)}, meta-carrier=${cspState.meta !== null}, fetch=${cspState.outcome}`);
 
   // The handshake chain (D122), observed from the shell side — after the
   // document facts, so a stalled handshake never hides them from the report.
