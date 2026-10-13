@@ -20,16 +20,16 @@ definition of done.
 
 | | |
 |---|---|
-| **Platforms** | **Windows is primary and is where development happens.** Linux is secondary; macOS is deliberately out (**D49**, **D50**, **D88**, **D89**). No cross-compilation: one platform, one toolchain. |
+| **Platforms** | **Windows only — WebView2 — and that is where development happens** (**D132**: Linux removed 2026-10-13; macOS was already out by **D49**, **D50**, **D88**, **D89**). No cross-compilation: one platform, one toolchain. |
 | **Budget** | ~25 MB. Raised from <15 MB, which was never measured. |
 | **Accounts** | None. **No telemetry, ever** (**D38**). |
 | **Licence** | MIT, public repo — which is *why* LobeHub is observation-only (**D59**, **D60**). Open WebUI is inspiration-only (**D103**). |
 | **Method** | TDD + SDD. No code without a task; no code without a failing test first (`AGENTS.md` §6). |
 
-**One gate can change the shape of the release:** `Tasks/001` decides whether WebKitGTK holds an
-opaque origin. If it does not, **artifacts are disabled at runtime on Linux with an in-app notice
-naming the reason** (**D45**) — never weakened (**D2**). `bash` does **not** inherit that gate
-(**D46**).
+**One gate decides the sandbox claim:** `Tasks/001` answered it for WebView2 — the engine holds an
+opaque origin, and `pnpm proofs` asserts that on every run. Clauro ships Windows-only (**D132**), so
+there is no second engine to disable artifacts for: the origin comes from the `sandbox` attribute and
+is never weakened (**D2**). `bash` does **not** inherit that gate (**D46**).
 
 ## 2. The eight tools
 
@@ -120,7 +120,7 @@ not a restatement — the task file owns it.
 | A5 | Host↔artifact messaging is a `MessageChannel` handshake. The **handshake** validates `event.source === iframe.contentWindow` and origin `"null"`; after that the **port is the capability** and every message is allowlisted (**D6**, `D91`). Port messages carry an empty origin and null source per the HTML spec, so per-message origin validation is not implementable. | `014` |
 | A6 | An artifact that throws does not take down the host UI. Sucrase runs in a Worker with a timeout and a size cap (**D4**). SVG through DOMPurify, in the artifact frame only. | `014` |
 | A7 | Only predefined Tailwind utility classes (**D5**), and the system prompt tells the model that `localStorage`/`sessionStorage`/`indexedDB` are unavailable — the most common cause of a blank artifact. | `014` |
-| A8 | **WebView2 must hold an opaque origin — that gates a Windows release. WebKitGTK is best-effort: if it cannot, artifacts are disabled at runtime on Linux with a notice** (**D45**, **D89**). One package, truth told in the product, and a Linux limitation no longer blocks a Windows release. | `001`, `021` |
+| A8 | **WebView2 must hold an opaque origin — that gates a Windows release** (**D45**, **D89**). One package, truth told in the product. The WebKitGTK half of this row is withdrawn with the platform: **D132** removed Linux from v1's scope. | `001` |
 
 ### 4.5 Compaction
 
@@ -170,12 +170,12 @@ v1 ships when:
 2. **No test requires a live API key.** SSE fixtures are synthetic and live in
    `crates/clauro-transport/tests/fixtures/`: omitted thinking, a compaction response, a dropped
    block, an unknown event.
-3. Both **platform floors** are green. A failure on a floor invalidates the sandbox guarantee on
-   that platform — it is a release blocker, not a warning (**D50**). Both floors run on every
-   change: windows primary, windows floor, linux primary, linux floor (**D126**, restored
-   2026-10-12). The Linux floor records its WebKitGTK runtime via `pkg-config` and fails below the
-   2.40 floor. Still owned by Phase 7 (**D115**'s surviving items, not its superseded CI clause):
-   the pinned WebKitGTK install and the `Tasks/021` Linux gate proof.
+3. Both **Windows jobs** are green — the primary and the floor. A failure on a floor invalidates the
+   sandbox guarantee on that platform: it is a release blocker, not a warning (**D50**). They run on
+   every change (**D126**), and **D132** narrowed the set to these two: the Linux jobs and their
+   WebKitGTK floor went with the platform, so "both floors" means `windows primary` and `windows
+   floor`. Still owned by `021`: pinning the WebView2 runtime rather than recording whatever the
+   image happens to ship.
 4. Binary ≤ ~25 MB, measured from the empty shell recorded in `Tasks/002`.
 5. `Tasks/001` has produced a verdict, and the release matches it.
 6. Every ported change carries its attribution, and every prompt in the repo is our own wording
