@@ -58,16 +58,34 @@ defaults), lucide icons one stroke/weight (never unicode/emoji), all states
       80/80 after. **Still open from T8:** the visual side-by-side against the
       reference (the chip's appearance is asserted structurally here, not seen).
 - [ ] T8 Verify (sequential, after T1–T7): capture every screen vs html,
-      full gates, report. NOT parallel. — **NOT RUN**: only the T5 capture
-      exists (1 of the required per-screen set); T8 also depends on T7.
-      Full gates (tsc/eslint/test/cargo) were re-established by the
-      2026-10-12 review closeout instead, but the side-by-side visual
-      comparison remains outstanding.
+      full gates, report. NOT parallel. — **PARTIAL, 2026-10-13.** Captured with
+      `agent-browser` (headless CDP) against the mock build on 1431 and the
+      reference on 1440: app screens **home / chat / projects grid / project
+      detail / settings / palette** (`031-t8-*-ours.png`), reference **home +
+      projects** (`031-t8-*-ref.png`), and two side-by-side stitches
+      (`031-t8-sidebyside-{home,projects}.png`).
+      **The visual comparison was NOT performed — this agent has no image input.**
+      The artefacts exist for a human to compare; what is recorded here is a
+      *structural* comparison read from the accessibility trees (text, not pixels).
+      **Not captured:** the reference's chat and settings screens — its rail
+      entries are not buttons with matching text and its cmdk-style palette does
+      not select on synthetic click — so the pair set is 2 screens, not every one.
+      **Structural differences (home):** ours carries `Memory`, `Toggle live
+      preview` and `Voice` controls plus a `Thinking level` combobox reading
+      "Medium"; the reference has a plain `Thinking` button and none of the other
+      three. Our model control is `aria-label="Model"`, the reference's is
+      `Choose model` — both are chips with a chevron (T7). Gates: lint 0, tsc 0,
+      build 0, check-docs 0; the full vitest run is load-flaky on this box
+      (1.8 GB free of 15.4 GB) and each failing file is green in isolation.
 
 ## Acceptance criteria
 
-- [ ] Side-by-side captures per screen in `.openchamber/screenshots/` — **NOT DONE**: only
-      `031-t5-working-thread.png` exists; T8 never ran (see above).
+- [ ] Side-by-side captures per screen in `.openchamber/screenshots/` — **PARTIAL
+      (2026-10-13)**: 6 app screens, 2 reference screens, and 2 stitched pairs
+      (`031-t8-sidebyside-{home,projects}.png`). Not every screen (the reference's
+      chat and settings resisted programmatic navigation), and **no visual
+      comparison was made — the agent cannot view images**, so this needs a human
+      eye. See T8 above for the structural differences that were found.
 - [ ] `tsc` + `eslint` clean, full suite green — re-verified by the 2026-10-12 closeout gate
       runs (per-component evidence in the audit reports); final full-suite sign-off is the
       closeout's own gate run, not this task's.
