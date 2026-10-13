@@ -46,12 +46,6 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-latest
             asset-suffix: arm64-setup.exe
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-            asset-suffix: amd64.AppImage
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04
-            asset-suffix: arm64.AppImage
     steps:
       # Check out THE TAG BEING RELEASED, never whatever HEAD happens to be
       # (review 42, item 16). On a tag push `inputs.tag` is empty and
@@ -126,13 +120,6 @@ jobs:
           node-version-file: ".nvmrc"
           cache: pnpm
 
-      - name: Linux webview + packaging deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev fuse3
-
       # --locked is not optional in CI. It is the difference between
       # "reproducible" and "usually the same". `cargo fetch --locked` asserts
       # the committed lockfile matches the manifests, and warms the cache
@@ -161,7 +148,7 @@ jobs:
         run: |
           pnpm tauri build \
             --target "${{ matrix.target }}" \
-            --bundles "$( [ "${{ runner.os }}" = "Linux" ] && echo appimage || echo msi,nsis )"
+            --bundles msi,nsis
 
       # The binary budget is a spec claim (~25 MB). Assert it, don't hope.
       - name: Assert the binary budget (D88)
@@ -194,10 +181,7 @@ jobs:
             echo "::error::no bundle directory at $root"
             exit 1
           fi
-          case "$TARGET" in
-            *-linux-*) expected=( AppImage ) ;;
-            *) expected=( msi exe ) ;;
-          esac
+          expected=( msi exe )
           ok=1
           for ext in "${expected[@]}"; do
             if ! find "$root" -type f -iname "*.${ext}" | grep -q .; then
@@ -216,8 +200,6 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/bundle/**/*.exe
             target/${{ matrix.target }}/release/bundle/**/*.msi
-            target/${{ matrix.target }}/release/bundle/**/*.AppImage
-            target/${{ matrix.target }}/release/bundle/**/*.deb
           if-no-files-found: error
           retention-days: 7
 
