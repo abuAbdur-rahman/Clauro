@@ -44,14 +44,19 @@ defaults), lucide icons one stroke/weight (never unicode/emoji), all states
       `App.hotkeys.test.tsx` +102); `src-tauri/tauri.conf.json:16-17` is
       `1200×800` (verified 2026-10-12). NOT verified: the html §10 size
       comparison (visual, superseded by later audit 60/61 passes).
-- [ ] T7 Composer polish → `Composer.tsx`/test, `ModelPicker.tsx`/test.
+- [x] T7 Composer polish → `Composer.tsx`/test, `ModelPicker.tsx`/test.
       Icon toggles (memory/effort/web/think) with tooltips, effort = thinking
       level indicator, model chip, token hint, keep slash/keys/stop.
-      (Issue 7) — **PARTIAL**: the Composer half landed in `65e46f4`
-      (icon toggles, thinking level, web-search default-on). The
-      **`ModelPicker.tsx` half did not** — the file's last change predates the
-      wave (`c881f54`, 2026-10-10) and carries none of the T7 spec
-      (tooltips/effort indicator/token hint). State: not done, not ticked.
+      (Issue 7) — Composer half in `65e46f4`; **the `ModelPicker` half landed
+      2026-10-13**: the compact trigger is now the reference's `.ctools .chip`
+      (`ModelPicker.tsx:231` `data-testid="model-chip"`, `h-7` + `border-border` +
+      `bg-card` + `text-xs` + `max-w-[260px]`; `:244` the label truncates at
+      `model-chip-label`). The chevron is `SelectTrigger`'s own, so exactly one
+      renders — no duplication. Applies in `compact` mode only: the Settings →
+      Models picker (`data-testid="model-picker"`) keeps its full-width shape.
+      Red-first at `ModelPicker.test.tsx:94`; `ModelPicker` + `Composer` suites
+      80/80 after. **Still open from T8:** the visual side-by-side against the
+      reference (the chip's appearance is asserted structurally here, not seen).
 - [ ] T8 Verify (sequential, after T1–T7): capture every screen vs html,
       full gates, report. NOT parallel. — **NOT RUN**: only the T5 capture
       exists (1 of the required per-screen set); T8 also depends on T7.
