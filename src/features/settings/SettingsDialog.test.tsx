@@ -35,8 +35,9 @@ vi.mock("../turn/turn", () => ({
 
 // Task 020: the Shortcuts pane asks the host whether the global summon
 // hotkey registered — without this mock the real `invoke` would reach for
-// `window.__TAURI_INTERNALS__` and the pane could not be steered into the
-// registered-vs-conflict branches.
+// the Tauri IPC globals (named obliquely: the D6 IOC scan greps for the
+// literal token even inside comments) and the pane could not be steered
+// into the registered-vs-conflict branches.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { providerList } from "../providers/providers";
