@@ -77,6 +77,7 @@ one without a new D-number.
 | The shapes tests assert against | [`CONTRACTS.md`](CONTRACTS.md) |
 | How it fits together | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | How it feels | [`DESIGN.md`](DESIGN.md) |
+| What we ported, and from where | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) · [`FEATURES.md`](FEATURES.md) |
 | What to build, in order | [`PHASES.md`](PHASES.md) · [`Tasks/`](Tasks/) |
 
 ## Status

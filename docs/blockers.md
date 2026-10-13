@@ -1,6 +1,6 @@
 # Blockers — real must be 100% real, same state as mock
 
-**Purpose:** every gap where real UI today is mock/demo/empty. Real ships only when row clears. Mock may fake; real must fail loudly, never fake. (User decision 2026-10-10.)
+**Purpose:** every gap where real UI today is mock/demo/empty. Real ships only when row clears. Mock may fake; real must fail loudly, never fake. (User decision 2026-10-10.) **Re-verified against the code 2026-10-13** (`Tasks/029`): rows closed since they were written are ticked, partial closes name the open half, stale line citations are corrected, and newly-found gaps are called out.
 
 **Modes:** real = `pnpm tauri dev` (1420, Rust). Mock = `pnpm dev:mock` (1430, web-only, enriched `mock-tauri.ts` + TS SEED). Visual truth = `docs/references/ui/index.html`; `01–10.png` secondary.
 
@@ -11,44 +11,50 @@
 - [x] B03 Rail width — FIXED Task 029 (`ProjectsRail.tsx:84` `w-14` = 56px; `ProjectsRail.test.tsx:122` updated).
 - [x] B04 Collapse persisted to cookie — DONE Task 029 (`sidebar.tsx`: `clauro.sidebar` localStorage try/catch, read on init; `sidebar.persistence.test.tsx` 3/3).
 - [x] B05 `metaKey` accepted — DONE Task 029 (dropped in `hotkey.ts` + sidebar Ctrl+B; `hotkey.test.tsx` asserts Meta does not fire).
-- [ ] B06 No reduced-motion rule; no 900px min; no 1100px artifact overlay as Sheet.
+- [ ] B06 PARTIAL — the reduced-motion rule landed (`src/styles.css:388`, `@media (prefers-reduced-motion: reduce)`) and the 900px floor is real (`App.tsx:72` and `:690` `min-w-[900px]`); the **≤1100px artifact overlay as a Sheet is not implemented**: the drawer is a fixed `w-80` `<aside>` (`ArtifactDrawer.tsx:167`…) and `1100` appears nowhere under `src/`.
 
 ## P1 — thread list + indicator
 
 - [x] B07 Date groups — DONE (`ProjectsRail.tsx:115` `groupRailChats` buckets pinned/today/yesterday/prev-7/older, called at `:287`; `ProjectsRail.test.tsx:172` buckets, `:190` omits empty + sorts newest-first; the mock SEED has its own pure port at `seed.ts:253`).
-- [ ] B08 No row menu (Pin/Rename/Move/Export/Delete); vendored `dropdown-menu` orphaned.
-- [ ] B09 No inline rename; no move-to-project submenu.
-- [ ] B10 No active-row 3px accent bar.
+- [x] B08 Row menu — DONE (`ProjectsRail.tsx:306` `renderRowMenu`: Pin `:325`, Rename `:332`, Export `:363`, Delete `:371`; rendered `:455`, wired at `App.tsx:808`). The vendored `dropdown-menu` has its caller.
+- [ ] B09 PARTIAL — inline rename is real (`ProjectsRail.tsx:291` `beginRename`, input `:387`, wired `App.tsx:813`); the move-to-project submenu exists (`:339`) but is gated on `onMoveThread` (`:258`), a prop **no caller passes** (`rg onMoveThread src` → `ProjectsRail.tsx` only) — unreachable until a move primitive lands.
+- [x] B10 Active-row accent bar — DONE (`ProjectsRail.tsx:418` `thread-accent-*`: `absolute … w-[3px] rounded-full bg-primary`, rendered only when `isActive`).
 - [x] B11 Thread status indicator — DONE Task 029 (rail UI + `thread.ts` `statusOf/markRead/markUpdated/setRunning` + `App.tsx` wiring `statusByThread`/viewed-on-open; `thread.test.ts` +10, indicator 2/2).
 - [x] B12 Send dead-ends — DONE Task 031 T8 (home text stages via store drafts + auto-sends on chat mount; rail selection opens the clicked thread id; `artifact_latest` honest null in mock; Ctrl+N wired).
 
 ## P2 — chat/transcript/composer
 
-- [ ] B13 Hardcoded `THREAD=thread-001`, `DEMO_PROJECTS` — no thread CRUD.
-- [ ] B14 Message actions absent (copy/regen/branch/thumbs); regen must append, never pop (D19).
+- [ ] B13 PARTIAL — thread CRUD now exists (`thread.ts:103` `materialise`, `:188` `renameThread`, `:197` `setPinned`, `:206` `removeThread`; `App.tsx:660` `goNewChat` mints fresh ids); the hardcoded `THREAD` (`App.tsx:98`) and `DEMO_PROJECTS` (`:134`) persist as real-mode default data.
+- [ ] B14 Message actions absent — **STILL OPEN, re-verified 2026-10-13.** No copy/regen/branch/thumbs row: `rg -ni 'regenerat|thumbs|branch' src/features/transcript src/features/turn` finds only the D54 "the transcript cannot branch on provider" comments; the only copy button is a **code-block** copy (`codeblocks.ts:135`), not a message action. Regen must append, never pop (D19).
 - [x] B15 Scroll-follow + Jump-to-latest + `FrameCoalescer` — DONE (`ChatView.tsx:71-292` stick-to-bottom: follows new rows only while stuck within 48px, `setStuck` at `:286`, snaps at `:292`; `:295` `jumpToLatest` + the pill at `:351-355`, tested at `ChatView.test.tsx:538`; `FrameCoalescer` is imported and used at `ChatView.tsx:158`, not unwired).
 - [x] B16 Context bar — DONE (`ChatView.tsx:361` `data-testid="context-bar"`, honest estimate `tokens ≈ chars/4` computed at `:77-83`, shown as `Context {pct}% used` at `:365` with the ` / · estimate` label at `:362`; empty-transcript hide + the estimate itself tested at `ChatView.test.tsx:422` and `:443`). `usage` is consumed, not discarded.
-- [x] B17 Composer surface — DONE for every behavioural half (`Composer.tsx:277-288` slash query + filter, keyboard nav at `:460-473`, menu rendered at `:559-575`; Ctrl+B/I/E inline wrap at `:402-418` with Ctrl+Shift+K fence at `:419`; token hint `data-testid="token-hint"` at `:769-773` labelled "· estimate"; `sendWith` prop at `:172` honoured at `:458-545` with the settings page persisting it at `SettingsDialog.tsx:284`; IME guard at `:393-396` — no chord fires mid-composition; Stop swaps in place at `:813-825`; chat-view attach is real at `ChatView.tsx:390`). **Two halves remain open:** the textarea is still **unbounded** (no `maxLength`, no cap on `draft`), and the **home** composer still passes `onAttach={noop}` (`App.tsx:586`) — so D47 attachments work in a chat but not from the empty-state screen.
-- [ ] B18 `transcript_read` mock returns `[]` — real must read SQLite; empty honest ok, fake rows never.
+- [x] B17 Composer surface — DONE for every behavioural half (`Composer.tsx:277-288` slash query + filter, keyboard nav at `:460-473`, menu rendered at `:559-575`; Ctrl+B/I/E inline wrap at `:402-418` with Ctrl+Shift+K fence at `:419`; token hint `data-testid="token-hint"` at `:769-773` labelled "· estimate"; `sendWith` prop at `:172` honoured at `:458-545` with the settings page persisting it at `SettingsDialog.tsx:284`; IME guard at `:393-396` — no chord fires mid-composition; Stop swaps in place at `:813-825`; chat-view attach is real at `ChatView.tsx:390`). **Two halves remain open (2026-10-13):** the textarea is height-capped but still **unbounded in content** (`Composer.tsx:706` `max-h-48`; no `maxLength` and no cap on `draft`), and the **home** composer is not wired for attach — the old `onAttach={noop}` line is gone and the home `<Composer>` (`App.tsx:836`) simply passes no `onAttach`, which disables attach (`Composer.tsx:193`), while the chat composer wires it (`ChatView.tsx:401`). D47 attachments still work in a chat and not from the empty-state screen.
+- [x] B18 Transcript read is real — DONE (`src-tauri/src/turn.rs:1271` `transcript_read` → `read_transcript` `:848`, backed by the SQLite store; unknown thread → honest `Ok(vec![])`). The mock serves seed rows and an honest empty for unknown ids (`mock-tauri.ts:142`, pinned by `mock-tauri.seed.test.ts:37`), no longer a blanket `[]`.
 
 ## P2 — settings/providers
 
-- [ ] B19 Settings 3/8 pages; no search box; Appearance lacks accents + font-size (`"neutral"` hardcode `usetheme.ts:42`).
-- [ ] B20 Shortcuts 2/8; no single `lib/shortcuts.ts` hook.
-- [ ] B21 Toasts absent repo-wide (sonner 0 hits).
-- [ ] B22 Palette trap (`CommandPalette.tsx:35` no `onOpenChange`); content thin (4 strings); `DeleteConfirm` undismissable.
-- [ ] B23 `CustomForm` no client zod; errors only after `invoke`.
+- [ ] B19 PARTIAL — all 8 pages render (`SettingsDialog.tsx:271`, sections `:48`), the search box exists (`:237`), and the `"neutral"` hardcode is gone from the apply path (`usetheme.ts:36` `readAccent`, used `:75`). Two halves remain: the accent picker (`:84`, `:364`) writes `data-accent` that **no CSS consumes** (inert until an accent CSS block lands), and font size (`:441`) only styles the preview sample (`:457`), never the app's root font.
+- [x] B20 Shortcuts — DONE (all 8 rows in `ShortcutsPane` `SettingsDialog.tsx:1063`, data `:94`). One module now owns the chords: **`src/features/shell/hotkey.ts`** (not the `lib/shortcuts.ts` this row once named) — `SUMMON_COMBO :12`, `useSummonHotkey :54`, `useNewChatHotkey :147`, `usePanelHotkey :152` (deliberately unwired), `useCompactHotkey :157`, `useMaximizeHotkey :163`, all fired from `App.tsx:478`.
+- [ ] B21 Toasts absent — **STILL OPEN, re-verified 2026-10-13.** No `sonner`/`Toaster` anywhere in `src/` or `package.json`; the only toast-shaped UI is the Composer's bespoke paste-undo pill (`Composer.tsx:713` `paste-toast`).
+- [x] B22 Palette trap + thin content — DONE (`CommandPalette.tsx:219` `Dialog onOpenChange` fires `onClose`; content is builtins `palette.ts:36` + 8 settings pages `:48` + chats/projects merged `CommandPalette.tsx:138`). **Still open in this row:** `DeleteConfirm` (`src/features/retention/DeleteConfirm.tsx:11`) is `<Dialog open>` with no `onOpenChange` and no Cancel — undismissable. It has **no production caller** (the live delete flow is `App.tsx:718`, which is dismissable), so it is dead-code-with-a-defect: delete the file or add the dismiss.
+- [x] B23 Client-side validation — DONE (the `CustomForm` component is gone; `providers.ts:147` `ProviderFormSchema`, `:174` `isProviderFormValid`, called `ProvidersView.tsx:463` **before** `invoke`).
 
 ## P2 — projects/artifacts/onboarding
 
-- [ ] B24 Projects `onNew={noop}`, detail read-only (`instructions=""`, `"0%"`), grid name-only, name-only search, no empty state.
-- [x] B25 Artifact producer + drawer — DONE (`live.ts:135` `useArtifactProducer`, the D121 production wiring, called at `ChatView.tsx:98`; the content store `useArtifactContent` at `live.ts:48` is set from turn events at `:158` and consumed by the shell at `App.tsx:335`, reaching the drawer as `source={artifactContent?.source ?? ""}` at `:704` — an honest empty when the thread has no artifact, not a hardcoded dead string). End-to-end: `ChatView.test.tsx:390` asserts the produced source lands in the store. **Still open, unchanged:** D123/D124 transport must hold in both modes (served doc, `artifact` host, no `srcdoc` shortcut in mock) — that half of the row was never about the producer.
-- [ ] B26 Onboarding absent (`rg -i onboard src` = 0).
-- [ ] B27 `neutral-*` hardcodes (`TranscriptView UserRow`, `ArtifactDrawer`, `App.tsx:106`) vs token rule.
-- [ ] B28 Rule-4 reason comments missing on 6 non-shadcn `ui/` files.
+- [ ] B24 PARTIAL — `onNew` is real (`App.tsx:888` opens `NewProjectDialog`), create works (`App.tsx:896`), detail instructions are editable and saved (`ProjectDetail.tsx:167`, wired `App.tsx:924`), and the grid shows name + count + updated (`ProjectsGrid.tsx:166`), searches name **and** description (`:142`) and has an empty state (`:209`). Still hardcoded: `memoryCount={0}` (`App.tsx:914`) and `contextUsed="0%"` (`:915`) — the detail view now also computes a real usage percent (`ProjectDetail.tsx:286`), so the literal is a stale shadow of a working value.
+- [x] B25 Artifact producer + drawer — DONE (`live.ts:135` `useArtifactProducer`, the D121 production wiring, called at `ChatView.tsx:98`; the content store `useArtifactContent` at `live.ts:48` is set from turn events at `:158` and consumed by the shell at `App.tsx:426`, reaching the drawer as `source={artifactContent?.source ?? ""}` at `:968` — an honest empty when the thread has no artifact, not a hardcoded dead string). End-to-end: `ChatView.test.tsx:390` asserts the produced source lands in the store. **Still open, and re-verified 2026-10-13 — the gap is on the mock side:** real enforces a served document (`prepare.ts:54` `DOCUMENT_URL`; `:203` refuses anything else, and the drawer navigates by `src`, not `srcdoc`), and the channel validates origin `"null"` **and** source (`channel.ts:88`). The **mock returns a `data:text/html` URL** (`mock-tauri.ts:185`), which is exactly the shape `DOCUMENT_URL` refuses — so in mock mode an artifact can never reach `live`. Parity here means giving the mock a served-document URL shape, not teaching the real path to accept `data:`.
+- [ ] B26 Onboarding absent — **STILL OPEN, re-verified 2026-10-13.** The row's literal claim ("`rg -i onboard src` = 0") is now false: two descriptive strings match (`SettingsDialog.tsx:990`, `:1033`), but neither is a flow, and there is no `src/features/onboarding/`.
+- [ ] B27 PARTIAL — the row's own three citations are fixed: `TranscriptView.tsx`, `ArtifactDrawer.tsx` and `App.tsx` have **zero** `neutral-` classes (the cited `App.tsx:106` no longer exists as written). The token rule is still broken where the row did not look: `ProvidersView.tsx` (19 `neutral-` hits) and `SettingsDialog.tsx:407` (theme-preview swatches).
+- [x] B28 Rule-4 reason comments — CLOSED BY REMOVAL (**D130**): the six non-shadcn files (`bubble`, `message`, `marker`, `attachment`, `empty`, `spinner`) are deleted. Every one of the 14 remaining `ui/` components carries the shadcn attribution header, so no rule-4 exception exists to comment; `rg --files src/components/ui` confirms it.
 
 ## Mock-only honesty rules (not blockers, must hold)
 
-- Timers deterministic; `data-testid` on every interactive node; `?seed` param.
-- Fake latency/tests labeled simulated; hardcoded `v1`/`42%`/`2.4MB` computed or labeled sample.
-- `groupDates` toggle wired or dropped; `edit.save` guarded; timer registry cleared on view switch.
+**Re-checked 2026-10-13 (`Tasks/029`), each rule with its current status:**
+
+- **Timers deterministic** — APP HOLDS (`mock-tauri.ts:284`, `:290`, `:298` use fixed delays; seed timestamps derive from `SEED_NOW` `:30`).
+- **`data-testid` on every interactive node** — **UNVERIFIED**: widely present, but completeness was not audited, so it is not claimed.
+- **`?seed` param** — HOLDS (`mock-tauri.ts:32`, honoured at `:146` and `:96`).
+- **Fake latency / `v1` / `42%` / `2.4MB` computed or labelled** — APP HOLDS (no `42%`/`2.4MB` literals under `src/`; `ProjectDetail.tsx:286` computes the percent; `ArtifactDrawer.tsx:203` renders the real `v{version}`). The in-repo **prototype** `docs/references/ui/index.html` still hardcodes `v1` (`:500`) and `42%` (`:512`) unlabelled — reference material, not shipped UI.
+- **`groupDates` wired or dropped** — **VIOLATED**: the Settings toggle writes `clauro.prefs.groupDates` (`SettingsDialog.tsx:362`, `:486`) that **nothing reads**, while the rail always groups (`ProjectsRail.tsx:287`). Wire it or drop the control.
+- **`edit.save` guarded** — APP HOLDS (no such path exists); the prototype's `index.html:599` is unguarded (reference material).
+- **Timer registry cleared on view switch** — **VIOLATED**: no registry exists; the mock's turn timers (`mock-tauri.ts:284`, `:290`, `:298`) are untracked and never cleared. (The app does clear the timers it owns: `Composer.tsx:358`, `CommandPalette.tsx:174`, `compile.ts:141`.)

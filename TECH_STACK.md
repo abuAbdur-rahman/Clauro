@@ -267,6 +267,13 @@ table is the evidence that the rules were applied.**
 **Node:** the toolchain targets **Node 24 LTS** (`.nvmrc`), which is what Vite 8 and the current
 `@tauri-apps/cli` expect.
 
+**Type and tooling packages carry no row of their own.** A mechanical inventory (2026-10-13,
+`Tasks/022`) resolved every direct dependency in `package.json` and every `Cargo.toml` to a row in
+this table or a record in `docs/dependencies.md` §4/§7, with exactly four names left:
+`@types/react`, `@types/react-dom`, `@types/dompurify` (type definitions for the runtimes pinned
+above) and `@eslint/js` (ships with the pinned `eslint`). None is an independent adoption decision —
+each follows the version of its parent here — so none gets a row.
+
 ### 7.2 Wheels already identified, for when the task that needs them lands
 
 Not dependencies yet — nothing here is installed. These were checked against the registry on

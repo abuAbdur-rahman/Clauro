@@ -139,6 +139,56 @@ for name in docs():
         if re.search(pat, body):
             WARN.append(f"{name}: contains {what} (belongs in a gitignored dev-host doc)")
 
+# ── 10. attribution: four sources attributed, no banned source as a row ─────
+# Rows only, deliberately: the exclusions are stated in prose (naming a
+# repository in a sentence is not a claim to have taken from it), while a row
+# *is* a claim, so a banned name may never appear in one. D59/D60/D103.
+notices = read("THIRD_PARTY_NOTICES.md")
+if notices:
+    rows = [ln for ln in notices.splitlines() if ln.startswith("|")]
+    for src in ("OpenCode", "DeepSeek Harness", "LibreChat", "shadcn/ui"):
+        hit = [r for r in rows if src in r]
+        if not hit:
+            FAIL.append(f"THIRD_PARTY_NOTICES.md: no attribution row for '{src}'")
+        elif not any("github.com" in r for r in hit):
+            FAIL.append(
+                f"THIRD_PARTY_NOTICES.md: the '{src}' row carries no repository URL"
+            )
+    for banned in ("LobeHub", "Open WebUI"):
+        if any(banned in r for r in rows):
+            FAIL.append(
+                f"THIRD_PARTY_NOTICES.md: '{banned}' is listed as a source, but it is "
+                f"observation-only (D59/D60/D103)"
+            )
+
+# ── 11. no first-party vendor wording: doc URLs are cited, never quoted ─────
+# D39. A quoted fragment sitting beside a citation is the shape a pasted
+# documentation quote takes. Deliberately NARROW: it cannot detect reused
+# wording in general, only that shape. Windowed, not line-scoped - the instance
+# this was written for (clauro-loop/tests/run.rs, 2026-10-13) wrapped its quote
+# across two lines, which a per-line check cannot see.
+VENDOR_DOC = re.compile(
+    r"platform\.claude\.com|support\.claude\.com|docs\.anthropic\.com|ai\.google\.dev"
+)
+QUOTE = re.compile(r'"[^"]{25,}"|“[^”]{25,}”')
+SCAN_SUFFIXES = {".md", ".rs", ".ts", ".tsx", ".js", ".mjs"}
+SKIP_DIRS = {"node_modules", "target", "dist", ".git"}
+for p in sorted(ROOT.rglob("*")):
+    if not p.is_file() or p.suffix not in SCAN_SUFFIXES:
+        continue
+    if SKIP_DIRS & set(p.relative_to(ROOT).parts):
+        continue
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    for i, ln in enumerate(lines):
+        if not VENDOR_DOC.search(ln):
+            continue
+        window = "\n".join(lines[max(0, i - 2) : i + 3])
+        if QUOTE.search(window):
+            FAIL.append(
+                f"{p.relative_to(ROOT)}:{i + 1}: a quoted fragment sits beside a "
+                f"first-party doc citation - paraphrase it and cite the URL (D39)"
+            )
+
 # ── report ──────────────────────────────────────────────────────────────────
 for w in WARN:
     print(f"WARN  {w}")
