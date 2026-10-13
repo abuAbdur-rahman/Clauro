@@ -252,8 +252,13 @@ mod tests {
             .expect("publish");
         assert_eq!(url, format!("{ORIGIN}{PATH_PREFIX}{NONCE}"));
         // Remote by construction (D124): the document host must never be the
-        // shell's, or Tauri's IPC would treat the frame as local.
-        assert!(url.starts_with("http://artifact.localhost/__clauro/doc/"));
+        // shell's, or Tauri's IPC would treat the frame as local. `ORIGIN`
+        // carries the per-platform shape (`http://artifact.localhost` on the
+        // Windows floor, `artifact://localhost` elsewhere); the equality
+        // above pins it exactly, so the negatives below hold on both floors
+        // (linux CI restored by D126 — the old literal Windows pin failed
+        // there at artifact_doc.rs:256).
+        assert!(url.starts_with(&format!("{ORIGIN}{PATH_PREFIX}")));
         assert!(!url.contains("tauri.localhost"));
     }
 
@@ -443,16 +448,20 @@ mod tests {
         // Branch 1 (`tauri_protocol_url`, domain `tauri.localhost`) and
         // branch 2 (app URL) both resolve to the shell host; branch 3's
         // Windows arm compares the URL's scheme against the tauri ASSET
-        // protocol's scheme — `http` != `tauri` — so the frame is Remote
+        // protocol's scheme - `http` != `tauri` - so the frame is Remote
         // whatever the protocol map holds. On non-Windows floors branch 3 is
         // `contains_key("artifact")` instead, which WOULD match: that path
-        // is recorded in review 13 as unverified beyond the Windows floor.
+        // is recorded in review 13 as unverified beyond the Windows floor
+        // (§8a). What every floor can prove is the shape: the document URL
+        // is built from `ORIGIN` (never the shell's host) and carries none
+        // of the shell's markers. `ORIGIN` pins the exact per-platform
+        // string in publish_returns_the_absolute_document_url.
         assert!(!url.contains("tauri.localhost"), "{url}");
         assert!(!url.contains("localhost:1420"), "{url}");
         assert_eq!(
             url,
-            format!("http://artifact.localhost/__clauro/doc/{NONCE}"),
-            "remote by construction on the verified floor (§8a)"
+            format!("{ORIGIN}{PATH_PREFIX}{NONCE}"),
+            "document URL is ORIGIN-built, never the shell host (§8a: the deep remote verdict stays Windows-floor)"
         );
     }
 
