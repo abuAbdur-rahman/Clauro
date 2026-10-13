@@ -87,9 +87,9 @@ export function ArtifactDrawer({
       createWorker,
       publishDoc,
       // Forward the verdict above: without it `prepareArtifact` re-detects the
-      // engine, and on a host whose UA closes the gate the drawer refuses to
-      // prepare an artifact the app just told it to render (CI linux,
-      // 2026-10-13 — the three `phase3.e2e` cases red).
+      // engine, so the drawer could render under one verdict and prepare under
+      // another — two reads of one input, and they disagreed (found via CI,
+      // 2026-10-13: the three `phase3.e2e` cases were red).
       engine: { platform, opaqueProven },
     })
       .then((out) => {
@@ -160,7 +160,7 @@ export function ArtifactDrawer({
     };
   }, [result, artifactId]);
 
-  const gate = artifactGate(engine);
+  const gate = artifactGate();
 
   if (!gate.enabled) {
     return (
