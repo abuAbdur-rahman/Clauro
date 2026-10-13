@@ -50,18 +50,33 @@ pub fn build_system_prompt(input: &PromptInputs<'_>) -> String {
     out
 }
 
-/// FNV-1a over prompt text plus tool names, hex. Hand-rolled: ten lines, no
-/// dependency, stable across processes and restarts (unlike a seeded
-/// hasher, which would make the frozen hash unrepeatable).
+/// FNV-1a over prompt text plus each tool's full definition — name,
+/// description and JSON schema — hex. Hand-rolled: no dependency, stable
+/// across processes and restarts (unlike a seeded hasher, which would make
+/// the frozen hash unrepeatable).
+///
+/// D76 freezes `system` and `tools` for the life of a thread; hashing only
+/// the names let a same-named tool with a different schema or description
+/// slip past `system_frozen` (review 21). Fields are joined with RS (0x1e)
+/// and tools with US (0x1f) so no field boundary can be forged by
+/// concatenation.
 #[must_use]
-pub fn frozen_hash(system_text: &str, tool_names: &[&str]) -> String {
+pub fn frozen_hash(system_text: &str, tools: &[ToolDefinition]) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in system_text
-        .bytes()
-        .chain(tool_names.iter().flat_map(|n| n.bytes()).chain([0]))
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    };
+    feed(system_text.as_bytes());
+    for tool in tools {
+        feed(tool.name.as_bytes());
+        feed(&[0x1e]);
+        feed(tool.description.as_bytes());
+        feed(&[0x1e]);
+        feed(tool.input_schema.to_string().as_bytes());
+        feed(&[0x1f]);
     }
     format!("{hash:016x}")
 }
@@ -77,7 +92,6 @@ pub fn first_turn_setup(
         tools,
         memory_instructions,
     });
-    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    let hash = frozen_hash(&prompt, &names);
+    let hash = frozen_hash(&prompt, tools);
     (prompt, hash)
 }

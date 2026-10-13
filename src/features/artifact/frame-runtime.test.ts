@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import FRAME_RUNTIME from "./frame-runtime.js?raw";
 import { transformJsx } from "./compile.transform";
 import { wrapModule } from "./wrap";
@@ -23,6 +23,13 @@ interface Frame {
   api: FrameApi;
 }
 
+interface BootOptions {
+  /** A stand-in for the navigation API; jsdom does not implement it. */
+  navigation?: object;
+  /** The render nonce the envelope writes into the document before the runtime. */
+  nonce?: string;
+}
+
 /**
  * Boot the runtime in a **fresh frame document** per test. Any other approach
  * leaks: the runtime installs listeners on `window` and `document`, so booting
@@ -30,12 +37,21 @@ interface Frame {
  * earlier draft of this file did exactly that and one test saw sixteen hellos.
  * A fresh iframe is also the closer model: this code ships into a frame.
  */
-function boot(): Frame {
+function boot(options: BootOptions = {}): Frame {
   const el = document.createElement("iframe");
   document.body.appendChild(el);
   const win = el.contentWindow;
   const doc = el.contentDocument;
   if (!win || !doc) throw new Error("no frame document");
+  if (options.navigation !== undefined) {
+    Object.defineProperty(win, "navigation", { value: options.navigation, configurable: true });
+  }
+  if (options.nonce !== undefined) {
+    Object.defineProperty(win, "__clauroHandshakeNonce", {
+      value: options.nonce,
+      configurable: true,
+    });
+  }
   // Evaluating the shipped text *is* the assertion: it is the only way this
   // runtime can run, and it runs in the frame document where it ships.
   runIn(win, FRAME_RUNTIME);
@@ -75,7 +91,7 @@ function runIn(win: Window, source: string): void {
  */
 function handshake(
   frame: Frame,
-  options: { fromParent?: boolean; withPort?: boolean } = {},
+  options: { fromParent?: boolean; withPort?: boolean; origin?: string } = {},
 ): { inbound: { type: string; text?: string }[] } {
   const channel = new MessageChannel();
   const inbound: { type: string; text?: string }[] = [];
@@ -85,6 +101,11 @@ function handshake(
   const event = new MessageEvent("message", { data: { type: "artifact.boot" } });
   Object.defineProperty(event, "source", {
     value: options.fromParent === false ? { name: "impostor" } : frame.win.parent,
+  });
+  // The shell posts from a real http origin; "null" is an opaque document,
+  // "" is nobody. The default is what the production shell reports.
+  Object.defineProperty(event, "origin", {
+    value: options.origin ?? "http://tauri.localhost",
   });
   Object.defineProperty(event, "ports", {
     value: options.withPort === false ? [] : [channel.port2],
@@ -311,5 +332,184 @@ describe("handshake start (D122)", () => {
       window.postMessage = original;
     }
     expect(posted).toEqual([{ type: "artifact.hello" }]);
+  });
+
+  it("says hello with the document's render nonce (D6 binding)", () => {
+    // The envelope writes the nonce before the runtime runs; the host checks
+    // it against the document it published (channel.ts). Without it, any page
+    // the frame navigates to can claim the channel by saying hello from the
+    // frame's own window with an opaque origin.
+    const posted: unknown[] = [];
+    const original = window.postMessage.bind(window);
+    window.postMessage = (message: unknown) => {
+      posted.push(message);
+    };
+    try {
+      boot({ nonce: "render-9" });
+    } finally {
+      window.postMessage = original;
+    }
+    expect(posted).toEqual([{ type: "artifact.hello", nonce: "render-9" }]);
+  });
+
+  it("refuses a boot whose origin is opaque or empty (D6)", async () => {
+    // The source check alone leaves a gap: a message whose source is the
+    // parent window but whose origin is "null"/"" is not something the shell
+    // can ever produce, so it is refused before any port changes hands.
+    for (const origin of ["null", ""]) {
+      const { inbound } = handshake(boot(), { origin });
+      await pause();
+      expect(inbound, `origin ${JSON.stringify(origin)}`).toEqual([]);
+    }
+  });
+});
+
+describe("URL guards cover every navigable attribute (audit 14, IMPORTANT)", () => {
+  it("drops control characters before the scheme test", () => {
+    const { api } = boot();
+    // The URL standard strips tab/LF/CR before parsing the scheme, so the
+    // attribute must be stripped the same way or "jav\tascript:" tests as a
+    // relative path — safe-looking, navigation-shaped.
+    expect(api.h("a", { href: "jav\tascript:alert(1)" }).getAttribute("href")).toBeNull();
+    expect(api.h("a", { href: "java\nscript:alert(1)" }).getAttribute("href")).toBeNull();
+    expect(api.h("a", { href: "https://example.com/a b" }).getAttribute("href")).toBe(
+      "https://example.com/a b",
+    );
+  });
+
+  it("guards formaction, ping, poster, object data and xlink:href", () => {
+    const { api } = boot();
+    const guarded: [string, Record<string, unknown>][] = [
+      ["formaction", { formaction: "javascript:alert(1)" }],
+      ["ping", { ping: "javascript:alert(1)" }],
+      ["xlink:href", { "xlink:href": "javascript:alert(1)" }],
+      ["data", { data: "javascript:alert(1)" }],
+      ["srcset", { srcset: "jav\tascript:alert(1)" }],
+      ["poster", { poster: "vbscript:msgbox" }],
+      ["action", { action: "javascript:alert(1)" }],
+    ];
+    for (const [attribute, props] of guarded) {
+      const node = api.h("div", props);
+      expect(node.getAttribute(attribute), attribute).toBeNull();
+    }
+  });
+
+  it("keeps data: and blob: images the CSP allows (D3), but not on links", () => {
+    const { api } = boot();
+    const image = api.h("img", { src: "data:image/png;base64,AAAA" });
+    expect(image.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    const poster = api.h("video", { poster: "blob:http://x/y" });
+    expect(poster.getAttribute("poster")).toBe("blob:http://x/y");
+    // Navigation targets never get a data: document.
+    expect(api.h("a", { href: "data:text/html,<b>x</b>" }).getAttribute("href")).toBeNull();
+  });
+
+  it("drops an on* attribute written as a string — no inline handlers (D110)", () => {
+    const { api } = boot();
+    const node = api.h("div", { onclick: "alert(1)", onmouseover: "alert(2)" });
+    expect(node.hasAttribute("onclick")).toBe(false);
+    expect(node.hasAttribute("onmouseover")).toBe(false);
+    // The function form still binds as a listener.
+    let clicks = 0;
+    const button = api.h("button", {
+      onClick: () => {
+        clicks += 1;
+      },
+    });
+    button.dispatchEvent(new MouseEvent("click"));
+    expect(clicks).toBe(1);
+  });
+
+  it("a __proto__ prop pollutes nothing and reaches no prototype chain", () => {
+    const { api } = boot();
+    const props = JSON.parse('{"__proto__": {"polluted": 1}, "class": "ok"}') as unknown as Record<
+      string,
+      unknown
+    >;
+    const node = api.h("div", props);
+    expect(Object.prototype).not.toHaveProperty("polluted");
+    expect(node.getAttribute("class")).toBe("ok");
+    expect(node.getAttribute("__proto__")).toBeNull();
+  });
+});
+
+describe("click guard gaps (audit 14, IMPORTANT)", () => {
+  it("blocks an <area> the anchor-only guard used to miss", async () => {
+    const frame = boot();
+    frame.doc.body.innerHTML =
+      '<map name="m"><area id="ar" href="https://evil.example/" shape="rect" coords="0,0,1,1"></map>';
+    const { inbound } = handshake(frame);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    const area = frame.doc.getElementById("ar") as HTMLAreaElement;
+    area.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await until(() => inbound.some((m) => m.type === "artifact.nav_blocked"));
+    expect(inbound.map((m) => m.text ?? "").join(" ")).toMatch(/evil\.example/);
+  });
+
+  it("blocks a control-character javascript: href", () => {
+    const frame = boot();
+    frame.doc.body.innerHTML = '<a id="c" href="jav&#x09;ascript:alert(1)">x</a>';
+    handshake(frame);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    frame.doc.getElementById("c")?.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
+});
+
+describe("self-navigation escapes (audit 14, IMPORTANT)", () => {
+  it("removes a meta refresh smuggled into the document", () => {
+    const frame = boot();
+    frame.doc.body.innerHTML =
+      '<meta http-equiv="refresh" content="0;url=https://evil.example/">' +
+      '<META HTTP-EQUIV="Refresh" content="1;url=https://evil2.example/">';
+    frame.doc.dispatchEvent(new Event("DOMContentLoaded"));
+    const refresh = [...frame.doc.querySelectorAll("meta")].filter((meta) =>
+      /refresh/i.test(meta.getAttribute("http-equiv") ?? ""),
+    );
+    expect(refresh).toHaveLength(0);
+  });
+
+  it("refuses a cross-document navigation through the navigation API", async () => {
+    interface NavEvent {
+      destination: { sameDocument: boolean; url: string };
+      preventDefault: () => void;
+    }
+    let navigate: ((event: NavEvent) => void) | undefined;
+    const navigation = {
+      addEventListener: (type: string, listener: (event: NavEvent) => void) => {
+        if (type === "navigate") navigate = listener;
+      },
+    };
+    const frame = boot({ navigation });
+    const { inbound } = handshake(frame);
+    expect(navigate).toBeTypeOf("function");
+    if (!navigate) throw new Error("runtime installed no navigate listener");
+
+    const cross = {
+      destination: { sameDocument: false, url: "https://evil.example/" },
+      preventDefault: vi.fn(),
+    };
+    navigate(cross);
+    expect(cross.preventDefault).toHaveBeenCalledOnce();
+    await until(() => inbound.some((m) => m.type === "artifact.nav_blocked"));
+
+    // Same-document navigation — fragments and history entries — stays allowed.
+    const same = {
+      destination: { sameDocument: true, url: "about:blank#x" },
+      preventDefault: vi.fn(),
+    };
+    navigate(same);
+    expect(same.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("refuses window.open and reports it", async () => {
+    const frame = boot();
+    const { inbound } = handshake(frame);
+    // Sandbox flags already stop popups; the override makes the refusal an
+    // explicit report instead of a silent engine-side drop.
+    expect(frame.win.open("https://evil.example/")).toBeNull();
+    await until(() => inbound.some((m) => /window\.open/.test(m.text ?? "")));
+    expect(inbound.map((m) => m.text ?? "").join(" ")).toMatch(/window\.open/);
   });
 });

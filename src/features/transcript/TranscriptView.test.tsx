@@ -19,10 +19,30 @@
  *   would remove a row (`D19`, `DESIGN.md:60`).
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, within, cleanup } from "@testing-library/react";
+import { render, screen, within, cleanup, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+// @ts-expect-error type error without @types/node package (see contrast.test.ts)
+import { readFileSync as readFileSyncUntyped } from "node:fs";
+// @ts-expect-error type error without @types/node package (see contrast.test.ts)
+import { fileURLToPath as fileURLToPathUntyped } from "node:url";
 import { TranscriptView, ThinkingRegion, ToolRow } from "./TranscriptView";
+import { renderMarkdown } from "./markdown";
 import type { ContentBlock, RenderRow } from "./types";
+
+// This repo ships no @types/node; assert the two signatures below so
+// type-aware lint sees real types instead of `any` (AGENTS §5).
+const readFileSync = readFileSyncUntyped as (path: string, encoding: "utf8") => string;
+const fileURLToPath = fileURLToPathUntyped as (url: URL) => string;
+
+/**
+ * Read a sibling source file. `rel` is a parameter, never a literal inside
+ * `new URL(...)`: Vite statically rewrites `new URL("./x", import.meta.url)`
+ * into a dev-server URL under vitest, and `fileURLToPath` then rejects the
+ * `http:` scheme. A variable binding leaves `import.meta.url` untouched.
+ */
+function readSource(rel: string): string {
+  return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+}
 
 // This project has no global vitest setup, so RTL's automatic cleanup does not
 // run — `ArtifactDrawer.test.tsx` calls `cleanup()` explicitly for the same
@@ -64,6 +84,28 @@ describe("TranscriptView", () => {
     expect(label.tagName).toBe("SPAN");
     expect(within(user).getByRole("button", { name: /copy rust code/i }).tagName).toBe("BUTTON");
     expect(user.textContent).not.toContain("```");
+  });
+
+  it("a stray inline backtick run never routes the message through markdown (review 33)", async () => {
+    render(
+      <TranscriptView
+        rows={[text("use `code` plus a ``` stray\nsecond line", { id: "u", seq: 0, role: "user" })]}
+      />,
+    );
+    const user = screen.getByTestId("row-u");
+    // The purifier's lazy import resolves once per session; awaiting a real
+    // render guarantees any pending Markdown in this tree has settled too, so
+    // the assertions see the FINAL render — not the raw-text placeholder,
+    // which would make them pass either way.
+    await act(async () => {
+      await renderMarkdown("settle");
+    });
+    // `text.includes("```")` let ANY triple backtick drag the whole message
+    // through markdown — inline backticks stripped, single newlines collapsed.
+    // Only a fence at the START of a line is a fence (review 33 NIT): a stray
+    // run keeps the bubble a literal pre-wrap paragraph, never markdown-body.
+    expect(user.querySelector(".markdown-body")).toBeNull();
+    expect(user.textContent).toContain("use `code` plus a ``` stray\nsecond line");
   });
 
   it("renders every block kind without throwing", () => {
@@ -112,6 +154,18 @@ describe("TranscriptView", () => {
   it("renders an empty thread without an illustration or a spinner", () => {
     render(<TranscriptView rows={[]} />);
     expect(screen.getByTestId("transcript-empty")).toBeTruthy();
+  });
+
+  // Review 15 FYI — schema drift must not dump the whole row into the UI.
+  // React escapes it, but D27 bounds output on the way out: the dump exists
+  // to identify the drift, not to replay the block.
+  it("bounds the unrenderable-block dump instead of dumping the whole row", () => {
+    const drift = { kind: "from_the_future", payload: "x".repeat(4000) };
+    const unknown = row(drift as unknown as ContentBlock, { id: "drift" });
+    render(<TranscriptView rows={[unknown]} />);
+    const dump = screen.getByText(/Unrenderable block:/).textContent;
+    expect(dump.length).toBeLessThan(400);
+    expect(dump).toContain("from_the_future");
   });
 });
 
@@ -192,6 +246,26 @@ describe("QuestionCard", () => {
     expect(await screen.findByText(/already answered/i)).toBeTruthy();
     // The card stays usable after a failure.
     expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
+  });
+
+  // Review 15 NIT — the Enter that commits a CJK composition must not send a
+  // half-typed answer. Mirrors Composer.tsx's `composing` guard.
+  it("does not answer on Enter while an IME composition is in flight", () => {
+    const onQuestionAnswer = vi.fn().mockResolvedValue(undefined);
+    const free: ContentBlock = { ...card, allow_free_text: true };
+    render(<TranscriptView rows={[row(free, { id: "qc5" })]} onQuestionAnswer={onQuestionAnswer} />);
+    const input = screen.getByLabelText(/your answer/i);
+    fireEvent.change(input, { target: { value: "まだ書いて" } });
+
+    fireEvent.compositionStart(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    // The composition is still open: nothing was answered.
+    expect(onQuestionAnswer).not.toHaveBeenCalled();
+
+    // The composition commits, then Enter sends the finished text.
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onQuestionAnswer).toHaveBeenCalledWith("q1", "まだ書いて");
   });
 });
 
@@ -325,5 +399,29 @@ describe("ToolRow", () => {
     );
     await user.click(screen.getByRole("button", { name: /preview/i }));
     expect(within(screen.getByTestId("tool-c1")).getByText(/full\.txt/)).toBeTruthy();
+  });
+});
+
+describe("TranscriptView memoisation (review 30 owner TODO, closed A-final)", () => {
+  // Per-delta frames re-render the whole ChatView; the transcript must not
+  // re-render settled rows with it. Memo is the fix — and a memo whose props
+  // change identity every render is not one, hence the ChatView half.
+  it("TranscriptView and Row are React.memo wrappers", () => {
+    // React tags memo components with `$$typeof`; unwrapping fails here.
+    expect((TranscriptView as unknown as { $$typeof?: symbol }).$$typeof).toBe(
+      Symbol.for("react.memo"),
+    );
+    // Row is internal, so pin its wrapper in source (theme-bypass.test pattern).
+    const src = readSource("./TranscriptView.tsx");
+    expect(src).toContain("export const TranscriptView = memo(TranscriptViewImpl)");
+    expect(src).toContain("const Row = memo(");
+  });
+
+  it("ChatView feeds the memo an identity-stable onQuestionAnswer", () => {
+    const src = readSource("../turn/ChatView.tsx");
+    // An inline arrow (or a non-useCallback binding) is a fresh identity per
+    // render and would defeat the memo above on every frame.
+    expect(src).toMatch(/const onQuestionAnswer = useCallback\(/);
+    expect(src).toContain("onQuestionAnswer={onQuestionAnswer}");
   });
 });

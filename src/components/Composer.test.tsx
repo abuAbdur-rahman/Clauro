@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, within, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Composer from "./Composer";
 import { continueList, fenceLanguage, isInsideFence } from "./Composer";
@@ -42,6 +42,9 @@ function messageBox(): HTMLTextAreaElement {
 
 beforeEach(() => {
   cleanup();
+  // Prefs (clauro.prefs.sendWith) are global: without this one test's
+  // setting would rewire the next test's Enter key.
+  localStorage.clear();
   useThreadStore.getState().reset();
   useThreadStore.getState().openThread(THREAD);
 });
@@ -172,8 +175,12 @@ describe("Composer", () => {
   it("token hint meets the contrast floor", () => {
     render(<Composer threadId={THREAD} onSend={vi.fn()} />);
     const hint = screen.getByTestId("token-hint");
-    expect(hint.className).toMatch(/text-neutral-400/);
-    expect(hint.className).not.toMatch(/text-neutral-500/);
+    // The floor itself is a colour number, so it lives where colours are
+    // computed: contrast.test.ts pins muted-foreground ≥ 4.5:1 in both
+    // themes. This pins the wiring — the hint rides the token, never a raw
+    // ramp class (review 61 P1 / 33).
+    expect(hint.className).toMatch(/text-muted-foreground/);
+    expect(hint.className).not.toMatch(/neutral-\d/);
   });
 
   it("embeds the provider-grouped model picker", async () => {
@@ -246,6 +253,23 @@ describe("Composer", () => {
     expect(onSend).toHaveBeenCalledWith("x");
   });
 
+  it("a markdown chord during IME composition is left to the IME", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.change(box, { target: { value: "かな" } });
+    box.setSelectionRange(2, 2);
+    fireEvent.compositionStart(box);
+    // Mid-composition Ctrl+B belongs to the IME: no preventDefault, no edit.
+    const notPrevented = fireEvent.keyDown(box, { key: "b", ctrlKey: true });
+    expect(notPrevented).toBe(true);
+    expect(box.value).toBe("かな");
+    // After the composition ends the shortcut works again.
+    fireEvent.compositionEnd(box);
+    box.setSelectionRange(0, 2);
+    fireEvent.keyDown(box, { key: "b", ctrlKey: true });
+    expect(box.value).toBe("**かな**");
+  });
+
   it("swaps send for stop in place while running, keeps typing enabled", async () => {
     const user = userEvent.setup();
     const onStop = vi.fn();
@@ -288,6 +312,19 @@ describe("Composer", () => {
     fireEvent.keyDown(box, { key: "Escape" });
     expect(screen.queryByRole("listbox", { name: /commands/i })).toBeNull();
     expect(box instanceof HTMLTextAreaElement ? box.value : null).toBe("/");
+  });
+
+  it("an unwired slash command keeps the typed draft instead of eating it", async () => {
+    const user = userEvent.setup();
+    const onCompact = vi.fn();
+    // No onSlashCommand: /clear is dispatched nowhere, so the handler must
+    // stand down and leave the typed draft intact (review 30, runSlash).
+    render(<Composer threadId={THREAD} onSend={vi.fn()} onCompact={onCompact} />);
+    const box = messageBox();
+    await user.type(box, "/clear");
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box.value).toBe("/clear");
+    expect(onCompact).not.toHaveBeenCalled();
   });
 
   it("ctrl+b/i/e and ctrl+shift+k wrap the selection", async () => {
@@ -466,6 +503,41 @@ describe("Composer code fences (Task 032 follow-up)", () => {
     expect(screen.queryByTestId("paste-toast")).toBeNull();
   });
 
+  it("the paste toast dismisses itself after its timeout", () => {
+    vi.useFakeTimers();
+    try {
+      render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+      const box = messageBox();
+      fireEvent.paste(box, {
+        clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+      });
+      expect(screen.getByTestId("paste-toast")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(6001);
+      });
+      expect(screen.queryByTestId("paste-toast")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Undo after a paste into a pre-filled draft keeps the draft text", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "Explain this:");
+    fireEvent.paste(box, {
+      clipboardData: { getData: () => "function a() {\n  return 1;\n};\nconst b = () => 2;" },
+    });
+    const toast = await screen.findByTestId("paste-toast");
+    await user.click(within(toast).getByRole("button", { name: /undo/i }));
+    // Only the fence is stripped; the raw pasted text stays spliced into the
+    // pre-existing draft.
+    expect(box.value).toBe(
+      "Explain this:function a() {\n  return 1;\n};\nconst b = () => 2;",
+    );
+  });
+
   it("invalid fence language sends normally (no block opens)", async () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
@@ -505,6 +577,18 @@ describe("Composer list continuation (Task 032 follow-up)", () => {
     await user.keyboard("{Shift>}{Enter}{/Shift}");
     await user.keyboard("{Shift>}{Enter}{/Shift}");
     expect(box.value).toBe("1. first\n");
+  });
+
+  it("Enter mid list line is a plain newline, not a fabricated next item", () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    fireEvent.change(box, { target: { value: "1. hello" } });
+    // Collapsed caret mid-line (char 5): continuing would produce the
+    // nonsense item "2. llo" out of the line's tail (review 33).
+    box.setSelectionRange(5, 5);
+    fireEvent.select(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box.value).toBe("1. he\nllo");
   });
 
   it("plain Enter on a list line continues instead of sending", async () => {
@@ -598,9 +682,39 @@ describe("Composer spec A — fence edge keys (COMPOSER_MARKDOWN_SPEC)", () => {
     const box = messageBox();
     await user.type(box, "```js");
     await user.keyboard(" ");
-    expect(box.value).toBe("```js\n\n```");
-    expect(box.selectionStart).toBe("```js\n".length);
+    // The typed space is kept on the opener line — never swallowed into the
+    // opening newline (review 15) — and the block still opens with the
+    // cursor on the empty middle line.
+    expect(box.value).toBe("```js \n\n```");
+    expect(box.selectionStart).toBe("```js \n".length);
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("Space with a closing fence ahead inserts a space, not a newline", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    // Focus first: user.keyboard delivers to the focused element.
+    await user.click(box);
+    // Set the closed-block state directly (typing would fire Enter keys).
+    fireEvent.change(box, { target: { value: "```js\n\n```" } });
+    // Caret at the end of the opener line; a closing fence lies ahead.
+    box.setSelectionRange(5, 5);
+    await user.keyboard(" ");
+    // A space keypress must insert a space — previously it became "\n".
+    expect(box.value).toBe("```js \n\n```");
+    expect(box.selectionStart).toBe(6);
+  });
+
+  it("Alt+Space on a ```lang opener stands down (the OS keeps the chord)", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    const box = messageBox();
+    await user.type(box, "```js");
+    const notPrevented = fireEvent.keyDown(box, { key: " ", altKey: true });
+    // No preventDefault: Alt+Space stays a system chord (window menu).
+    expect(notPrevented).toBe(true);
+    expect(box.value).toBe("```js");
   });
 
   it("Enter on the closing fence line sends (leaves the block)", async () => {
@@ -752,4 +866,62 @@ describe("Composer spec E — live preview", () => {
     const preview = await screen.findByTestId("composer-preview");
     expect(preview.textContent).toContain("hi");
   });
+});
+
+describe("per-thread drafts (review 30 — store composerDrafts)", () => {
+  it("restores a stored draft on mount", () => {
+    useThreadStore.getState().setComposerDraft(THREAD, "typed earlier");
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    expect(messageBox().value).toBe("typed earlier");
+  });
+
+  it("a typed draft survives a switch away and back", async () => {
+    const user = userEvent.setup();
+    useThreadStore.getState().openThread("composer-t2");
+    const view = render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    await user.type(messageBox(), "half-written answer");
+    expect(useThreadStore.getState().composerDraft(THREAD)).toBe("half-written answer");
+    // Switching threads must not carry this text over — and coming back
+    // must not have lost it (the review-30 bug: unmount dropped everything).
+    view.rerender(<Composer threadId="composer-t2" onSend={vi.fn()} />);
+    expect(messageBox().value).toBe("");
+    view.rerender(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    expect(messageBox().value).toBe("half-written answer");
+  }, 30000);
+
+  it("send clears the stored draft for the thread", async () => {
+    const user = userEvent.setup();
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    await user.type(messageBox(), "send this");
+    expect(useThreadStore.getState().composerDraft(THREAD)).toBe("send this");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(useThreadStore.getState().composerDraft(THREAD)).toBeNull();
+    expect(messageBox().value).toBe("");
+  }, 30000);
+
+  it("an external store draft reaches the mounted textarea", async () => {
+    render(<Composer threadId={THREAD} onSend={vi.fn()} />);
+    // App's suggestion-chip fill is a plain `setComposerDraft` (review 30's
+    // DOM-actuation NIT): the mounted composer must adopt an external store
+    // write without a thread switch.
+    useThreadStore.getState().setComposerDraft(THREAD, "Debug my code");
+    await waitFor(() => {
+      expect(messageBox().value).toBe("Debug my code");
+    });
+  });
+});
+
+describe("clauro.prefs.sendWith reader (review 30/31 owner TODO)", () => {
+  it("pref ctrl: Enter keeps the newline, Ctrl+Enter sends", async () => {
+    localStorage.setItem("clauro.prefs.sendWith", "ctrl");
+    const user = userEvent.setup();
+    const onSend = vi.fn();
+    render(<Composer threadId={THREAD} onSend={onSend} />);
+    const box = messageBox();
+    await user.type(box, "hold the line{Enter}");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(box.value).toContain("\n");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(onSend).toHaveBeenCalledWith("hold the line");
+  }, 30000);
 });

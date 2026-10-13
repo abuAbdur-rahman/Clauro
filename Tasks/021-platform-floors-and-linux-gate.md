@@ -7,11 +7,15 @@
 
 **Windows is the primary platform and its floor is the release blocker. The Linux floor and the WebKitGTK artifact gate are secondary** (**D89**): a Linux failure must not block a Windows release, but a Windows failure must block every release. Windows CI builds through the Windows-side MSVC toolchain with output on `/mnt/d` (**D88**).
 
-**Deferred 2026-10-06 (D114), owned by Phase 7 (D115):** Linux primary + Linux floor were removed from `ci.yml`
-(CI is Windows-only until Phase 7 re-enables them). Definitions preserved verbatim in
-`.github/workflows/linux-matrix.yml.disabled` with restore steps. Re-enabling also owns the
-cargo cache + timeout budget — cold Linux builds hit the 30-minute job limit, which is what
-forced the parking. Until then, Linux rows below stay unstarted, not failed.
+**Restored 2026-10-12 (D126, superseding D114/D115's parking):** Linux primary + Linux floor are
+back in `ci.yml` and run on every change — windows primary, windows floor, linux primary, linux
+floor. The parked definitions were restored verbatim from
+`.github/workflows/linux-matrix.yml.disabled` (now deleted), and the cargo cache
+(`Swatinem/rust-cache`) plus `timeout-minutes: 60` that this task always owned as the restore
+condition landed with them. The Linux floor now records its WebKitGTK version via `pkg-config` and
+**fails the job below the 2.40 floor**. What this task still owns is what was never CI: the
+**fixed-version runtime installs** (pinned WebKitGTK on the Linux floor, pinned WebView2 on the
+Windows floor — both floors still record rather than pin) and the runtime gate proof below.
 
 ## Failing test first
 

@@ -14,14 +14,6 @@ pub use content::{
 };
 pub use tools::{Effect, PermissionRule, ToolContext, ToolOutcome, DEFAULT_EFFECT};
 
-/// A placeholder proving the crate compiles and tests run headless.
-/// Real domain types (`ContentBlock`, `ToolOutcome`, `Measurement`) land with
-/// the tasks that own them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Placeholder {
-    pub name: String,
-}
-
 /// The four tool-result statuses shared by storage and the tool loop.
 ///
 /// `CONTRACTS.md` §1 (`tool_result.status`) and §3 (`ToolOutcome`) agree on
@@ -119,21 +111,5 @@ impl UnknownModel {
             kind: "unknown-model".to_string(),
             model,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn placeholder_behaves() {
-        // No serde_json here on purpose: this crate depends on nothing but
-        // `serde`, and the test must not smuggle in a second dependency.
-        let p = Placeholder {
-            name: "headless".to_string(),
-        };
-        assert_eq!(p.clone(), p);
-        assert!(format!("{p:?}").contains("headless"));
     }
 }

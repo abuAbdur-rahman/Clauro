@@ -70,14 +70,10 @@ const KeyringErrorSchema = z.object({
   reason: z.string().optional(),
 });
 
-export async function keyringStore(account: string, secret: string): Promise<void> {
-  await invoke("keyring_store", { account, secret });
-}
-
-export async function keyringRetrieve(account: string): Promise<string> {
-  const raw: unknown = await invoke("keyring_retrieve", { account });
-  return z.string().parse(raw);
-}
+// `keyringStore`/`keyringRetrieve` are gone (review 13 item 3): they were
+// dead wrappers over commands the host deleted as attack surface
+// (`generic_keyring_commands_are_not_registered`). `keyringAvailable` stays
+// — its command IS registered and it reports a real host capability.
 
 export async function keyringAvailable(): Promise<boolean> {
   try {

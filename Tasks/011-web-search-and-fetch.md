@@ -5,22 +5,26 @@
 The two cheapest tools in v1 and the two most often got wrong by clients that *describe* the tool
 instead of *steering* selection.
 
-**Status: backend complete and verified 2026-10-05 on this Windows host.**
-`cargo test -p clauro-tools --test web` 9/9. Both handlers reachable — the
-loop dispatches through the registry (`run.rs:263`), so `web-search` and
-`web-fetch` are callable. Unwired/untestable headless: `reqwest_getter`
-constructs but never touches a live host (no network in tests, by rule); the
-DDG anchor scan pins a shape assumption that provider drift can rot — it
-fails visibly as `NoResults` when it does.
+**Status: backend complete and verified 2026-10-05 on this Windows host, re-verified 2026-10-12.**
+`cargo test -p clauro-tools --test web` 13/13 (was 9/9 on 2026-10-05; four SSRF/loopback tests
+added since). Both handlers reachable — the loop dispatches through the registry
+(`crates/clauro-loop/src/run.rs:328` `dispatch_bounded` → `:336` `registry.dispatch`; the
+`run.rs:263` pointer this line used to carry is stale). `reqwest_getter` **is** wired in
+production: `src-tauri/src/turn.rs:757` builds it into the web host and `:759` `register_web`
+hands it to the registry. What remains untested headless is only its **live** behaviour — no
+network in tests, by rule, and the sole live probe is the `#[ignore]`d
+`crates/clauro-tools/tests/live_probe.rs`. The DDG anchor scan pins a shape assumption that
+provider drift can rot — it fails visibly as `NoResults` when it does.
 
 ## Failing tests first
 
-- [x] The current year is present in the serialised search prompt — **assert on the request body**, not
-  on a comment — `crates/clauro-tools/tests/web.rs:77`
-- [x] A fetch failure returns `error`; it does not throw — `web.rs:121` (search), `:206` (fetch + scheme)
-- [x] Fetched HTML → markdown with scripts and styles stripped — `web.rs:134`
-- [x] A redirect loop terminates with a typed error, bounded hops — `web.rs:155` (A↔B loop, revisit detection)
-- [x] A response over the size cap is truncated **and the model is told it was** — `web.rs:181`
+- [x] The current year is present in the serialised search prompt — **assert on the wire**, not
+  on a comment — `crates/clauro-tools/tests/web.rs:109-113` (`year_present_in_wire_body`, `:84`)
+- [x] A fetch failure returns `error`; it does not throw — `web.rs:132` (search),
+  `web.rs:226,233-236` (fetch + scheme)
+- [x] Fetched HTML → markdown with scripts and styles stripped — `web.rs:156-158`
+- [x] A redirect loop terminates with a typed error, bounded hops — `web.rs:179-184` (A↔B loop, revisit detection)
+- [x] A response over the size cap is truncated **and the model is told it was** — `web.rs:204-209`
 
 ## Do
 
@@ -45,10 +49,10 @@ Neither tool writes to disk (`writesToDisk: false`), so neither enters the conse
 
 ## Acceptance criteria
 
-- [x] Year asserted present in the request body — `web.rs:77`
-- [x] Fetch failures are typed results, never throws — `web.rs:121`, `:206`
-- [x] HTML → markdown, scripts and styles stripped — `web.rs:134` (+ DDG anchor shape pinned at `:233`)
-- [x] Redirect loops bounded — `web.rs:155`
+- [x] Year asserted present on the wire — `web.rs:109-113`
+- [x] Fetch failures are typed results, never throws — `web.rs:132`, `web.rs:226`
+- [x] HTML → markdown, scripts and styles stripped — `web.rs:156-158` (+ DDG anchor shape pinned at `web.rs:258-259`)
+- [x] Redirect loops bounded — `web.rs:179-184`
 - [x] No description text matches any reference implementation's wording (`D39`, same check as `007`) — blurbs pinned in `crates/clauro-tools/tests/descriptions.rs`, human-read; both steer ("pass the current year", "prefer a more targeted tool")
-- [x] Oversized responses truncated **and disclosed** — `web.rs:181`
+- [x] Oversized responses truncated **and disclosed** — `web.rs:204-209`
 - [x] Both tool descriptions steering, not merely descriptive — same pin (see above)

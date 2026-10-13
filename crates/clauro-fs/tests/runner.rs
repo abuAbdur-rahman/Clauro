@@ -24,7 +24,10 @@ fn tmp() -> PathBuf {
 }
 
 fn limits() -> RunLimits {
-    RunLimits { max_bytes: 4096 }
+    RunLimits {
+        max_bytes: 4096,
+        timeout_ms: 60_000,
+    }
 }
 
 // ── env ──────────────────────────────────────────────────────────────────────
@@ -129,7 +132,10 @@ fn stdin_closed_so_readers_exit() {
 #[test]
 fn output_truncates_with_spill_kept() {
     let dir = tmp();
-    let limits = RunLimits { max_bytes: 1000 };
+    let limits = RunLimits {
+        max_bytes: 1000,
+        timeout_ms: 60_000,
+    };
     #[cfg(windows)]
     let cmd = "for /L %i in (1,1,500) do @echo output-line-%i-padding-padding";
     #[cfg(not(windows))]
@@ -279,4 +285,157 @@ fn is_zombie(pid: &str) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .map(|s| s.split_whitespace().nth(2) == Some("Z"))
         .unwrap_or(true)
+}
+
+// ── audit 10/11: scrub gaps, merge case, truncate, timeout, e2e ──────────────
+
+#[test]
+fn credential_name_frags_and_url_values_scrubbed() {
+    // audit 11: name frags AUTH/BEARER/DSN/COOKIE/SESSION missing; prefix
+    // match case-sensitive (`Akia`, `GHP_` slip); URL credentials
+    // (`postgres://user:pass@…`) have no key prefix and no long entropy run.
+    let vars = vec![
+        (
+            "DATABASE_URL".to_string(),
+            "postgres://user:pass@db.example.com:5432/app".to_string(),
+        ),
+        ("AUTH_HEADER".to_string(), "Bearer abc123".to_string()),
+        ("BEARER".to_string(), "plainvalue".to_string()),
+        ("DSN".to_string(), "host=db user=app".to_string()),
+        ("COOKIE".to_string(), "session=deadbeef".to_string()),
+        ("SESSION_COOKIE".to_string(), "s:abc123".to_string()),
+        ("X".to_string(), "AkiaEXAMPLEKEY123456".to_string()),
+        ("Y".to_string(), "GHP_abcdefghijkl".to_string()),
+        // Benign neighbours must survive the wider net.
+        ("PATH".to_string(), "/bin".to_string()),
+        ("NORMAL".to_string(), "hello".to_string()),
+    ];
+    let scrubbed = scrub_env_vars(&vars);
+    let kept = |k: &str| scrubbed.iter().any(|(key, _)| key == k);
+    for gone in [
+        "DATABASE_URL",
+        "AUTH_HEADER",
+        "BEARER",
+        "DSN",
+        "COOKIE",
+        "SESSION_COOKIE",
+        "X",
+        "Y",
+    ] {
+        assert!(!kept(gone), "{gone} must be scrubbed, got {scrubbed:?}");
+    }
+    for stays in ["PATH", "NORMAL"] {
+        assert!(kept(stays), "{stays} must survive, got {scrubbed:?}");
+    }
+}
+
+#[test]
+fn merge_is_case_insensitive_so_managed_still_wins_on_windows() {
+    // audit 11 NIT: Windows env names are case-insensitive; a model-supplied
+    // `PATH` and a managed `Path` coexisted in the BTreeMap, so "managed
+    // always wins (D30)" depended on exact casing.
+    let merged = build_env(
+        &[],
+        &[],
+        &[("PATH".to_string(), "ordinary".to_string())],
+        &[("Path".to_string(), "managed".to_string())],
+    );
+    let path_entries: Vec<_> = merged
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("path"))
+        .collect();
+    assert_eq!(
+        path_entries.len(),
+        1,
+        "one case-insensitive entry, got {merged:?}"
+    );
+    assert_eq!(
+        path_entries[0].1, "managed",
+        "managed must win regardless of casing (D30)"
+    );
+}
+
+#[test]
+fn truncate_never_splits_a_char_and_never_exceeds_the_cap() {
+    use clauro_fs::runner::truncate_kept;
+    // 30 bytes; byte 10 is inside the 4th 3-byte char — the old
+    // `String::truncate(10)` panicked exactly here (audit 10).
+    let s = "日本語".repeat(10);
+    let kept = truncate_kept(&s, 10);
+    assert!(kept.len() <= 10, "cap is inclusive, got {}", kept.len());
+    assert!(s.starts_with(&kept), "kept is a prefix of the original");
+    // Under-cap, exact-boundary, empty, and mid-char ASCII/UTF-8 stay boring.
+    assert_eq!(truncate_kept("abc", 100), "abc");
+    assert_eq!(truncate_kept("日本語", 9), "日本語");
+    assert_eq!(truncate_kept("", 10), "");
+    assert_eq!(truncate_kept("héllo wörld", 7), "héllo ");
+    assert_eq!(truncate_kept("héllo", 2), "h");
+}
+
+#[test]
+fn wall_clock_timeout_kills_a_hung_command() {
+    // audit 10: no timeout — `cmd.output()` blocked forever and one hung
+    // command wedged the serial turn loop; `kill_group` was never called by
+    // `run_command`. The command below would take ~5s; the budget is 500ms.
+    let dir = tmp();
+    let limits = RunLimits {
+        max_bytes: 4096,
+        timeout_ms: 500,
+    };
+    #[cfg(windows)]
+    let cmd = "waitfor /t 30 clauroTimeoutSignalThatIsNeverBroadcast 2>NUL";
+    #[cfg(not(windows))]
+    let cmd = "sleep 6";
+    let start = std::time::Instant::now();
+    let res = run_command(cmd, &dir, &[], &[], limits);
+    let elapsed = start.elapsed();
+    assert!(
+        matches!(res, Err(clauro_fs::runner::RunError::Killed(_))),
+        "must die by timeout, got {res:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "kill must fire near the budget, took {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fast_commands_finish_unaffected_by_the_timeout() {
+    let dir = tmp();
+    let limits = RunLimits {
+        max_bytes: 4096,
+        timeout_ms: 30_000,
+    };
+    #[cfg(windows)]
+    let out = run_command("echo ok", &dir, &[], &[], limits).expect("run");
+    #[cfg(not(windows))]
+    let out = run_command("echo ok", &dir, &[], &[], limits).expect("run");
+    assert_eq!(out.exit_code, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn spawned_child_never_sees_scrubbed_credentials() {
+    // audit 11 NIT: the scrub test was a pure unit test — pin the real
+    // boundary: a credential passed in as run env must be absent from the
+    // SPAWNED child's environment (also closes the FYI that `extra_env`
+    // entered the ordinary slot unscrubbed).
+    let dir = tmp();
+    let secret = vec![(
+        "DATABASE_URL".to_string(),
+        "postgres://user:pass@db.example.com:5432/app".to_string(),
+    )];
+    #[cfg(windows)]
+    let cmd = "if defined DATABASE_URL (echo LEAK) else (echo CLEAN)";
+    #[cfg(not(windows))]
+    let cmd = "if [ -n \"$DATABASE_URL\" ]; then echo LEAK; else echo CLEAN; fi";
+    let out = run_command(cmd, &dir, &secret, &[], limits()).expect("run");
+    assert_eq!(
+        out.stdout.trim(),
+        "CLEAN",
+        "the spawned child must never see a credential, stdout was {:?}",
+        out.stdout
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

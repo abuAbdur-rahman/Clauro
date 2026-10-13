@@ -22,7 +22,7 @@ head when the file is not open.
 
 | Ref | Rule set | Read it when |
 |---|---|---|
-| **§4** | [**Porting and attribution**](docs/references/licensing-and-attribution.md) — three MIT repos may be ported; **LobeHub and Open WebUI never**; no Anthropic wording, ever | Before porting anything from another repo, or naming anything |
+| **§4** | [**Porting and attribution**](docs/references/licensing-and-attribution.md) — four MIT repos may be ported (shadcn/ui: component code only, D127); **LobeHub and Open WebUI never**; no Anthropic wording, ever | Before porting anything from another repo, or naming anything |
 | **§5a** | [**Adopt the wheel. Record the reference.**](docs/references/dependency-policy.md) — search before hand-rolling; record name, URL, rejected alternative, maintenance date | Before adding a dependency, or before hand-rolling anything non-trivial |
 | **§6** | [**Test-first**](docs/references/testing.md) — a test that has never failed proves nothing; no test may need a live key; fixture-first for the SSE parser | Before writing the first line of a test, and before touching the parser |
 | **§7** | [**Adding a feature**](docs/references/feature-workflow.md) — belongs? decided? contracted? tasked? tagged? does it move a security claim? | Before starting any feature |
@@ -38,7 +38,7 @@ head when the file is not open.
 | File | What it is | Read it when |
 |---|---|---|
 | `MISSION.md` | What this is and what it is not | Once, then whenever you are unsure whether a feature belongs |
-| `DECISIONS.md` | **D1–D124.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
+| `DECISIONS.md` | **D1–D130.** Every non-obvious choice *with its reason* | Before any design work. Cite the D-number in your task. |
 | `CONTRACTS.md` | The shapes tests assert against | Before writing any type or any test. **If your type cannot cite a D-number, stop.** |
 | `FEATURES.md` | Provenance: CALLED / PORTED / MIRRORED / ORIGINAL + terminology | Before porting anything, or naming anything |
 | `SPEC.md` | **Normative v1 scope**: what must exist, each with the task that proves it | Before estimating, scoping, or accepting a feature |
@@ -139,7 +139,8 @@ a typed `tool_result`. **D43.**
 ## 4. Porting — the one-line version
 
 Full text: [`docs/references/licensing-and-attribution.md`](docs/references/licensing-and-attribution.md).
-**OpenCode, DeepSeek Harness and LibreChat may be ported. LobeHub and Open WebUI may not, in any form,
+**OpenCode, DeepSeek Harness and LibreChat may be ported. shadcn/ui may be ported for component code
+only (D127). LobeHub and Open WebUI may not, in any form,
 for any reason — behaviour only, in our own words and our own implementation.** Anthropic's wording
 is never reusable. Every port carries attribution in the file it lands in.
 

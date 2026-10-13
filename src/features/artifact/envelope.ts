@@ -44,6 +44,24 @@ function escapeAttr(value: string): string {
   return escapeText(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+/**
+ * Escape a `</` the HTML tokenizer would recognise as a close tag.
+ *
+ * Compiled code sits inside `<script nonce>`, and there it is the tokenizer —
+ * not the JS parser — that decides where the element ends: `</script`,
+ * `</SCRIPT`, `</script >` and `</script\n>` all end it (audit 14). `<\/script`
+ * does not, and it is an ordinary string in JavaScript (`\/` is just `/`), so
+ * a string, comment or regex in artifact code keeps its meaning.
+ */
+function escapeScriptText(value: string): string {
+  return value.replace(/<\/script/gi, "<\\/script");
+}
+
+/** The same rule for `<style ...>`, whose end tag is `</style`. */
+function escapeStyleText(value: string): string {
+  return value.replace(/<\/style/gi, "<\\/style");
+}
+
 export function buildEnvelope(input: EnvelopeInput): string {
   if (input.csp.trim() === "") {
     // Refused rather than rendered: an envelope without a policy is an
@@ -51,13 +69,19 @@ export function buildEnvelope(input: EnvelopeInput): string {
     throw new Error("artifact CSP policy is empty; refusing to build the envelope");
   }
   const nonce = escapeAttr(input.nonce);
+  // The runtime echoes this value in its hello, and channel.ts validates the
+  // hello against the nonce of the document it published — the binding that
+  // stops a page the frame navigated to from claiming the channel (D6/D123).
+  const runtime = `window.__clauroHandshakeNonce = ${JSON.stringify(input.nonce)};\n${FRAME_RUNTIME}`;
   const head = [
     '<meta http-equiv="Content-Security-Policy" content="' +
       escapeAttr(input.csp) +
       '">',
     `<title>${escapeText(input.title)}</title>`,
-    input.css.trim() === "" ? "" : `<style nonce="${nonce}">${input.css}</style>`,
-    `<script nonce="${nonce}">${FRAME_RUNTIME}</script>`,
+    input.css.trim() === ""
+      ? ""
+      : `<style nonce="${nonce}">${escapeStyleText(input.css)}</style>`,
+    `<script nonce="${nonce}">${escapeScriptText(runtime)}</script>`,
   ]
     .filter((part) => part !== "")
     .join("\n");
@@ -65,7 +89,7 @@ export function buildEnvelope(input: EnvelopeInput): string {
   const artifact =
     input.code.trim() === ""
       ? ""
-      : `<script nonce="${nonce}">\n${wrapModule(input.code)}\n</script>`;
+      : `<script nonce="${nonce}">\n${escapeScriptText(wrapModule(input.code))}\n</script>`;
 
   return [
     "<!doctype html>",

@@ -5,6 +5,7 @@
 // drives (text, artifact tool call, question tool call). If the mock lies,
 // the e2e lies — so its validation and its stream shape are both under test.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { networkInterfaces } from "node:os";
 import { startMockServer } from "./mock-openai-server.mjs";
 
 /** The body `translate_request` + `send_once` produce for a plain turn. */
@@ -272,5 +273,30 @@ describe("control endpoints", () => {
     await fetch(`${base}/__reset`, { method: "POST" });
     const cleared = await (await fetch(`${base}/__requests`)).json();
     expect(cleared.requests.length).toBe(0);
+  });
+});
+
+describe("bind address", () => {
+  it("refuses non-loopback binds: only 127.0.0.1 serves, never a LAN address", async () => {
+    // startMockServer hardcodes listen(port, "127.0.0.1"). Pin that contract
+    // from both ends: the advertised URL is loopback, and a request to the
+    // host's own non-loopback address on the same port gets nothing back.
+    expect(base.startsWith("http://127.0.0.1:")).toBe(true);
+    const port = Number(new URL(base).port);
+    const lan = Object.values(networkInterfaces())
+      .flat()
+      .find((i) => i && String(i.family) === "IPv4" && !i.internal);
+    if (!lan) {
+      // No non-loopback address to probe on this host; the URL assertion
+      // above still holds.
+      return;
+    }
+    const res = await fetch(`http://${lan.address}:${port}/models`, {
+      signal: AbortSignal.timeout(2000),
+    }).catch(() => null);
+    expect(
+      res,
+      `server answered on non-loopback ${lan.address}:${port} — it must be loopback-only`,
+    ).toBeNull();
   });
 });

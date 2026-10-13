@@ -17,4 +17,13 @@ describe("019 export", () => {
     expect(containsKeyMaterial("api_key = " + "abcdef1234567890abcdef1234567890")).toBe(true);
     expect(containsKeyMaterial("hello world")).toBe(false);
   });
+  it("catches modern key shapes the old guard missed (review 31 #9)", () => {
+    // The old `/sk-[A-Za-z0-9]{8,}/` stopped at the first `-`, so real keys
+    // like sk-proj-… / sk-ant-api03-… never matched and shipped in exports.
+    expect(containsKeyMaterial("sk-proj-Abc123Def456Ghi789Jkl012")).toBe(true);
+    expect(containsKeyMaterial("Authorization: Bearer sk-ant-api03-Abc123Def456")).toBe(true);
+    expect(containsKeyMaterial("echo sk-" + "abcdefghijklmnop")).toBe(true);
+    // Prose that merely starts with "sk" stays exportable.
+    expect(containsKeyMaterial("we shipped the skill-abcdefghij release")).toBe(false);
+  });
 });

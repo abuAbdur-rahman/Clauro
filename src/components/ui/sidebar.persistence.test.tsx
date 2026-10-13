@@ -64,6 +64,19 @@ describe("sidebar persistence", () => {
     expect((await screen.findByTestId("toggle")).getAttribute("data-state")).toBe("collapsed");
   });
 
+  it("controlled mode leaves persistence to the caller (no local write)", async () => {
+    const onOpenChange = vi.fn();
+    render(
+      <SidebarProvider open={true} onOpenChange={onOpenChange}>
+        <ToggleProbe />
+      </SidebarProvider>,
+    );
+    expect((await screen.findByTestId("toggle")).getAttribute("data-state")).toBe("expanded");
+    fireEvent.click(screen.getByTestId("toggle"));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(window.localStorage.getItem("clauro.sidebar")).toBeNull();
+  });
+
   it("survives an unreadable store without throwing", async () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("denied");

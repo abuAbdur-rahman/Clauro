@@ -25,6 +25,7 @@ vi.mock("./providers", () => ({
   providerSetKey: vi.fn(),
   providerRefresh: vi.fn(),
   providerModels: vi.fn(),
+  providerModelsEnriched: vi.fn(),
   PROVIDER_PRESETS: {
     openrouter: { label: "OpenRouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
     agentrouter: { label: "AgentRouter", name: "AgentRouter", baseUrl: "https://agentrouter.org/v1" },
@@ -77,10 +78,12 @@ import {
   providerAddCustom,
   providerList,
   providerModels,
+  providerModelsEnriched,
   providerRefresh,
   providerRemove,
   providerSetKey,
 } from "./providers";
+import { invalidateModelEntries, loadModelEntries } from "./modelEntries";
 
 function row(over: Partial<ProviderView> = {}): ProviderView {
   return {
@@ -121,6 +124,9 @@ beforeEach(() => {
   cleanup();
   vi.clearAllMocks();
   window.localStorage.clear();
+  // The shared picker load is module-level: drop it between tests (same rule
+  // as ModelPicker.test.tsx).
+  invalidateModelEntries();
 });
 
 describe("ProvidersView cards", () => {
@@ -222,6 +228,33 @@ describe("ProvidersView cards", () => {
       expect(providerRemove).toHaveBeenCalledWith("openrouter");
     });
     expect(providerList).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("ProvidersView × model-picker cache (review 32 dedupe)", () => {
+  it("a completed mutation drops the picker's shared model load", async () => {
+    const user = userEvent.setup();
+    vi.mocked(providerList).mockResolvedValue([row()]);
+    vi.mocked(providerRemove).mockResolvedValue(true);
+    vi.mocked(providerModelsEnriched).mockResolvedValue([]);
+    render(<ProvidersView />);
+    await waitFor(() => {
+      expect(providerList).toHaveBeenCalled();
+    });
+    // Prime the shared cache AFTER the mount reload, so the only thing that
+    // can drop it is the mutation itself.
+    await loadModelEntries();
+    const primed = loadModelEntries();
+
+    await user.click(await screen.findByTestId("provider-delete-openrouter"));
+    await screen.findByTestId("provider-delete-confirm");
+    await user.click(screen.getByTestId("provider-delete-confirm-ok"));
+    await waitFor(() => {
+      expect(providerRemove).toHaveBeenCalledWith("openrouter");
+    });
+    // RED first: without the invalidation this is the SAME promise object and
+    // the picker keeps the deleted provider's models until a lucky reload.
+    expect(loadModelEntries()).not.toBe(primed);
   });
 });
 
@@ -342,6 +375,31 @@ describe("ProvidersView add dialog", () => {
     });
     expect(screen.getByTestId("provider-dialog")).toBeTruthy();
   });
+
+  it("ollama saves keyless: the proof runs on first save with no typed key", async () => {
+    const user = userEvent.setup();
+    vi.mocked(providerList).mockResolvedValue([]);
+    vi.mocked(providerAddBuiltin).mockResolvedValue(
+      row({ id: "ollama", display_name: "Ollama (local)" }),
+    );
+    vi.mocked(providerSetKey).mockResolvedValue(modelsView("ollama", ["llama3", "qwen"]));
+    render(<ProvidersView />);
+    await user.click(await screen.findByTestId("provider-add"));
+    await screen.findByTestId("provider-dialog");
+    await user.selectOptions(screen.getByTestId("provider-dialog-type"), "ollama");
+    // Save is enabled without typing a key — ollama is the keyless type.
+    expect(buttonByTestId("provider-dialog-save").disabled).toBe(false);
+    await user.click(screen.getByTestId("provider-dialog-save"));
+    await waitFor(() => {
+      expect(providerAddBuiltin).toHaveBeenCalledWith("ollama");
+    });
+    // The proof call carries the blank key; the host fetches without auth.
+    expect(providerSetKey).toHaveBeenCalledWith("ollama", "");
+    expect(screen.getByText(/connected · 2 models/i)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByTestId("provider-dialog")).toBeNull();
+    });
+  });
 });
 
 describe("ProvidersView edit dialog", () => {
@@ -354,6 +412,40 @@ describe("ProvidersView edit dialog", () => {
     await screen.findByTestId("provider-dialog");
     return user;
   }
+
+  it("detects each stored row's type from its endpoint (review 33: typeForRow)", async () => {
+    // Tasks/033 claimed this detection with no test behind it. The dialog's
+    // initial type select IS the observable: edit each row and read what the
+    // detection chose. The legacy anthropic row (no URL, D125) must land on
+    // `custom`, never on a dead builtin type.
+    const user = userEvent.setup();
+    vi.mocked(providerList).mockResolvedValue([
+      row({ id: "ar", display_name: "AgentRouter", base_url: "https://agentrouter.org/v1" }),
+      row({
+        id: "g",
+        display_name: "Google",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+      }),
+      row({ id: "ol", display_name: "Ollama", base_url: "http://localhost:11434/v1" }),
+      row({ id: "legacy", display_name: "Legacy", kind: "anthropic", base_url: null }),
+    ]);
+    vi.mocked(providerModels).mockResolvedValue(modelsView("any"));
+    render(<ProvidersView />);
+    await waitFor(() => {
+      expect(providerList).toHaveBeenCalled();
+    });
+    for (const [id, want] of [
+      ["ar", "agentrouter"],
+      ["g", "google"],
+      ["ol", "ollama"],
+      ["legacy", "custom"],
+    ] as const) {
+      await user.click(await screen.findByTestId(`provider-edit-${id}`));
+      await screen.findByTestId("provider-dialog");
+      expect(screen.getByTestId("provider-dialog-type")).toHaveProperty("value", want);
+      await user.click(screen.getByTestId("provider-dialog-cancel"));
+    }
+  });
 
   it("shows stored fields with a blank Replace-key input — never the stored key", async () => {
     await openEdit();
@@ -375,18 +467,18 @@ describe("ProvidersView edit dialog", () => {
     expect(inputByTestId("provider-dialog-key").type).toBe("text");
   });
 
-  it("Fetch loads the stored models as removable chips, add/remove edits the list", async () => {
+  it("Fetch loads the stored models as read-only chips (no edit affordance)", async () => {
     const user = await openEdit();
     await user.click(screen.getByTestId("provider-dialog-fetch"));
     await waitFor(() => {
       expect(providerModels).toHaveBeenCalledWith("openrouter");
     });
     expect(await screen.findByText("claude-x")).toBeTruthy();
-    await user.type(screen.getByTestId("provider-dialog-model-input"), "claude-z");
-    await user.click(screen.getByTestId("provider-dialog-model-add"));
-    expect(screen.getByText("claude-z")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: /remove claude-x/i }));
-    expect(screen.queryByText("claude-x")).toBeNull();
+    expect(screen.getByText("claude-y")).toBeTruthy();
+    // Nothing ever carries `models` to the host, so editing would be a
+    // placebo: the chips are a read-only view of the stored list (review 31).
+    expect(screen.queryByTestId("provider-dialog-model-input")).toBeNull();
+    expect(screen.queryByRole("button", { name: /remove claude-x/i })).toBeNull();
   });
 
   it("Test proves live and shows the connected count; key edits reset to untested", async () => {
@@ -415,13 +507,30 @@ describe("ProvidersView edit dialog", () => {
     });
   });
 
-  it("saving with no key change is honest about host limits and stays open", async () => {
+  it("saving with a blank key keeps the stored one and closes (allowBlankKey contract)", async () => {
+    // Review 31: `allowBlankKey` documented "blank = keep stored" and enabled
+    // Save, but save() always errored — an enabled button that could only
+    // fail. Blank now means exactly what the contract says.
     const user = await openEdit();
     await user.click(screen.getByTestId("provider-dialog-save"));
-    await waitFor(() => {
-      expect(screen.getByText(/no rename endpoint/i)).toBeTruthy();
-    });
     expect(providerSetKey).not.toHaveBeenCalled();
-    expect(screen.getByTestId("provider-dialog")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByTestId("provider-dialog")).toBeNull();
+    });
+    expect(screen.getByText(/kept the stored key/i)).toBeTruthy();
+  });
+});
+
+describe("ProvidersView list failures (review 31)", () => {
+  it("a provider_list rejection shows the error, not an endless spinner", async () => {
+    // The old catch set the notice but left rows === null, and the loading
+    // early-return rendered BEFORE the notice — the error was unreachable
+    // behind an infinite "Loading providers…".
+    vi.mocked(providerList).mockRejectedValue(new Error("host unreachable"));
+    render(<ProvidersView />);
+    expect(await screen.findByText(/host unreachable/i)).toBeTruthy();
+    expect(screen.queryByText(/loading providers/i)).toBeNull();
+    // The view stays usable behind an empty list.
+    expect(screen.getByTestId("provider-add")).toBeTruthy();
   });
 });

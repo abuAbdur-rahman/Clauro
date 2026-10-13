@@ -4,7 +4,10 @@
 //! project-scoped rows. The model writes memory itself; there is no
 //! background extractor. Return strings are SQLite-native output, not a
 //! contract. Three controls never collapsed (D8, D9): account pause, account
-//! reset, per-thread off. Secret-shaped writes are refused silently (D43).
+//! reset, per-thread off. The reset control is host-driven (settings UI via
+//! `clauro_store::Store::delete_all_memories`) and NEVER a model command: a
+//! model-supplied `confirm:true` is a prompt-injected irreversible wipe
+//! (audit 10). Secret-shaped writes are refused silently (D43).
 //! Memory is retrieved just-in-time by the model, never injected into the
 //! frozen system prompt (D11).
 
@@ -119,7 +122,7 @@ pub fn memory_handler(store: Arc<Mutex<Store>>) -> impl Fn(&Value, &ToolContext)
         let command = match input.get("command").and_then(|c| c.as_str()) {
             Some(c) => c,
             None => {
-                return err("command required: view|create|str_replace|insert|delete|rename|reset");
+                return err("command required: view|create|str_replace|insert|delete|rename");
             }
         };
         handle(&store, ctx, command, input)
@@ -132,9 +135,6 @@ fn handle(
     command: &str,
     input: &Value,
 ) -> ToolOutcome {
-    if command == "reset" {
-        return reset(store, input);
-    }
     let guard = match lock(store) {
         Ok(g) => g,
         Err(e) => return e,
@@ -153,6 +153,8 @@ fn handle(
         "insert" => insert(&guard, &scope, input),
         "delete" => delete(&guard, &scope, input),
         "rename" => rename(&guard, &scope, input),
+        // `reset` is an account control (D8), host-driven via
+        // `Store::delete_all_memories` — never dispatched from model input.
         _ => err(format!("unknown memory command: {command}")),
     }
 }
@@ -210,10 +212,13 @@ fn create(store: &Store, scope: &Scope, input: &Value) -> ToolOutcome {
         return err(REFUSED);
     }
     let full = format!("{ROOT}/{rel}");
-    if find_row(store, scope, &full)
-        .map(|r| r.is_some())
-        .unwrap_or(false)
-    {
+    let taken = match find_row(store, scope, &full) {
+        Ok(r) => r.is_some(),
+        // A store failure is a typed error, never read as "path free"
+        // (audit 10 NIT: swallow → duplicate insert on a blip).
+        Err(e) => return e,
+    };
+    if taken {
         return err(format!("topic exists: {full}"));
     }
     let category = input
@@ -364,28 +369,17 @@ fn rename(store: &Store, scope: &Scope, input: &Value) -> ToolOutcome {
         Ok(None) => return err(format!("no such topic: {old_full}")),
         Err(e) => return e,
     };
-    if find_row(store, scope, &new_full)
-        .map(|r| r.is_some())
-        .unwrap_or(false)
-    {
+    let taken = match find_row(store, scope, &new_full) {
+        Ok(r) => r.is_some(),
+        // Store failure surfaces typed; never treated as "path free".
+        Err(e) => return e,
+    };
+    if taken {
         return err(format!("topic exists: {new_full}"));
     }
     match store.rename_memory_path(&row.id, &new_full, now_ms()) {
         Ok(()) => ok(format!("renamed {old_full} to {new_full}")),
         Err(e) => err(format!("rename failed: {e}")),
-    }
-}
-
-fn reset(store: &Arc<Mutex<Store>>, input: &Value) -> ToolOutcome {
-    if input.get("confirm").and_then(|v| v.as_bool()) != Some(true) {
-        return err("reset needs confirm:true — it deletes every memory in every project");
-    }
-    match lock(store) {
-        Ok(guard) => match guard.delete_all_memories() {
-            Ok(n) => ok(format!("removed {n} memories")),
-            Err(e) => err(format!("reset failed: {e}")),
-        },
-        Err(e) => e,
     }
 }
 

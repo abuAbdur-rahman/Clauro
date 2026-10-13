@@ -38,7 +38,10 @@ afterEach(() => {
   cleanup();
 });
 
-const CHATS = [{ id: "c1", title: "Debounce in React" }];
+const CHATS = [
+  { id: "c1", title: "Debounce in React" },
+  { id: "c2", title: "Rust ownership notes" },
+];
 const PROJECTS = [{ id: "pr1", name: "Portfolio site" }];
 
 describe("groupPalette", () => {
@@ -233,12 +236,30 @@ describe("CommandPalette keyboard + close", () => {
 });
 
 describe("CommandPalette real actions", () => {
-  it("new chat opens a thread in the thread store", async () => {
+  it("new chat dispatches an open-chat intent so the shell can navigate", async () => {
+    // The store's `open` flag is not navigation: App's `view` is local state
+    // (review 31, finding 2). Clicking New chat must emit an intent the shell
+    // already listens for, so the palette actually changes what is on screen.
     const user = userEvent.setup();
-    render(<CommandPalette state={{ turnRunning: false }} open={true} chats={CHATS} />);
-    await screen.findByTestId("palette-list");
-    await user.click(screen.getByTestId("palette-item-action:new-chat"));
-    expect(Object.keys(useThreadStore.getState().threads)).toHaveLength(1);
+    const seen: string[] = [];
+    const h = (e: Event) => {
+      const detail = (e as CustomEvent<{ threadId?: string }>).detail;
+      seen.push(`new-chat:${detail.threadId !== undefined ? "with-id" : "fresh"}`);
+    };
+    window.addEventListener("clauro:open-chat", h);
+    try {
+      const onClose = vi.fn();
+      render(
+        <CommandPalette state={{ turnRunning: false }} open={true} chats={CHATS} onClose={onClose} />,
+      );
+      await screen.findByTestId("palette-list");
+      await user.click(screen.getByTestId("palette-item-action:new-chat"));
+      // A fresh chat carries no threadId: the shell creates and shows it.
+      expect(seen).toEqual(["new-chat:fresh"]);
+      expect(onClose).toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("clauro:open-chat", h);
+    }
   });
 
   it("open settings routes through the settings store", async () => {
@@ -258,14 +279,21 @@ describe("CommandPalette real actions", () => {
     expect(useSettingsStore.getState().section).toBe("memory");
   });
 
-  it("opening a chat entry opens that thread id", async () => {
+  it("opening a chat entry dispatches that exact thread id as an intent", async () => {
     const user = userEvent.setup();
-    render(
-      <CommandPalette state={{ turnRunning: false }} open={true} chats={CHATS} />,
-    );
-    await screen.findByTestId("palette-list");
-    await user.click(screen.getByTestId("palette-item-chat:c1"));
-    expect(useThreadStore.getState().threads["c1"]).toBeDefined();
+    const seen: string[] = [];
+    const h = (e: Event) => {
+      seen.push(String((e as CustomEvent<{ threadId?: string }>).detail.threadId));
+    };
+    window.addEventListener("clauro:open-chat", h);
+    try {
+      render(<CommandPalette state={{ turnRunning: false }} open={true} chats={CHATS} />);
+      await screen.findByTestId("palette-list");
+      await user.click(screen.getByTestId("palette-item-chat:c2"));
+      expect(seen).toEqual(["c2"]);
+    } finally {
+      window.removeEventListener("clauro:open-chat", h);
+    }
   });
 
   it("compact dispatches an intent event for the turn owner", async () => {

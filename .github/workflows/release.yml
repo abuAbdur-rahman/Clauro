@@ -2,30 +2,24 @@ name: Release
 
 # Tags trigger a release. Nothing here runs on a schedule or on a branch push —
 # a build that cannot be reproduced from a tag does not get cut.
-on:
-  # A release is cut by pushing a tag. Nothing here runs on a schedule or on a
-  # branch push: a build that cannot be reproduced from a tag does not get cut.
-  #
-  # Note: this repository is currently the specification only, so there is no
-  # workspace to bundle yet. The pipeline is wired and will start failing
-  # loudly and usefully the moment Tasks/002 lands without a tag.
-  push:
-    tags: ["v*"]
-  # Manual re-run for a tag that already exists.
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to build (v0.1.0)"
-        required: true
-
+#
+# Every action below is pinned to a full commit SHA, with the tag it resolves
+# to kept as a comment for readability (ci.yml's policy, CWE-829). Pins
+# refreshed deliberately on 2026-10-12 (review 42, §5a record date); refresh
+# them deliberately again, never as a side effect of another change.
+#
+# Least privilege: build jobs only read the repo; only the publish job holds
+# `contents: write` (review 42).
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # D114 measured ~35-minute cold builds. rust-cache below makes warm runs
+    # fast; 60 minutes gives a cold run headroom instead of a wall.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -43,13 +37,78 @@ jobs:
             os: ubuntu-24.04
             asset-suffix: arm64.AppImage
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Check out THE TAG BEING RELEASED, never whatever HEAD happens to be
+      # (review 42, item 16). On a tag push `inputs.tag` is empty and
+      # github.ref is the tag itself; on a manual dispatch github.ref is the
+      # branch the dispatch was launched from, so the caller's tag wins.
+      # fetch-depth 0 so the tag ref exists locally for the provenance
+      # assertion below.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Provenance: the artefacts must come from the tag that gets published.
+      # A dispatch-supplied tag is untrusted input, so it arrives via env and
+      # is never interpolated into the script (review 42, item 16).
+      - name: Assert HEAD is the tag being released
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_commit=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          if [ "$head_commit" != "$tag_commit" ]; then
+            echo "::error::HEAD ($head_commit) is not tag $RELEASE_TAG ($tag_commit)"
+            exit 1
+          fi
+          echo "HEAD matches $RELEASE_TAG at $head_commit"
+
+      # Fail loudly and specifically if there is still nothing to bundle.
+      # Nothing is bundleable before the workspace and the frontend manifest
+      # exist; a tag pushed too early should say so, not surface as a cargo
+      # error about a missing manifest.
+      - name: Refuse to release a spec-only tree
+        shell: bash
+        run: |
+          if [ ! -f Cargo.toml ] || [ ! -f package.json ]; then
+            echo "::error::no Cargo.toml or no package.json - nothing is"
+            echo "::error::bundleable until the workspace lands."
+            exit 1
+          fi
+
+      # Single source of truth for the Rust pin is rust-toolchain.toml.
+      # `@stable` here would drift from what CI tests, and its `targets` input
+      # would land on the wrong toolchain (review 42, toolchain pin drift).
+      - name: Read pinned Rust toolchain
+        id: tc
+        shell: bash
+        run: |
+          echo "channel=$(grep -oP 'channel = "\K[^"]+' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: ${{ steps.tc.outputs.channel }}
           targets: ${{ matrix.target }}
-      - uses: actions/setup-node@v4
+
+      # Cargo cache (review 42): without this every release rebuilt the full
+      # workspace cold — long, and the likely reason the workflow was never
+      # exercised end-to-end. The per-target key keeps the four matrix jobs
+      # from thrashing a single cache entry.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          node-version: "22"
+          key: ${{ matrix.target }}
+
+      # pnpm, from package.json's "packageManager". setup-node's pnpm cache
+      # needs pnpm set up first, so the order mirrors ci.yml.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: pnpm
 
       - name: Linux webview + packaging deps
         if: runner.os == 'Linux'
@@ -59,30 +118,32 @@ jobs:
             librsvg2-dev patchelf libssl-dev fuse3
 
       # --locked is not optional in CI. It is the difference between
-      # "reproducible" and "usually the same".
-      # Fail loudly and specifically if there is still nothing to bundle.
-      # This repository is the specification until Tasks/002 lands, and a tag
-      # pushed before then should say so rather than surface as a cargo error
-      # about a missing manifest.
-      - name: Refuse to release a spec-only tree
+      # "reproducible" and "usually the same". `cargo fetch --locked` asserts
+      # the committed lockfile matches the manifests, and warms the cache
+      # before the build.
+      - name: Assert Cargo.lock matches the manifests
         shell: bash
-        run: |
-          if [ ! -f Cargo.toml ] || [ ! -f package.json ]; then
-            echo "::error::no Cargo.toml or no package.json - this repository is"
-            echo "::error::the specification only. Nothing is bundleable until"
-            echo "::error::Tasks/002 lands the workspace."
-            exit 1
-          fi
+        run: cargo fetch --locked
 
+      # pnpm, never npm: this is a pnpm-only repo (no package-lock.json), so
+      # `npm ci` dies immediately — every release build used to fail at this
+      # step (review 42, item 15).
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Explicit frontend build: fails fast and attributes frontend breakage
+      # to the frontend, rather than burying it inside the tauri build log.
+      # tauri.conf.json's beforeBuildCommand runs `pnpm build` again — the
+      # duplication is deliberate.
       - name: Build frontend
-        run: |
-          npm ci
-          npm run build
+        run: pnpm build
 
+      # `pnpm tauri`, not `cargo tauri`: @tauri-apps/cli is a devDependency
+      # and the runners have no cargo-tauri on PATH.
       - name: Build Rust bundle
         shell: bash
         run: |
-          cargo tauri build \
+          pnpm tauri build \
             --target "${{ matrix.target }}" \
             --bundles "$( [ "${{ runner.os }}" = "Linux" ] && echo appimage || echo msi,nsis )"
 
@@ -102,8 +163,38 @@ jobs:
             exit 1
           fi
 
+      # Review 42: a silently missing bundle must not ship as success.
+      # if-no-files-found on the upload catches "nothing at all"; this asserts
+      # the artefacts the release notes will claim actually exist for THIS
+      # target, and prints the full listing for the log.
+      - name: Assert the expected bundles exist (D89)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          root="target/${TARGET}/release/bundle"
+          if [ ! -d "$root" ]; then
+            echo "::error::no bundle directory at $root"
+            exit 1
+          fi
+          case "$TARGET" in
+            *-linux-*) expected=( AppImage ) ;;
+            *) expected=( msi exe ) ;;
+          esac
+          ok=1
+          for ext in "${expected[@]}"; do
+            if ! find "$root" -type f -iname "*.${ext}" | grep -q .; then
+              echo "::error::no *.${ext} produced under $root"
+              ok=0
+            fi
+          done
+          echo "bundles produced:"
+          find "$root" -type f | sort
+          if [ "$ok" -ne 1 ]; then exit 1; fi
+
       - name: Collect artefacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: clauro-${{ matrix.asset-suffix }}
           path: |
@@ -120,14 +211,20 @@ jobs:
     runs-on: ubuntu-latest
     # Only publish if every target built. A partial release is worse than none.
     if: success()
+    # The only job that may write (review 42): a write-capable token never
+    # touches a build runner.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: bundles
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # The build job asserted HEAD == this tag; publish under the same
+          # one. Input to an action, not a shell — nothing to escape.
+          tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           draft: true
           files: bundles/**/*

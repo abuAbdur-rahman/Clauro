@@ -104,3 +104,66 @@ describe("composition", () => {
     expect(doc).not.toContain("<script>alert(1)</script>");
   });
 });
+
+describe("the render nonce reaches the frame (D6 handshake binding)", () => {
+  it("is written into the runtime's script so the hello can name this document", () => {
+    // The host validates `hello.nonce` against the document it published
+    // (channel.ts), which is what stops a page the frame navigated to from
+    // claiming a channel meant for the document the host built.
+    const doc = envelope({ nonce: "render-9" });
+    expect(doc).toContain('window.__clauroHandshakeNonce = "render-9"');
+  });
+});
+
+/**
+ * The one unescaped context (audit 14, IMPORTANT): compiled code sits inside
+ * `<script nonce>`, where the HTML tokenizer — not the JS parser — decides
+ * where the element ends. These payloads all try to end it early and leave
+ * live markup behind. Each must come out the other side as inert script text.
+ */
+describe("hostile payloads stay inert data inside the artifact script", () => {
+  const payloads = [
+    '</script><img src=x onerror="alert(1)">',
+    '</SCRIPT><img src=x onerror="alert(1)">',
+    "</script ><img src=x>",
+    "</script/><img src=x>",
+    "</ScRiPt ><img src=x>",
+    '<!--<script>alert(1)</script><img src=x>',
+    "</script><!--",
+  ];
+
+  for (const payload of payloads) {
+    it(`contains ${JSON.stringify(payload)}`, () => {
+      const doc = envelope({ code: `var s = ${JSON.stringify(payload)};` });
+      const view = new DOMParser().parseFromString(doc, "text/html");
+      // Exactly the two scripts we emit: the payload closed none of them.
+      expect(view.querySelectorAll("script")).toHaveLength(2);
+      // No payload markup became a live element.
+      expect(view.querySelectorAll("img")).toHaveLength(0);
+      // The raw document never carries an unescaped close-tag + tag sequence.
+      expect(doc).not.toMatch(/<\/script[\s>]*><img/i);
+      // The payload is still present — as text inside the script element:
+      // exactly the code string with the close tag escaped the way the
+      // envelope escaped it.
+      const inert = JSON.stringify(payload).replace(/<\/script/gi, "<\\/script");
+      expect(view.querySelectorAll("script")[1].textContent).toContain(inert);
+    });
+  }
+
+  it("a real newline inside the close tag cannot end the script element", () => {
+    // `</script` + LF + `>` is a valid end tag to the tokenizer (whitespace
+    // after the tag name). The code string below holds a literal newline.
+    const doc = envelope({ code: "var s = `</script\n><img src=x>`;" });
+    const view = new DOMParser().parseFromString(doc, "text/html");
+    expect(view.querySelectorAll("script")).toHaveLength(2);
+    expect(view.querySelectorAll("img")).toHaveLength(0);
+    expect(doc).not.toMatch(/<\/script\s+><img/i);
+  });
+
+  it("a </style> in the vendored stylesheet cannot break out of <style>", () => {
+    const doc = envelope({ css: "</style><img src=x onerror=alert(1)>" });
+    const view = new DOMParser().parseFromString(doc, "text/html");
+    expect(view.querySelectorAll("img")).toHaveLength(0);
+    expect(view.querySelector("style")?.textContent ?? "").toContain("<img src=x");
+  });
+});

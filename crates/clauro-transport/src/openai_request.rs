@@ -26,12 +26,28 @@
 
 use serde_json::{json, Value};
 
+/// A visible marker for one dropped part or block (D80): the loss is
+/// rendered in the translated body instead of passing as silence.
+fn dropped_marker(block: &Value) -> String {
+    let kind = block
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("[dropped: {kind}]")
+}
+
 /// Rewrite an Anthropic-shaped request body as a `chat/completions` body.
 ///
-/// Takes the body `build_normal_request` produced (or an equivalent,
-/// including compaction bodies — `compaction` rides the same rewrite).
+/// Takes the body `build_normal_request` produced (or an equivalent).
+/// `compaction` is **not** carried: D75 gates compaction to the Anthropic
+/// wire, so a compaction body reaching this translator is a programming
+/// error and `debug_assert` refuses it (in release the field is dropped).
 #[must_use]
 pub fn translate_request(body: &Value) -> Value {
+    debug_assert!(
+        body.get("compaction").is_none(),
+        "compaction bodies are gated to the Anthropic wire by D75; the chat rewrite drops them"
+    );
     let mut out = json!({
         "model": body.get("model").cloned().unwrap_or(Value::Null),
         "max_tokens": body.get("max_tokens").cloned().unwrap_or(Value::Null),
@@ -74,7 +90,7 @@ pub fn translate_request(body: &Value) -> Value {
                 "assistant" => {
                     let mut text: Vec<String> = Vec::new();
                     let mut calls: Vec<Value> = Vec::new();
-                    for block in &blocks {
+                    for (n, block) in blocks.iter().enumerate() {
                         match block.get("type").and_then(Value::as_str) {
                             Some("text") => {
                                 if let Some(t) = block.get("text").and_then(Value::as_str) {
@@ -89,9 +105,17 @@ pub fn translate_request(body: &Value) -> Value {
                                     .and_then(Value::as_str)
                                     .unwrap_or("")
                                     .to_string();
+                                // A missing id must not serialise
+                                // `"id": null` — a guaranteed 400. The
+                                // fallback is deterministic (position-keyed)
+                                // so replays stay reproducible.
+                                let id = match block.get("id").and_then(Value::as_str) {
+                                    Some(id) if !id.is_empty() => id.to_string(),
+                                    _ => format!("call_forged_{n}"),
+                                };
                                 let args = block.get("input").cloned().unwrap_or_else(|| json!({}));
                                 calls.push(json!({
-                                    "id": block.get("id").cloned().unwrap_or(Value::Null),
+                                    "id": id,
                                     "type": "function",
                                     "function": {
                                         "name": name,
@@ -128,7 +152,13 @@ pub fn translate_request(body: &Value) -> Value {
                                     Some(Value::String(s)) => s.clone(),
                                     Some(Value::Array(parts)) => parts
                                         .iter()
-                                        .filter_map(|p| p.get("text").and_then(Value::as_str))
+                                        .map(|p| match p.get("text").and_then(Value::as_str) {
+                                            Some(t) => t.to_string(),
+                                            // D80: a non-text part degrades
+                                            // visibly — a marker in the
+                                            // result text — never silently.
+                                            None => dropped_marker(p),
+                                        })
                                         .collect::<Vec<_>>()
                                         .join("\n"),
                                     _ => String::new(),
@@ -146,18 +176,40 @@ pub fn translate_request(body: &Value) -> Value {
                                     }
                                 }
                             }
-                            _ => {}
+                            // D80: an unknown user-side block degrades
+                            // visibly, never a silent drop.
+                            _ => texts.push(dropped_marker(block)),
                         }
                     }
                     if !texts.is_empty() {
                         messages.push(json!({"role": "user", "content": texts.join("\n")}));
                     }
                 }
-                "system" => messages.push(json!({"role": "system", "content": blocks})),
+                "system" => {
+                    // A block ARRAY `content` is a near-certain 400 on this
+                    // wire: flatten to text, matching the top-level `system`
+                    // handling above.
+                    let text = blocks
+                        .iter()
+                        .filter_map(|b| b.get("text").and_then(Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    messages.push(json!({"role": "system", "content": text}));
+                }
                 other => {
-                    // Unknown role: keep it rather than lose history — an
-                    // unexpected role is the endpoint's 400 to explain.
-                    messages.push(json!({"role": other, "content": blocks}));
+                    // Unknown role: keep the role rather than lose history —
+                    // an unexpected role is the endpoint's 400 to explain —
+                    // but flatten the content to a string; a raw block array
+                    // is a 400 that explains nothing.
+                    let text = blocks
+                        .iter()
+                        .map(|b| match b.get("text").and_then(Value::as_str) {
+                            Some(t) => t.to_string(),
+                            None => dropped_marker(b),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    messages.push(json!({"role": other, "content": text}));
                 }
             }
         }

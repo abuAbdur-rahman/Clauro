@@ -1,3 +1,7 @@
+// Ported from shadcn/ui (MIT): https://github.com/shadcn-ui/ui — new-york v4 registry
+// copy, adapted in place (D112/D127, component code only). Provenance: PORTED
+// (FEATURES.md); attribution per AGENTS.md §4.
+
 import * as React from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";

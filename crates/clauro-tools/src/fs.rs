@@ -9,16 +9,21 @@
 //! Attachments copy in (never reference) via `ingest_local_file`; dedupe is
 //! per project and the model sees path + size + media type only (D47, D52).
 //! A reserved device name uploads renamed, not rejected (D79). Writes stage
-//! inside `dirname(target)` and rename over, so files inherit the
-//! destination DACL and `%TEMP%` never sees them (D34).
+//! inside `dirname(target)` and `%TEMP%` never sees the bytes (D34). A NEW
+//! file inherits the destination directory's DACL; an EXISTING target keeps
+//! its own DACL, attributes and named streams across the swap — on Windows
+//! that swap is `ReplaceFileW`, because rename-over cannot express it (D128).
 
 use crate::registry::Registry;
+#[cfg(windows)]
+mod replace;
 use clauro_core::{ToolContext, ToolOutcome};
 use clauro_store::Store;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -40,6 +45,11 @@ pub enum FsError {
     NoMatch(String),
     Ambiguous(String),
     Io(String),
+    /// The final swap of a staged write failed. The payload is the captured
+    /// `std::io::Error::last_os_error()` from the swap — on Windows the
+    /// `ReplaceFileW` code (1175/1176/1177 …), elsewhere the rename errno —
+    /// so the Win32/os code reaches the tool boundary intact (D128, D55).
+    Replace(String),
 }
 
 impl fmt::Display for FsError {
@@ -52,6 +62,7 @@ impl fmt::Display for FsError {
             Self::NoMatch(m) => write!(f, "no match: {m}"),
             Self::Ambiguous(m) => write!(f, "ambiguous, pass replace_all: {m}"),
             Self::Io(m) => write!(f, "filesystem error: {m}"),
+            Self::Replace(m) => write!(f, "replace failed: {m}"),
         }
     }
 }
@@ -114,18 +125,24 @@ impl FsHost {
         }
     }
 
-    fn mark_read(&self, canonical: &Path) {
+    /// The read set is per-session in-memory state; a poisoned mutex (only
+    /// reachable if an earlier handler panicked mid-hold) is reported as a
+    /// typed retryable error instead of panicking across the tool boundary
+    /// (D55, audit 10 NIT).
+    fn mark_read(&self, canonical: &Path) -> Result<(), FsError> {
         self.read_set
             .lock()
-            .expect("read set lock must hold")
-            .insert(canonical.to_path_buf());
+            .map(|mut set| {
+                set.insert(canonical.to_path_buf());
+            })
+            .map_err(|_| FsError::Io("read set busy, retry the call".to_string()))
     }
 
-    fn was_read(&self, canonical: &Path) -> bool {
+    fn was_read(&self, canonical: &Path) -> Result<bool, FsError> {
         self.read_set
             .lock()
-            .expect("read set lock must hold")
-            .contains(canonical)
+            .map(|set| set.contains(canonical))
+            .map_err(|_| FsError::Io("read set busy, retry the call".to_string()))
     }
 
     fn read_cmd(&self, input: &Value) -> Result<String, FsError> {
@@ -143,16 +160,23 @@ impl FsHost {
             .and_then(Value::as_u64)
             .unwrap_or(READ_DEFAULT_LINES as u64) as usize;
         let (path, _) = self.resolve_read(user, scope)?;
-        let text = std::fs::read(&path)
-            .ok()
-            .and_then(|b| String::from_utf8(b).ok())
-            .ok_or_else(|| FsError::NotText(user.to_string()))?;
-        self.mark_read(&path);
+        // Windowed read (audit 10 NIT): stream only the requested window.
+        // The old whole-file load made a multi-GB path a heap DoS before any
+        // limit applied, and demanded the ENTIRE file be valid UTF-8 even
+        // for a three-line window at the top.
+        let file = std::fs::File::open(&path).map_err(|_| FsError::NotText(user.to_string()))?;
         let mut out = String::new();
-        for (i, line) in text.lines().skip(offset).take(limit).enumerate() {
+        for (i, line) in std::io::BufReader::new(file)
+            .lines()
+            .skip(offset)
+            .take(limit)
+            .enumerate()
+        {
+            let line = line.map_err(|_| FsError::NotText(user.to_string()))?;
             let short: String = line.chars().take(READ_TRUNCATE_CHARS).collect();
             out.push_str(&format!("{}: {short}\n", offset + i + 1));
         }
+        self.mark_read(&path)?;
         Ok(out)
     }
 
@@ -343,9 +367,13 @@ impl FsHost {
         Ok(hits.join("\n"))
     }
 
-    /// Staged write: temp file beside the target, then rename. The target
-    /// inherits the destination DACL and `%TEMP%` never sees the bytes.
-    fn stage_write(&self, target: &Path, content: &str) -> Result<(), FsError> {
+    /// Staged write: temp file beside the target, fsync, then swap. `%TEMP%`
+    /// never sees the bytes (D34); a new target inherits the destination
+    /// directory's DACL, an existing one keeps its own DACL, attributes and
+    /// named streams — on Windows the swap is `ReplaceFileW` (D128, audit 11).
+    /// Bytes in, so ingest and write share this one path (audit 11 NIT:
+    /// ingest used to bypass staging entirely).
+    fn stage_write(&self, target: &Path, content: &[u8]) -> Result<(), FsError> {
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| FsError::Io(format!("cannot create dir: {e}")))?;
@@ -353,6 +381,17 @@ impl FsHost {
         let dir = target
             .parent()
             .ok_or_else(|| FsError::BadInput("no parent".to_string()))?;
+        // Sweep leftovers of crashed runs (audit 11 NIT): a `.tmp-*` file
+        // beside the target is never security state and never referenced —
+        // the staging name is fresh per write — so removal is best-effort; a
+        // failure is retried by every later write into this directory.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                if e.file_name().to_string_lossy().starts_with(".tmp-") {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
         let tmp = dir.join(format!(
             ".tmp-{}-{}",
             std::process::id(),
@@ -361,14 +400,49 @@ impl FsHost {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let write_out = std::fs::write(&tmp, content);
+        let write_out = (|| -> std::io::Result<()> {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(content)?;
+            // Durability before the swap (audit 11 NIT): the rename is the
+            // commit point (D34), so the bytes must be on disk BEFORE it —
+            // otherwise a crash can leave a fresh name over an empty or
+            // half-written file.
+            f.sync_all()
+        })();
         if let Err(e) = write_out {
             let _ = std::fs::remove_file(&tmp);
             return Err(FsError::Io(format!("staging failed: {e}")));
         }
-        if let Err(e) = std::fs::rename(&tmp, target) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(FsError::Io(format!("replace failed: {e}")));
+        // The swap. Over an EXISTING target on Windows: `ReplaceFileW`, which
+        // merges security from the replaced file — the target keeps its DACL,
+        // attributes, owner and named streams (D34, D128). Plain rename here
+        // would be MoveFileExW(MOVEFILE_REPLACE_EXISTING): the survivor
+        // carries the staged file's directory-inherited descriptor and the
+        // target's explicit one dies with it. A target that does not exist
+        // has no security state to preserve (and ReplaceFileW requires one),
+        // so that path stays a plain rename, as before.
+        #[cfg(windows)]
+        let swap = if target.exists() {
+            replace::replace_preserving(target, &tmp)
+        } else {
+            std::fs::rename(&tmp, target)
+        };
+        #[cfg(not(windows))]
+        let swap = std::fs::rename(&tmp, target);
+        if let Err(e) = swap {
+            // Cleanup is guarded (D128): sweep the staged file only when the
+            // target survived — ReplaceFileW's ERROR_UNABLE_TO_MOVE_REPLACEMENT
+            // (1176) leaves the target gone and the staged bytes under their
+            // temp name, and deleting those would destroy the only remaining
+            // copy — so in that state they move into place instead. Either
+            // way a typed error carries the captured last_os_error back and
+            // nothing throws across the tool boundary (D55).
+            let _ = if target.exists() {
+                std::fs::remove_file(&tmp)
+            } else {
+                std::fs::rename(&tmp, target)
+            };
+            return Err(FsError::Replace(e.to_string()));
         }
         Ok(())
     }
@@ -393,7 +467,7 @@ impl FsHost {
             .and_then(Value::as_str)
             .ok_or_else(|| FsError::BadInput("write needs content".to_string()))?;
         let target = self.resolve_session(user)?;
-        self.stage_write(&target, content)?;
+        self.stage_write(&target, content.as_bytes())?;
         Ok(format!("wrote {} bytes to {user}", content.len()))
     }
 
@@ -412,7 +486,7 @@ impl FsHost {
             .and_then(Value::as_str)
             .ok_or_else(|| FsError::BadInput("edit needs a path".to_string()))?;
         let target = self.resolve_session(user)?;
-        if !self.was_read(&target) {
+        if !self.was_read(&target)? {
             return Err(FsError::NotRead(user.to_string()));
         }
         let old = input
@@ -446,7 +520,7 @@ impl FsHost {
             )));
         }
         let updated = text.replacen(old, new, if replace_all { count } else { 1 });
-        self.stage_write(&target, &updated)?;
+        self.stage_write(&target, updated.as_bytes())?;
         Ok(format!("replaced {count} occurrence(s) in {user}"))
     }
 
@@ -495,7 +569,7 @@ impl FsHost {
         let existing = self
             .store
             .lock()
-            .expect("store lock must hold")
+            .map_err(|_| FsError::Io("store busy, retry the call".to_string()))?
             .attachment_path_for_hash(self.project_id.as_deref(), &hash);
         if let Some(path) = existing {
             let size = std::fs::metadata(self.session_root.join(&path))
@@ -508,15 +582,18 @@ impl FsHost {
                 name: stored_name,
             });
         }
-        let dest = self.session_root.join(&rel);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| FsError::Io(format!("cannot create dir: {e}")))?;
-        }
-        std::fs::write(&dest, &bytes).map_err(|e| FsError::Io(format!("copy failed: {e}")))?;
+        // Containment decided on the CANONICAL path (audit 11): ingest was
+        // the only write path that never went through `resolve_session` —
+        // `session_root.join(rel)` then `fs::write`, no canonicalisation, no
+        // containment, so a junction planted at `attachments/` redirected
+        // the copy straight outside the workspace. Same resolve as every
+        // other write, then THE write path — staging included (audit 11 NIT:
+        // ingest bypassed `stage_write`, contradicting the module header).
+        let dest = self.resolve_session(&rel)?;
+        self.stage_write(&dest, &bytes)?;
         self.store
             .lock()
-            .expect("store lock must hold")
+            .map_err(|_| FsError::Io("store busy, retry the call".to_string()))?
             .insert_attachment(clauro_store::NewAttachment {
                 id: Store::new_id("att"),
                 project_id: self.project_id.clone(),

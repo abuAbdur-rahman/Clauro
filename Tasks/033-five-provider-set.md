@@ -13,7 +13,8 @@ proven at its pure seams plus command wiring, not against a socket.
 ## Acceptance criteria
 
 - [x] `cargo test` providers + turn suites green (new keyless tests included) —
-      `src-tauri/src/providers.rs:795` (five builtins), `:801` (ollama `/v1`
+      `src-tauri/src/providers.rs:966` (four builtins + custom = the five
+      first-class providers; counted honestly, review 33), `:972` (ollama `/v1`
       root), `:824`/:833 (agentrouter/google roots), `:899` (blank-key rule),
       `:908` (no auth on blank), `src-tauri/src/turn.rs:1423` (wire omits
       auth); full lib 80/80

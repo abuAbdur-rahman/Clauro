@@ -18,11 +18,17 @@
 //! `for_main_frame_only` — so the frame owns a `__TAURI_INTERNALS__` object.
 //! What keeps it inert is the host half. A document at
 //! `http://artifact.localhost/…` matches none of `is_local_url`'s three
-//! branches (not the `tauri` protocol URL, not the app URL, and the scheme is
-//! registered at the wry level so Tauri's protocol map never names it), and
-//! no capability grants a remote context (pinned by test below) — so every
-//! invoke from the frame fails closed at the ACL check, and the fetch path
-//! never leaves the frame at all (`connect-src 'none'`).
+//! branches (tauri-2.12.1 `webview/mod.rs:1961-2002`): not branch 1, whose
+//! domain is `tauri.localhost`; not branch 2, the app URL; and not branch 3,
+//! whose Windows arm compares the URL's scheme against the **tauri asset
+//! protocol's** scheme — `"http" == "tauri"` is false whatever the protocol
+//! map holds, so registering `artifact` here does not make the frame local.
+//! The message therefore arrives as `Origin::Remote`, and no capability
+//! grants a remote context (pinned by test below) — so every invoke from the
+//! frame fails closed at the ACL check, and the fetch path never leaves the
+//! frame at all (`connect-src 'none'`). Empirically pinned by
+//! `scripts/webview-proofs.mjs` claim 1 (sentinel-effect probe): the frame's
+//! invoke hangs dead-lettered while the shell's own IPC stays healthy.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -38,9 +44,12 @@ use crate::csp;
 /// and never the shell's `index.html` rendered inside the frame.
 pub const PATH_PREFIX: &str = "/__clauro/doc/";
 
-/// The custom scheme the documents are served from (D124). Registered at the
-/// wry level in `lib.rs`, never through Tauri's protocol map — that absence
-/// is load-bearing: it is what keeps the third `is_local_url` branch false.
+/// The custom scheme the documents are served from (D124). Registered in
+/// `lib.rs` through Tauri's public `register_uri_scheme_protocol` hook, which
+/// does add it to Tauri's protocol map — what keeps the third `is_local_url`
+/// branch false is that branch's Windows arm comparing the URL's scheme
+/// against the tauri *asset* protocol's scheme (`http` ≠ `tauri`), not the
+/// map's contents. See the module doc for the full mechanism.
 pub const SCHEME: &str = "artifact";
 
 /// The document origin as the webview resolves it. wry maps a custom scheme
@@ -68,6 +77,10 @@ pub enum DocError {
     /// An empty document would render as a blank frame — the bug the drawer
     /// exists to prevent.
     EmptyDocument,
+    /// A poisoned registry mutex means an earlier publish panicked while
+    /// holding the lock. A typed refusal beats panicking inside a Tauri
+    /// command; the caller sees a failed publish, not a dead shell.
+    Registry { reason: String },
 }
 
 impl std::fmt::Display for DocError {
@@ -75,6 +88,7 @@ impl std::fmt::Display for DocError {
         match self {
             DocError::BadToken { reason } => write!(f, "bad artifact document token: {reason}"),
             DocError::EmptyDocument => write!(f, "refusing to publish an empty artifact document"),
+            DocError::Registry { reason } => write!(f, "artifact registry unavailable: {reason}"),
         }
     }
 }
@@ -120,7 +134,9 @@ impl DocRegistry {
         if html.trim().is_empty() {
             return Err(DocError::EmptyDocument);
         }
-        let mut inner = self.inner.lock().expect("doc registry poisoned");
+        let mut inner = self.inner.lock().map_err(|_| DocError::Registry {
+            reason: "the document registry lock is poisoned".to_string(),
+        })?;
         if !inner.docs.contains_key(nonce) {
             inner.order.push_back(nonce.to_string());
         }
@@ -142,12 +158,9 @@ impl DocRegistry {
     }
 
     pub fn resolve(&self, token: &str) -> Option<PublishedDoc> {
-        self.inner
-            .lock()
-            .expect("doc registry poisoned")
-            .docs
-            .get(token)
-            .cloned()
+        // A poisoned lock means an earlier holder panicked; resolving
+        // nothing (→ 404) fails closed instead of panicking the handler.
+        self.inner.lock().ok()?.docs.get(token).cloned()
     }
 }
 
@@ -158,9 +171,10 @@ pub fn doc_url(token: &str) -> String {
     format!("{ORIGIN}{PATH_PREFIX}{token}")
 }
 
-/// Route a document-path request. `None` means "not our route" — the caller
-/// falls through to the asset resolver. Any path under the prefix is ours,
-/// including malformed ones: those answer 404 rather than serving the shell.
+/// Route a document-path request. `None` means "not under the prefix" — the
+/// caller answers 404, never the shell bundle. Any path under the prefix is
+/// ours, including malformed ones: those answer 404 rather than serving the
+/// shell.
 pub fn doc_route(registry: &DocRegistry, path: &str) -> Option<Response<Vec<u8>>> {
     let rest = path.strip_prefix(PATH_PREFIX)?;
     Some(match registry.resolve(rest) {
@@ -194,55 +208,27 @@ fn not_found_response() -> Response<Vec<u8>> {
         .expect("static not-found response headers are literal")
 }
 
-/// The static half of the route: byte-for-byte what Tauri's built-in handler
-/// answers for an asset — configured headers, the window origin, the asset's
-/// mime type and its `csp_header`, which is how the shell keeps its own
-/// policy (D78). The tuple is the public `AssetResolver`'s payload, taken
-/// field by field so this function stays constructible in tests without
-/// naming Tauri's types.
-pub fn static_response(
-    asset: Option<(Vec<u8>, String, Option<String>)>,
-    origin: &str,
-) -> Response<Vec<u8>> {
-    match asset {
-        Some((bytes, mime_type, csp_header)) => {
-            let mut builder = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, mime_type)
-                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
-            if let Some(csp) = csp_header {
-                builder = builder.header(header::CONTENT_SECURITY_POLICY, csp);
-            }
-            builder
-                .body(bytes)
-                .expect("static asset response headers come from the resolver")
-        }
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(b"not found".to_vec())
-            .expect("static not-found response headers are literal"),
+/// One entry point for the whole `artifact` scheme (D123/D124): documents
+/// under [`PATH_PREFIX`] answer from the registry, and **everything else is a
+/// 404** — the shell bundle is never served under this scheme. The previous
+/// handler delegated unknown paths to Tauri's asset resolver, which proxied
+/// the shell's `index.html` (with the shell's own CSP) into the artifact
+/// origin; self-navigation (D90) made that reachable from artifact script.
+/// The registry being absent mid-setup fails closed the same way.
+pub fn route(registry: Option<&DocRegistry>, path: &str) -> Response<Vec<u8>> {
+    match registry.and_then(|registry| doc_route(registry, path)) {
+        Some(response) => response,
+        None => not_found_response(),
     }
 }
 
-/// One entry point for the whole `artifact` scheme (D123/D124): documents
-/// under [`PATH_PREFIX`] answer from the registry — never from the asset
-/// resolver's `index.html` fallback — and everything else is delegated to the
-/// resolver so an asset read under this scheme behaves exactly as it does
-/// under the shell's.
+/// The scheme handler: the registry state plus the request path, nothing
+/// else. No asset resolver, no fall-through.
 pub fn handle_request(app: &tauri::AppHandle, request: &Request<Vec<u8>>) -> Response<Vec<u8>> {
-    let path = request.uri().path();
-    if let Some(response) = app
-        .try_state::<DocRegistry>()
-        .and_then(|registry| doc_route(&registry, path))
-    {
-        return response;
-    }
-    let asset = app
-        .asset_resolver()
-        .get(path.to_string())
-        .map(|a| (a.bytes, a.mime_type, a.csp_header));
-    static_response(asset, ORIGIN)
+    route(
+        app.try_state::<DocRegistry>().as_deref(),
+        request.uri().path(),
+    )
 }
 
 #[cfg(test)]
@@ -300,6 +286,28 @@ mod tests {
         );
     }
 
+    /// A poisoned mutex means an earlier holder panicked mid-publish. The
+    /// command boundary must see a typed refusal, never a panic (D55: nothing
+    /// throws across the tool boundary).
+    #[test]
+    fn a_poisoned_registry_fails_typed_not_with_a_panic() {
+        let registry = DocRegistry::default();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = registry.inner.lock().unwrap();
+            panic!("simulated holder panic");
+        }));
+        assert!(panicked.is_err(), "the poisoning step must panic");
+        assert!(registry.inner.is_poisoned());
+        let err = registry
+            .publish(NONCE, "<p>x</p>")
+            .expect_err("a poisoned registry must refuse");
+        assert!(matches!(err, DocError::Registry { .. }), "{err:?}");
+        assert!(
+            registry.resolve(NONCE).is_none(),
+            "a poisoned registry resolves nothing"
+        );
+    }
+
     #[test]
     fn the_document_response_carries_one_header_policy_and_the_body() {
         let registry = DocRegistry::default();
@@ -344,7 +352,8 @@ mod tests {
             assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
             assert_eq!(get(&res, header::CONTENT_SECURITY_POLICY), "", "{path}");
         }
-        // Not under the prefix: not ours.
+        // Not under the prefix: not `doc_route`'s — and `route` answers 404
+        // for exactly those (pinned by the shell-bundle test above).
         assert!(doc_route(&registry, "/index.html").is_none());
         assert!(doc_route(&registry, "/assets/main.js").is_none());
         assert!(doc_route(&registry, "/").is_none());
@@ -377,48 +386,45 @@ mod tests {
         assert_eq!(registry.inner.lock().unwrap().order.len(), 1);
     }
 
-    // ── static delegation: byte-for-byte the built-in handler's contract ──
-    // (tauri-2.12.1 protocol/tauri.rs get_response): configured headers, the
-    // window origin, the asset's own mime type and — load-bearing — the
-    // asset's `csp_header`, which is how the shell keeps ITS policy (D78).
+    // ── the scheme serves exactly the registry, nothing else ──────────────
+    // The old handler delegated unknown paths to Tauri's asset resolver, so
+    // `http://artifact.localhost/index.html` answered with the SHELL's HTML
+    // under the shell's CSP (review 13, item 2). Production frontend code
+    // under the artifact origin is the exact thing D124 exists to prevent —
+    // `route` is the fall-through removed, pinned from every angle.
 
     #[test]
-    fn static_response_carries_the_assets_type_policy_and_origin() {
-        let body = b"<!doctype html><html></html>".to_vec();
-        let res = static_response(
-            Some((
-                body.clone(),
-                "text/html".to_string(),
-                Some("default-src 'self'".to_string()),
-            )),
-            ORIGIN,
-        );
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(get(&res, header::CONTENT_TYPE), "text/html");
-        assert_eq!(
-            get(&res, header::CONTENT_SECURITY_POLICY),
-            "default-src 'self'"
-        );
-        assert_eq!(get(&res, header::ACCESS_CONTROL_ALLOW_ORIGIN), ORIGIN);
-        assert_eq!(res.body().as_slice(), body.as_slice());
+    fn nothing_outside_the_doc_prefix_is_served_never_the_shell_bundle() {
+        let registry = DocRegistry::default();
+        registry.publish(NONCE, "<p>x</p>").expect("publish");
+        for path in [
+            "/",
+            "/index.html",
+            "/assets/main.js",
+            "/__clauro/",
+            "/__clauro/index.html",
+        ] {
+            let res = route(Some(&registry), path);
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(res.body().as_slice(), b"not found", "{path}");
+            assert_eq!(
+                get(&res, header::CONTENT_SECURITY_POLICY),
+                "",
+                "{path} must not carry any policy — it carries no content"
+            );
+        }
+        // The document itself still serves.
+        let ok = route(Some(&registry), &format!("{PATH_PREFIX}{NONCE}"));
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 
     #[test]
-    fn static_response_omits_the_policy_header_when_the_asset_has_none() {
-        let res = static_response(
-            Some((b"var x = 1;".to_vec(), "text/javascript".to_string(), None)),
-            ORIGIN,
-        );
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(get(&res, header::CONTENT_TYPE), "text/javascript");
-        assert_eq!(get(&res, header::CONTENT_SECURITY_POLICY), "");
-    }
-
-    #[test]
-    fn static_response_is_a_404_when_the_asset_is_missing() {
-        let res = static_response(None, ORIGIN);
+    fn no_registry_means_nothing_is_served() {
+        // Mid-setup the state is absent; a document path must 404 rather
+        // than reach any resolver (fail closed, no fall-through).
+        let res = route(None, &format!("{PATH_PREFIX}{NONCE}"));
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(res.body().as_slice(), b"not found".as_slice());
+        assert_eq!(res.body().as_slice(), b"not found");
     }
 
     // ── D124: the document host is remote to Tauri's IPC ─────────────────
@@ -427,14 +433,20 @@ mod tests {
     // `__TAURI_INTERNALS__` object. What keeps it inert is the host half:
     // the document URL must match none of `is_local_url`'s three branches,
     // and no capability may grant a remote context — then every invoke from
-    // the frame fails closed at `on_message`'s ACL check.
+    // the frame fails closed at `on_message`'s ACL check. Pinned empirically
+    // by `scripts/webview-proofs.mjs` claim 1 (sentinel-effect probe,
+    // 2026-10-12: no effect from the frame while the shell's IPC is healthy).
 
     #[test]
     fn the_document_host_is_never_the_shells() {
         let url = doc_url(NONCE);
-        // Branch 1 (`tauri_protocol_url`) and branch 2 (app URL) both resolve
-        // to the shell host; branch 3 only knows protocols Tauri itself was
-        // asked to register, and this scheme is registered at the wry level.
+        // Branch 1 (`tauri_protocol_url`, domain `tauri.localhost`) and
+        // branch 2 (app URL) both resolve to the shell host; branch 3's
+        // Windows arm compares the URL's scheme against the tauri ASSET
+        // protocol's scheme — `http` != `tauri` — so the frame is Remote
+        // whatever the protocol map holds. On non-Windows floors branch 3 is
+        // `contains_key("artifact")` instead, which WOULD match: that path
+        // is recorded in review 13 as unverified beyond the Windows floor.
         assert!(!url.contains("tauri.localhost"), "{url}");
         assert!(!url.contains("localhost:1420"), "{url}");
         assert_eq!(

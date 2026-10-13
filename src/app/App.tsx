@@ -20,8 +20,11 @@ import {
 } from "../features/shell/hotkey";
 import { useSettingsStore } from "../features/shell/settings";
 import { useArtifactContent } from "../features/artifact/live";
+import { useDrawerStore, artifactGate, detectEngineGate } from "../features/artifact/store";
+import { exportThreadDownload } from "../features/retention/export";
+import type { PaletteChat } from "../features/shell/CommandPalette";
 import { useTheme } from "../features/shell/usetheme";
-import { TitleBar } from "./TitleBar";
+import { TitleBar, toggleMaximizeWindow } from "./TitleBar";
 
 // Task 030: non-home views load on demand so first paint transforms the shell
 // only. Overlays resolve behind a null fallback — they render nothing while
@@ -103,13 +106,6 @@ const THREAD_IDS: readonly string[] = Object.values(THREADS_BY_PROJECT).flatMap(
   ts.map((t) => t.id),
 );
 
-/** Attach only (Task 032 U3 owns it: file picker or disabled-with-reason).
- *  Every other App-level button is wired to a real handler or is a child-owned
- *  disabled-with-reason control — grep onClick/noop before adding callers. */
-function noop(): void {
-  // Wired to a real handler by its owning task.
-}
-
 /**
  * Home suggestion chips. Text mirrors SEED_SUGGESTIONS verbatim, restated
  * here because the real shell must never import the mock seed
@@ -123,23 +119,16 @@ const HOME_SUGGESTIONS: readonly string[] = [
 ];
 
 /**
- * Fill the composer's controlled draft without touching the Composer: set
- * through the native setter so React's value tracker sees the change, then
- * dispatch `input` so its onChange writes state. Focus follows (html:368
- * `chip` action focuses the composer after filling).
+ * Fill the composer's draft through the store — the per-thread record is the
+ * source of truth and Composer adopts external writes (review 30's DOM-
+ * actuation NIT: no native setter, no synthetic `input` event). Focus follows
+ * (html:368 `chip` action focuses the composer after filling); focus is a
+ * viewport concern, not state, so it stays a direct DOM call.
  */
-function fillComposerDraft(text: string): void {
+function fillComposerDraft(threadId: string, text: string): void {
+  useThreadStore.getState().setComposerDraft(threadId, text);
   const box = document.querySelector('textarea[aria-label="Message"]');
-  if (!(box instanceof HTMLTextAreaElement)) return;
-  // eslint-disable-next-line @typescript-eslint/unbound-method -- grabbing the native setter is the entire point (bypass React's value tracker); it is rebound via Reflect.apply below, never called unbound.
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-  if (setter !== undefined) {
-    Reflect.apply(setter, box, [text]);
-  } else {
-    box.value = text;
-  }
-  box.dispatchEvent(new Event("input", { bubbles: true }));
-  box.focus();
+  if (box instanceof HTMLTextAreaElement) box.focus();
 }
 
 const DEMO_PROJECTS = [
@@ -294,7 +283,28 @@ export default function App() {
   // dialog opens from the grid button and creates into `customProjects`
   // (real path only — the mock seed owns its projects). Declared before the
   // rail derivations + indicator memo below because both read them.
-  const [memoryOff, setMemoryOff] = useState(false);
+  // The Memory pane's persisted flag is this default (review 31: the pref had
+  // zero readers): read on boot, written through on every toggle so the pane
+  // and the shell can never disagree after a remount.
+  const [memoryOff, setMemoryOff] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("clauro.memory.enabled") === "false";
+    } catch {
+      // Private-mode storage failure: default to enabled, never break boot.
+      return false;
+    }
+  });
+  function toggleMemory(): void {
+    setMemoryOff((off) => {
+      const next = !off;
+      try {
+        window.localStorage.setItem("clauro.memory.enabled", String(!next));
+      } catch {
+        // Best-effort persistence; the session state still flips.
+      }
+      return next;
+    });
+  }
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [customProjects, setCustomProjects] = useState<
     readonly { id: string; name: string; desc?: string; updatedAt?: string }[]
@@ -302,37 +312,169 @@ export default function App() {
   // The thread on screen (Task 031 T8): home/new-chat targets THREAD, rail
   // selection targets the clicked id — the old code always rendered THREAD.
   const [activeThreadId, setActiveThreadId] = useState<string>(THREAD);
-  const railChats: readonly RailThread[] | undefined = mockSeed?.rail.chats;
-  const railProjects: readonly { id: string; name: string; desc?: string; updatedAt?: string }[] =
-    mockSeed?.rail.projects ?? [...DEMO_PROJECTS, ...customProjects];
+  const statusOf = useThreadStore((s) => s.statusOf);
+  const running = useThreadStore((s) => s.running);
+  const threadStates = useThreadStore((s) => s.threads);
+  // Rail rows carry the session's store overrides (review 31 #1): rename and
+  // pin win over the seed row, removed rows disappear everywhere the rail and
+  // the palette render them. On the real path (no seed) the rail reflects the
+  // thread store — opening a thread is what puts it on the rail, so the
+  // row-menu actions act on rows the user can actually see.
+  const railChats = useMemo<readonly RailThread[]>(() => {
+    // The static project list owns the home thread's title ("First thread",
+    // Task 031 T8); the store only supplies read-state and session overrides.
+    // Deriving the row's title from the store instead dropped the home thread
+    // back to the "New chat" placeholder whenever the store held no title.
+    // (railThreadsByProject is declared further down, so its source expression
+    // is inlined here to keep this memo free of a TDZ reference.)
+    const threadsByProjectSource = mockSeed?.rail.threadsByProject ?? THREADS_BY_PROJECT;
+    const knownTitle = (id: string): string | undefined => {
+      for (const ts of Object.values(threadsByProjectSource)) {
+        const hit = ts.find((t) => t.id === id);
+        if (hit !== undefined) return hit.title;
+      }
+      return undefined;
+    };
+    const base: readonly RailThread[] =
+      mockSeed?.rail.chats ??
+      Object.entries(threadStates).flatMap(([id, st]) => {
+        if (st === undefined) return [];
+        return [
+          {
+            id,
+            title: st.title ?? knownTitle(id) ?? "New chat",
+            ...(st.updatedAt === 0 ? {} : { updated: st.updatedAt }),
+            ...(st.pinned === null ? {} : { pinned: st.pinned }),
+          },
+        ];
+      });
+    return base
+      .filter((row) => threadStates[row.id]?.removed !== true)
+      .map((row) => {
+        const st = threadStates[row.id];
+        if (st === undefined) return row;
+        return {
+          ...row,
+          title: st.title ?? row.title,
+          ...(st.pinned === null ? {} : { pinned: st.pinned }),
+        };
+      });
+    // railThreadsByProject below reads the same mockSeed/threadStates pair,
+    // so its identity is stable across exactly these two inputs.
+  }, [mockSeed, threadStates]);
+  // Custom projects survive the mock seed landing (review 31 #16: the seed
+  // list used to replace them wholesale).
+  const railProjects = useMemo<
+    readonly { id: string; name: string; desc?: string; updatedAt?: string }[]
+  >(
+    () => [
+      ...(mockSeed?.rail.projects ?? DEMO_PROJECTS),
+      ...customProjects,
+    ],
+    [mockSeed, customProjects],
+  );
+  // Review 31 #13: project rename/instructions land in a session-local edit
+  // map — the seed and demo lists are read-only sources and no projects
+  // store or Tauri command backs a durable write yet. Edits survive
+  // navigation for the rest of the session; nothing touches disk.
+  const [projectEdits, setProjectEdits] = useState<
+    Partial<Record<string, { name?: string; instructions?: string }>>
+  >({});
+  // Every project surface (rail, palette, grid, detail, title bar) reads the
+  // list through the edit map, so a rename lands everywhere at once.
+  const projectList = useMemo(
+    () =>
+      railProjects.map((p) => {
+        const name = projectEdits[p.id]?.name;
+        return name === undefined || name === p.name ? p : { ...p, name };
+      }),
+    [railProjects, projectEdits],
+  );
   const railThreadsByProject: Readonly<Record<string, readonly { id: string; title: string }[]>> =
     mockSeed?.rail.threadsByProject ?? THREADS_BY_PROJECT;
   // Indicator state for every rendered thread id (Task 029 B11) via the
   // store's `statusOf`. `statusOf` itself is a stable reference, so reactivity
   // comes from the `running`/`threads` slices; the map is memoized so the
   // selector identity stays stable (a fresh object per snapshot loops React).
-  const statusOf = useThreadStore((s) => s.statusOf);
-  const running = useThreadStore((s) => s.running);
-  const threadStates = useThreadStore((s) => s.threads);
   const statusByThread = useMemo<Record<string, ThreadStatus>>(() => {
     const out: Record<string, ThreadStatus> = {};
-    const ids = railChats === undefined ? THREAD_IDS : railChats.map((c) => c.id);
-    // The active thread may be a fresh new-chat id absent from the rail
-    // lists — it still gets an indicator entry (unknown reads idle anyway).
-    for (const id of new Set([...ids, activeThreadId])) out[id] = statusOf(id);
+    // Rail rows, the static demo sub-threads, and the active thread (which
+    // may be a fresh new-chat id absent from both lists — unknown reads idle
+    // anyway) all get an indicator entry.
+    const ids = new Set([...railChats.map((c) => c.id), ...THREAD_IDS, activeThreadId]);
+    for (const id of ids) out[id] = statusOf(id);
     return out;
     // Reactive inputs are the `running` + `threads` slices subscribed above:
     // `statusOf` reads them from the store snapshot, so listing them here
     // invalidates the map exactly when indicator state can change.
-    // `railChats` flips once when the mock seed lands (never on real).
+    // `railChats` flips when the mock seed lands or overrides change.
     // `activeThreadId` covers fresh new-chat ids absent from the rail lists.
   }, [statusOf, running, threadStates, railChats, activeThreadId]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [view, setView] = useState<View>({ name: "home" });
-  const [providersOpen, setProvidersOpen] = useState(false);
+  // The providers surface opens from three places (home button, rail gear,
+  // settings CTA) — its state lives in the settings store so every opener,
+  // including the dialog's own CTA, reaches the same surface (review 31 #14).
+  const providersOpen = useSettingsStore((s) => s.providersOpen);
+  const openProviders = useSettingsStore((s) => s.openProviders);
+  const closeProviders = useSettingsStore((s) => s.closeProviders);
   const openSettings = useSettingsStore((s) => s.openSettings);
   const displayName = useSettingsStore((s) => s.displayName);
+  // Rail Export's outcome line (review 31): success names the file; a
+  // blocked/failed export says why instead of failing silently.
+  const [shellNotice, setShellNotice] = useState<string | null>(null);
   const artifactContent = useArtifactContent((s) => s.threads[activeThreadId]);
+  // The engine gate rides the runtime verdict, not a hardcoded claim
+  // (review 33: every caller hardcoded windows+proven). Derived per render,
+  // identity-stable on the verdict: the 021 probe can record any time after
+  // mount, so a mount-only memo would go stale.
+  const gate = detectEngineGate();
+  const engine = useMemo(
+    () => ({ platform: gate.platform, opaqueProven: gate.opaqueProven }),
+    [gate.platform, gate.opaqueProven],
+  );
+  // Review 32 (startup perf): React.lazy resolves on first render, so an
+  // always-mounted overlay fetches its chunk at boot even though it renders
+  // nothing while closed. Each overlay mounts on first need instead; the
+  // latches never reset, so a reopen never re-suspends.
+  const settingsOpen = useSettingsStore((s) => s.open);
+  const [settingsEverOpened, setSettingsEverOpened] = useState(false);
+  useEffect(() => {
+    if (settingsOpen) setSettingsEverOpened(true);
+  }, [settingsOpen]);
+  const [paletteEverOpened, setPaletteEverOpened] = useState(false);
+  useEffect(() => {
+    if (paletteOpen) setPaletteEverOpened(true);
+  }, [paletteOpen]);
+  // The drawer mounts when there is drawer work: a non-empty row for this
+  // thread (D121), produced content, a stored notice, or a disabled gate —
+  // the D45 notice aside is permanent UI the user has to be able to read.
+  const drawerEntry = useDrawerStore((s) => s.drawers[activeThreadId]);
+  const drawerNeeded =
+    (drawerEntry !== undefined && drawerEntry.state !== "empty") ||
+    drawerEntry?.notice != null ||
+    artifactContent !== null ||
+    !artifactGate(engine).enabled;
+  // Delete-row confirmation (review 31 #1): destructive means confirm first.
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
+  // Palette contents (review 31 #13): the same rail rows the shell renders,
+  // overrides included, so a renamed chat shows its new title everywhere.
+  const paletteChats = useMemo<readonly PaletteChat[]>(
+    () => railChats.map((c) => ({ id: c.id, title: c.title })),
+    [railChats],
+  );
+
+  // Rail Export shares the Settings → Data pipeline (review 31): same
+  // key-material guard, same sanitised filename, typed outcome — success and
+  // failure both land in the shell notice instead of vanishing.
+  async function runExport(id: string): Promise<void> {
+    const outcome = await exportThreadDownload(id, threadTitle(id) ?? "chat", "md");
+    setShellNotice(
+      outcome.ok
+        ? `Exported ${String(outcome.blocks)} blocks as ${outcome.filename ?? "export"}.`
+        : (outcome.error ?? "Export failed."),
+    );
+  }
   useSummonHotkey(() => {
     setPaletteOpen(true);
   });
@@ -353,12 +495,40 @@ export default function App() {
   useCompactHotkey(() => {
     window.dispatchEvent(new CustomEvent("clauro:compact-request"));
   });
-  // TitleBar.tsx is read-only: drive its Maximize caption affordance through
-  // the button it renders instead of duplicating the Tauri toggle here.
+  // TitleBar's module-level toggle (same handler the caption button uses) —
+  // no DOM query, no duplicated Tauri logic (review 30 NIT).
   useMaximizeHotkey(() => {
-    const btn = document.querySelector('button[aria-label="Maximize"]');
-    if (btn instanceof HTMLButtonElement) btn.click();
+    void toggleMaximizeWindow();
   });
+
+  // Palette intents (review 31 #2): the palette cannot navigate — this shell
+  // owns `view` — so New chat / chat entries / project entries dispatch
+  // events and only here do they change what is on screen. The handlers touch
+  // stable store setters only, so a mount-time registration is safe.
+  useEffect(() => {
+    const onOpenChat = (e: Event): void => {
+      // Runtime `detail` is null for a bare CustomEvent even though the DOM
+      // types say otherwise, so the cast keeps null in the type.
+      const detail = (e as CustomEvent<{ threadId?: string } | null>).detail;
+      const id = detail?.threadId;
+      if (id === undefined) goNewChat();
+      else openThreadView(id);
+    };
+    const onOpenProject = (e: Event): void => {
+      const id = (e as CustomEvent<{ id?: string } | null>).detail?.id;
+      if (id !== undefined) setView({ name: "project", id });
+    };
+    window.addEventListener("clauro:open-chat", onOpenChat);
+    window.addEventListener("clauro:open-project", onOpenProject);
+    return () => {
+      window.removeEventListener("clauro:open-chat", onOpenChat);
+      window.removeEventListener("clauro:open-project", onOpenProject);
+    };
+    // Mount-time on purpose: goNewChat/openThreadView only touch stable store
+    // setters and state setters, so the first-render closures stay correct;
+    // re-subscribing per render would re-bind the window listeners every
+    // frame. (No deps-lint rule is registered in this config.)
+  }, []);
 
   // Device theme, followed live and user-overridable (Appearance pane):
   // white surfaces only exist in light mode. Previously a hardcoded `false`
@@ -439,9 +609,16 @@ export default function App() {
     );
   }
 
-  const project = view.name === "project" ? railProjects.find((p) => p.id === view.id) : undefined;
-  const detail =
+  const project =
+    view.name === "project" ? projectList.find((p) => p.id === view.id) : undefined;
+  const detailBase =
     view.name === "project" && project ? mockDetailProps(mockSeed?.rail ?? null, project.id) : null;
+  const savedInstructions =
+    project === undefined ? undefined : projectEdits[project.id]?.instructions;
+  const detail =
+    detailBase === null || savedInstructions === undefined
+      ? detailBase
+      : { ...detailBase, instructions: savedInstructions };
   const title =
     view.name === "chat"
       ? (threadTitle(activeThreadId) ?? "New chat")
@@ -452,7 +629,10 @@ export default function App() {
           : undefined;
 
   function threadTitle(id: string): string | undefined {
-    const flat = railChats?.find((t) => t.id === id)?.title;
+    // Store override (review 31 #1) beats whichever list owns the row.
+    const override = threadStates[id]?.title;
+    if (override != null) return override;
+    const flat = railChats.find((t) => t.id === id)?.title;
     if (flat !== undefined) return flat;
     for (const ts of Object.values(railThreadsByProject)) {
       const hit = ts.find((t) => t.id === id)?.title;
@@ -509,16 +689,76 @@ export default function App() {
   return (
     <div className="flex h-dvh w-screen min-w-[900px] flex-col overflow-hidden bg-background font-sans text-sm text-foreground">
       <TitleBar title={title} />
-      <Suspense fallback={null}>
-        <CommandPalette state={{ turnRunning: false }} open={paletteOpen} />
-      </Suspense>
-      <Suspense fallback={null}>
-        <SettingsDialog threadId={activeThreadId} />
-      </Suspense>
+      {shellNotice !== null && (
+        <p
+          role="status"
+          data-testid="shell-notice"
+          className="border-b border-border px-3 py-1 text-xs text-muted-foreground"
+        >
+          {shellNotice}
+        </p>
+      )}
+      {paletteEverOpened && (
+        <Suspense fallback={null}>
+          <CommandPalette
+            state={{ turnRunning: running.length > 0 }}
+            open={paletteOpen}
+            chats={paletteChats}
+            projects={projectList}
+          />
+        </Suspense>
+      )}
+      {settingsEverOpened && (
+        <Suspense fallback={null}>
+          <SettingsDialog threadId={activeThreadId} title={title ?? "New chat"} />
+        </Suspense>
+      )}
+      {/* Rail Delete confirms first (review 31 #1); the override is
+          session-local until a host `delete_thread` command exists (thread.ts). */}
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setPendingDelete(null);
+        }}
+      >
+        <DialogContent aria-label="Delete chat" className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="text-sm">Delete chat?</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            {pendingDelete?.title ?? "This chat"} disappears from the rail for the rest of this
+            session. Nothing on disk is touched yet.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setPendingDelete(null);
+              }}
+              className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid="delete-thread-confirm"
+              onClick={() => {
+                if (pendingDelete !== null) {
+                  useThreadStore.getState().removeThread(pendingDelete.id);
+                }
+                setPendingDelete(null);
+              }}
+              className="rounded-md border border-destructive px-3 py-1.5 text-xs text-destructive hover:bg-accent"
+            >
+              Delete
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog
         open={providersOpen}
         onOpenChange={(next) => {
-          if (!next) setProvidersOpen(false);
+          if (!next) closeProviders();
         }}
       >
         <DialogContent
@@ -540,7 +780,7 @@ export default function App() {
             the center column to zero (proven in-browser 2026-10-07). */}
         <div className="shrink-0 self-stretch overflow-hidden">
           <ProjectsRail
-            projects={railProjects}
+            projects={projectList}
             memoryOff={memoryOff}
             threadsByProject={railThreadsByProject}
             chats={railChats}
@@ -565,6 +805,20 @@ export default function App() {
             onOpenSettings={() => {
               openSettings("providers");
             }}
+            onPinThread={(id, pinned) => {
+              // Session-local override (thread.ts): no host command yet, so
+              // the pin lives in the store and rides the railChats derivation.
+              useThreadStore.getState().setPinned(id, pinned);
+            }}
+            onRenameThread={(id, nextTitle) => {
+              useThreadStore.getState().renameThread(id, nextTitle);
+            }}
+            onExportThread={(id) => {
+              void runExport(id);
+            }}
+            onDeleteThread={(id) => {
+              setPendingDelete({ id, title: threadTitle(id) ?? "chat" });
+            }}
           />
         </div>
         <div className="min-h-0 min-w-0 flex-1 p-4">
@@ -583,10 +837,7 @@ export default function App() {
                     threadId={THREAD}
                     memoryOff={memoryOff}
                     onSend={handleHomeSend}
-                    onAttach={noop}
-                    onMemoryToggle={() => {
-                      setMemoryOff((v) => !v);
-                    }}
+                    onMemoryToggle={toggleMemory}
                   />
                   <p className="mt-2 text-center text-xs text-muted-foreground">
                     Clauro runs on your machine. Double-check important answers.
@@ -598,7 +849,7 @@ export default function App() {
                       key={suggestion}
                       type="button"
                       onClick={() => {
-                        fillComposerDraft(suggestion);
+                        fillComposerDraft(activeThreadId, suggestion);
                       }}
                       className="rounded-full border border-border px-3 py-1.5 text-xs hover:bg-accent"
                     >
@@ -620,7 +871,7 @@ export default function App() {
                     type="button"
                     className="text-xs text-muted-foreground hover:underline"
                     onClick={() => {
-                      setProvidersOpen(true);
+                      openProviders();
                     }}
                   >
                     Providers
@@ -632,7 +883,7 @@ export default function App() {
           {view.name === "projects" && (
             <Suspense fallback={<ViewSkeleton label="Loading projects" />}>
               <ProjectsGrid
-                projects={railProjects}
+                projects={projectList}
                 chatCountByProject={mockSeed?.rail.chatCountByProject}
                 onNew={() => {
                   setProjectDialogOpen(true);
@@ -664,6 +915,18 @@ export default function App() {
                 contextUsed="0%"
                 chats={detail.chats}
                 files={detail.files}
+                onRename={(name) => {
+                  setProjectEdits((prev) => ({
+                    ...prev,
+                    [project.id]: { ...prev[project.id], name },
+                  }));
+                }}
+                onSaveInstructions={(text) => {
+                  setProjectEdits((prev) => ({
+                    ...prev,
+                    [project.id]: { ...prev[project.id], instructions: text },
+                  }));
+                }}
                 onOpenChat={(id) => {
                   openThreadView(id);
                 }}
@@ -697,15 +960,17 @@ export default function App() {
             the Tauri runtime check exists (021). Windows-verified is the dev
             default per AGENTS.md §8a. The artifact content rides the
             producer's store (D121); empty means nothing has been produced. */}
-        <Suspense fallback={null}>
-          <ArtifactDrawer
-            threadId={activeThreadId}
-            engine={{ platform: "windows", opaqueProven: true }}
-            source={artifactContent?.source ?? ""}
-            mediaType={artifactContent?.mediaType ?? "text/html"}
-            title={artifactContent?.title ?? ""}
-          />
-        </Suspense>
+        {drawerNeeded && (
+          <Suspense fallback={null}>
+            <ArtifactDrawer
+              threadId={activeThreadId}
+              engine={engine}
+              source={artifactContent?.source ?? ""}
+              mediaType={artifactContent?.mediaType ?? "text/html"}
+              title={artifactContent?.title ?? ""}
+            />
+          </Suspense>
+        )}
       </div>
     </div>
   );

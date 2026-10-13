@@ -1,6 +1,8 @@
 import * as React from "react";
 
-const MOBILE_BREAKPOINT = 768;
+/** UI-GUIDE §"Below 800px": the collapse rule the shell and this hook share —
+ *  pinned to that document by use-mobile.test.ts, so the two cannot drift. */
+const MOBILE_BREAKPOINT = 800;
 
 export function useIsMobile(): boolean {
   const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined);

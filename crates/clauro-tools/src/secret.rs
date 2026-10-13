@@ -14,7 +14,9 @@ pub fn looks_secret(s: &str) -> bool {
     if s.contains("-----BEGIN PRIVATE KEY-----") || s.contains("-----BEGIN RSA PRIVATE KEY-----") {
         return true;
     }
-    // Live key/token prefixes.
+    // Live key/token prefixes. A prefix counts only at a word boundary:
+    // real keys stand alone, while `task-x` / `ask-for` must not be eaten by
+    // the `sk-` check (audit 10 NIT — silent refusals turn the guard off).
     for prefix in [
         "sk-",
         "ghp_",
@@ -26,18 +28,38 @@ pub fn looks_secret(s: &str) -> bool {
         "xoxs-",
         "AKIA",
     ] {
-        if s.contains(prefix) {
-            return true;
+        let mut from = 0;
+        while let Some(at) = s[from..].find(prefix) {
+            let start = from + at;
+            let boundary = start == 0
+                || !s[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric());
+            if boundary {
+                return true;
+            }
+            from = start + 1;
         }
     }
-    // `passphrase` / private-key words adjacent to an assignment.
+    // `passphrase` / private-key words adjacent to an assignment. The window
+    // is 12 BYTES, so its cut can fall inside a multi-byte char — clamp to a
+    // char boundary instead of slicing blind. A mid-char index here once
+    // panicked while the caller's shared Store mutex was held, poisoning it
+    // and bricking every handler until restart (audit 10, critical 13), so
+    // this predicate must be panic-free on any input at any index.
     let lower = s.to_lowercase();
     for word in ["passphrase", "private key", "private_key"] {
         if let Some(pos) = lower.find(word) {
-            let after = &lower[pos + word.len()
-                ..pos + word.len() + 12.min(lower.len().saturating_sub(pos + word.len()))];
-            if after.contains('=') || after.contains(':') {
-                return true;
+            let start = pos + word.len();
+            let mut end = (start + 12).min(lower.len());
+            while end > start && !lower.is_char_boundary(end) {
+                end -= 1;
+            }
+            if let Some(after) = lower.get(start..end) {
+                if after.contains('=') || after.contains(':') {
+                    return true;
+                }
             }
         }
     }

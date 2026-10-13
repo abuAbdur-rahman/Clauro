@@ -37,7 +37,6 @@ import {
 } from "./palette";
 import { Kbd, SETTINGS_SECTION_ICONS } from "../settings/SettingsDialog";
 import { useSettingsStore, type SettingsSection } from "./settings";
-import { useThreadStore } from "../catalogue/thread";
 import { useTheme } from "./usetheme";
 
 export interface PaletteChat {
@@ -83,6 +82,23 @@ const SECTION_ICONS: Record<PaletteSection, LucideIcon> = {
   Projects: Folder,
   Settings: SettingsIcon,
 };
+
+/**
+ * Opening a thread is navigation, not store mutation. App owns the on-screen
+ * view as local state (review 31, finding 2), so the palette can only express
+ * intent — the same convention as `clauro:open-project` for projects and
+ * `clauro:compact-request` for the turn loop. The shell listens and calls its
+ * own `openThreadView`, which flips `view`, sets `activeThreadId` and marks
+ * the thread read.
+ */
+export const OPEN_CHAT_EVENT = "clauro:open-chat";
+
+/** Ask the shell to open `threadId` (undefined = a brand-new chat). */
+function requestOpenChat(threadId?: string): void {
+  window.dispatchEvent(
+    new CustomEvent(OPEN_CHAT_EVENT, { detail: threadId === undefined ? {} : { threadId } }),
+  );
+}
 
 function itemIcon(item: PaletteItem): LucideIcon {
   if (item.id.startsWith("settings:")) {
@@ -162,7 +178,8 @@ export function CommandPalette({
 
   function runBuiltin(id: string): void {
     if (id === "action:new-chat") {
-      useThreadStore.getState().openThread(`thread-${String(Date.now())}`);
+      // Intent, not store mutation: the shell creates the thread and shows it.
+      requestOpenChat();
     } else if (id === "action:toggle-theme") {
       setMode(mode === "dark" ? "light" : "dark");
     } else if (id === "action:open-settings") {
@@ -177,7 +194,8 @@ export function CommandPalette({
       // Intent only — compaction dispatch belongs to the turn loop (023).
       window.dispatchEvent(new CustomEvent("clauro:compact-request"));
     } else if (id.startsWith("chat:")) {
-      useThreadStore.getState().openThread(id.slice("chat:".length));
+      // Intent, not store mutation: the shell navigates to that thread.
+      requestOpenChat(id.slice("chat:".length));
     } else if (id.startsWith("project:")) {
       // Intent only — view switching belongs to the App shell owner.
       window.dispatchEvent(

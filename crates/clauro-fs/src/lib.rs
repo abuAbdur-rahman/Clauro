@@ -34,6 +34,15 @@ pub enum PathError {
     /// The canonicalised path is not under the canonicalised root. This is the
     /// check that catches a symlink pointing outside the tree (D34).
     OutsideTree,
+    /// A component the host can never represent: a NUL byte, or `:` outside a
+    /// leading drive (mid-string `C:` re-prefixes the joined path; a bare
+    /// suffix is an NTFS alternate data stream that hides bytes from every
+    /// name-based rule).
+    Invalid(String),
+    /// A link entry that exists as a node but does not resolve (dangling
+    /// junction/symlink). Refused rather than completed lexically — a rebuilt
+    /// path passes `is_within` trivially and a later retarget would escape.
+    Unresolvable(String),
     /// The filesystem itself refused (missing root, I/O failure).
     Io(String),
 }
@@ -47,6 +56,8 @@ impl fmt::Display for PathError {
             Self::ReservedName(n) => write!(f, "reserved device name: {n}"),
             Self::TooLong => write!(f, "path meets the {MAX_PATH_LEN}-char budget"),
             Self::OutsideTree => f.write_str("path resolves outside the workspace"),
+            Self::Invalid(n) => write!(f, "unrepresentable path component: {n:?}"),
+            Self::Unresolvable(n) => write!(f, "link does not resolve: {n}"),
             Self::Io(e) => write!(f, "filesystem error: {e}"),
         }
     }
@@ -56,12 +67,15 @@ impl std::error::Error for PathError {}
 
 /// True iff `name` — one path component — is a Windows reserved device name.
 ///
-/// Compares the stem (up to the first `.`, trailing dots/spaces trimmed)
-/// case-insensitively against `CON PRN AUX NUL COM1–COM9 LPT1–LPT9` plus the
-/// superscript variants `COM¹²³` / `LPT¹²³` (D79).
+/// An NTFS stream suffix is cut first (`NUL:stream` is `NUL` with a stream —
+/// no dot for the stem split to find). Compares the stem (up to the first
+/// `.`, trailing dots/spaces trimmed) case-insensitively against
+/// `CON PRN AUX NUL COM1–COM9 LPT1–LPT9` plus the superscript variants
+/// `COM¹²³` / `LPT¹²³` (D79).
 #[must_use]
 pub fn is_reserved_file_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("");
+    let bare = name.split(':').next().unwrap_or(name);
+    let stem = bare.split('.').next().unwrap_or("");
     let upper = stem.trim_matches([' ', '.']).to_uppercase();
     if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
         return true;
@@ -155,6 +169,28 @@ pub fn check_relative_path(user: &str) -> Result<PathBuf, PathError> {
         if part == ".." {
             return Err(PathError::Traversal);
         }
+        if part.contains('\0') {
+            // `%00` decodes to this — a NUL-truncated name at the fs layer.
+            return Err(PathError::Invalid(part.to_string()));
+        }
+        if part.contains(':') {
+            // Mid-string `C:`/`D:` gives the joined path a Windows prefix and
+            // std `join` then DISCARDS the root (drive-relative against the
+            // process cwd); a bare suffix is an ADS whose bytes are invisible
+            // to every name-based rule below (`report.txt:hidden`).
+            return Err(PathError::Invalid(part.to_string()));
+        }
+        if part.chars().all(|c| c == '.' || c == ' ') {
+            // Only dots/spaces: Win32 trims `[ .]` per component, so neither
+            // form can ever exist as a name. `.. ` / `.. .` are disguised
+            // traversal attempts (audit 11); `...` / ` ..` degenerate to the
+            // current dir on the host — both refused, never silently mapped.
+            return Err(if part.starts_with("..") {
+                PathError::Traversal
+            } else {
+                PathError::Empty
+            });
+        }
         if is_reserved_file_name(part) {
             return Err(PathError::ReservedName(part.to_string()));
         }
@@ -187,7 +223,18 @@ pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathErro
             // the remainder lexically.
             let mut missing: Vec<OsString> = Vec::new();
             let mut ancestor = abs.as_path();
-            while !ancestor.exists() {
+            loop {
+                if ancestor.exists() {
+                    break;
+                }
+                // A link NODE that does not resolve (dangling junction or
+                // symlink): `exists()` is false but the node is present.
+                // Refusing is load-bearing — stepping past it and rebuilding
+                // `root/link/file` lexically passes `is_within` trivially
+                // (audit 11), and a later retarget of the link escapes.
+                if ancestor.symlink_metadata().is_ok() {
+                    return Err(PathError::Unresolvable(ancestor.display().to_string()));
+                }
                 match ancestor.file_name() {
                     Some(f) => {
                         missing.push(f.to_os_string());
@@ -210,7 +257,9 @@ pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathErro
     if !is_within(&root_canon, &resolved) {
         return Err(PathError::OutsideTree);
     }
-    if resolved.to_string_lossy().chars().count() >= MAX_PATH_LEN {
+    // Budget in UTF-16 code units, the unit Windows actually counts (D79):
+    // one emoji is one scalar but TWO units, so a scalar count under-reports.
+    if resolved.to_string_lossy().encode_utf16().count() >= MAX_PATH_LEN {
         return Err(PathError::TooLong);
     }
     Ok(resolved)
@@ -221,12 +270,19 @@ pub fn resolve_in_workspace(root: &Path, user: &str) -> Result<PathBuf, PathErro
 /// Missing `projects/` dir is a no-op. Files removed via host fs here —
 /// rows removed via `clauro-store::delete_project`.
 pub fn remove_project_subtree(root: &Path, project_id: &str) -> Result<(), PathError> {
-    if project_id.is_empty()
-        || project_id.contains('/')
-        || project_id.contains('\\')
-        || project_id.contains("..")
-    {
+    // Same lexical discipline as every other supplied path (audit 11): decode
+    // first, then refuse absolute/drive/stream/NUL/reserved forms — and
+    // require a SINGLE component, since the id is spliced into `projects/<id>-*`.
+    let rel = check_relative_path(project_id)?;
+    if rel.components().count() != 1 {
         return Err(PathError::Traversal);
+    }
+    let id = rel.to_string_lossy().into_owned();
+    // Win32 trims trailing `[ .]` from names, so `p1.` is `p1` to the host
+    // while a lexical `name == id` match below would silently delete nothing
+    // and report success (audit 11: a lie of omission in retention).
+    if id.ends_with('.') || id.ends_with(' ') {
+        return Err(PathError::Invalid(id));
     }
     let root_canon = root
         .canonicalize()
@@ -239,18 +295,45 @@ pub fn remove_project_subtree(root: &Path, project_id: &str) -> Result<(), PathE
     };
     for entry in rd.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == project_id || name.starts_with(&format!("{project_id}-")) {
-            let p = entry.path();
-            let canon = p.canonicalize().unwrap_or(p.clone());
-            if !is_within(&root_canon, &canon) {
-                return Err(PathError::OutsideTree);
-            }
-            if p.is_dir() {
-                std::fs::remove_dir_all(&p).map_err(|e| PathError::Io(e.to_string()))?;
-            } else {
-                std::fs::remove_file(&p).map_err(|e| PathError::Io(e.to_string()))?;
-            }
+        if name != id && !name.starts_with(&format!("{id}-")) {
+            continue;
+        }
+        let p = entry.path();
+        // Classify by the NODE, never by what it resolves to: a planted
+        // junction/symlink is removed as a link — its target is never
+        // followed, never deleted, and never aborts the run (audit 11).
+        let meta = match p.symlink_metadata() {
+            Ok(m) => m,
+            // Vanished mid-iteration — nothing left to delete.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(PathError::Io(e.to_string())),
+        };
+        if meta.file_type().is_symlink() {
+            remove_link_node(&p)?;
+            continue;
+        }
+        // No lexical fallback here: a real entry canonicalising outside means
+        // an ANCESTOR is a link — never delete through it.
+        let canon = p.canonicalize().map_err(|e| PathError::Io(e.to_string()))?;
+        if !is_within(&root_canon, &canon) {
+            return Err(PathError::OutsideTree);
+        }
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&p).map_err(|e| PathError::Io(e.to_string()))?;
+        } else {
+            std::fs::remove_file(&p).map_err(|e| PathError::Io(e.to_string()))?;
         }
     }
     Ok(())
+}
+
+/// Remove a link NODE itself — junction, directory symlink, file symlink, or
+/// a dangling one — without ever following it. `remove_dir` is the documented
+/// way to delete a junction (RemoveDirectory on the reparse point); file
+/// symlinks fall back to `remove_file`.
+fn remove_link_node(p: &Path) -> Result<(), PathError> {
+    match std::fs::remove_dir(p) {
+        Ok(()) => Ok(()),
+        Err(_) => std::fs::remove_file(p).map_err(|e| PathError::Io(e.to_string())),
+    }
 }

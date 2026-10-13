@@ -5,8 +5,9 @@
  * menu, and markdown wrap keys.
  *
  * Icon-only buttons carry no visible text: the tooltip carries the TEXT label
- * (memory on/off, web search, thinking level, send/stop). Hints on the dark
- * card read neutral-400 or brighter (4.5:1 floor).
+ * (memory on/off, web search, thinking level, send/stop). Hints ride
+ * text-muted-foreground, whose light/dark values clear the 4.5:1 floor
+ * (pinned by contrast.test.ts, not by a ramp class).
  *
  * Send is a callback prop — no turn loop exists yet (023 owns dispatch), so
  * the shell collects intent and hands it off. Voice renders disabled with
@@ -26,7 +27,7 @@ import {
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useThreadStore, type Effort } from "../features/catalogue/thread";
-import { Markdown } from "../features/transcript";
+import { Markdown } from "../features/transcript/TranscriptView";
 import ModelPicker from "./ModelPicker";
 import { Button } from "./ui/button";
 import {
@@ -55,6 +56,19 @@ const SLASH_COMMANDS: { name: string; hint: string }[] = [
 ];
 
 const FENCE_RE = /^```([A-Za-z0-9+#_-]*)\s*$/;
+
+/** How long the paste-wrap undo toast lingers before it dismisses itself. */
+const PASTE_TOAST_MS = 6000;
+
+/** A paste the composer fenced on its own, kept so Undo can revert it. */
+type PasteWrap = {
+  /** The ```` ```text … ``` ```` block that was spliced in. */
+  fenced: string;
+  /** The raw clipboard text as it arrived, for the revert. */
+  raw: string;
+  /** Where the paste landed — the Undo splice anchor. */
+  start: number;
+};
 
 /**
  * Fence-opener language for a full line, or null when the line is not an
@@ -139,10 +153,24 @@ export function continueList(
   };
 }
 
+/**
+ * `clauro.prefs.sendWith` (Settings → General) — the composer is its only
+ * reader. Anything but a stored `"ctrl"` means Enter sends, matching the
+ * unswitched default. Private-mode storage throws: fall back silently, the
+ * pref is a convenience, not a dependency.
+ */
+function readSendWithPref(): "enter" | "ctrl" {
+  try {
+    return window.localStorage.getItem("clauro.prefs.sendWith") === "ctrl" ? "ctrl" : "enter";
+  } catch {
+    return "enter";
+  }
+}
+
 export default function Composer({
   threadId,
   memoryOff,
-  sendWith = "enter",
+  sendWith,
   running = false,
   onSend,
   onStop = () => {},
@@ -155,7 +183,8 @@ export default function Composer({
   /** Controlled memory state; 008/018 own the source of truth. */
   memoryOff?: boolean;
   /** Enter-to-send vs Ctrl+Enter-to-send. A prop (not the settings store):
-   *  the store has no sendWith key and turn files are out of scope. */
+   *  it wins when given; without it the composer reads `clauro.prefs.sendWith`
+   *  itself (the composer is that key's only reader, review 30 owner TODO). */
   sendWith?: "enter" | "ctrl";
   /** A turn is streaming: send swaps for stop in place, typing stays on. */
   running?: boolean;
@@ -169,7 +198,10 @@ export default function Composer({
   onCompact?: () => void;
   onSlashCommand?: (command: string) => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(
+    // Restored on mount: review 30's composerDrafts survives an unmount.
+    () => useThreadStore.getState().composerDraft(threadId) ?? "",
+  );
   const [composing, setComposing] = useState(false);
   // Caret mirror for the fence hint: updated on input/keyup/select so the
   // "Code block" label tracks where the caret actually is.
@@ -182,6 +214,10 @@ export default function Composer({
   // Live preview (spec E): off by default; a read-only rendered pane rides
   // above the textarea. Raw markdown stays in the textarea — that is sent.
   const [previewOn, setPreviewOn] = useState(false);
+  // Paste-wrap toast (spec F): set when the paste handler fenced a code-like
+  // paste; Undo reverts that specific wrap without touching the rest of the
+  // draft. Null when no wrap is pending.
+  const [pasteWrap, setPasteWrap] = useState<PasteWrap | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const effort = useThreadStore((s) => s.threads[threadId]?.effort ?? "medium");
@@ -189,6 +225,46 @@ export default function Composer({
   const empty = draft.trim() === "";
   // Desired caret after a programmatic markdown edit (see the layout effect).
   const pendingSel = useRef<number | null>(null);
+  // Per-thread draft (review 30): `composerDrafts` is the record. One effect
+  // does both directions — on a thread switch the stored value wins over the
+  // previous thread's text (the stale text must never land in this thread),
+  // on a local edit it writes through. A blank draft deletes the key, so a
+  // sent message does not resurrect as a draft later.
+  const loadedFor = useRef<string | null>(null);
+  // Mirror of the live draft for the store subscription below. Declared
+  // before the write-through effect: effects run in declaration order, so
+  // the ref is already fresh when the write-through fires the store and the
+  // subscriber sees own writes as equal (no-op) instead of adopting them.
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+  useEffect(() => {
+    if (loadedFor.current !== threadId) {
+      loadedFor.current = threadId;
+      setDraft(useThreadStore.getState().composerDraft(threadId) ?? "");
+      setCaret(0);
+      setPasteWrap(null);
+      return;
+    }
+    useThreadStore.getState().setComposerDraft(threadId, draft);
+  }, [threadId, draft]);
+  // External adoption (review 30): App's suggestion fill is a plain
+  // `setComposerDraft`, so a mounted composer follows the store when
+  // something other than its own write-through changes the record. An absent
+  // key is "no draft", never a reason to clear typed text.
+  useEffect(() => {
+    return useThreadStore.subscribe((s) => {
+      const stored = s.composerDraft(threadId);
+      if (stored !== null && loadedFor.current === threadId && stored !== draftRef.current) {
+        draftRef.current = stored;
+        setDraft(stored);
+      }
+    });
+  }, [threadId]);
+  // The pref is the prop's fallback (prop wins), read per render: Settings
+  // may rewrite it while this composer is open.
+  const sendMode: "enter" | "ctrl" = sendWith ?? readSendWithPref();
 
   function setCaretTo(at: number) {
     pendingSel.current = at;
@@ -232,9 +308,16 @@ export default function Composer({
   }
 
   function runSlash(command: string) {
-    setDraft("");
     setSlashIdx(0);
     setSlashOff(false);
+    // A command dispatched nowhere must not destroy the typed draft (review
+    // 30): clear it only when something actually handles the command —
+    // /compact always, the rest only when a caller owns onSlashCommand.
+    if (command !== "compact" && onSlashCommand === undefined) {
+      setSlashOff(true); // acknowledge the keypress without eating input
+      return;
+    }
+    setDraft("");
     if (command === "compact") onCompact();
     onSlashCommand?.(command);
   }
@@ -263,12 +346,41 @@ export default function Composer({
     setSlashOff(false);
   }, [slashQuery]);
 
+  // The paste-wrap toast dismisses itself; the timer is created per toast
+  // and cleared in the teardown (toast gone or component unmounted), so no
+  // timer outlives the thing it updates.
+  useEffect(() => {
+    if (pasteWrap === null) return;
+    const timer = window.setTimeout(() => {
+      setPasteWrap(null);
+    }, PASTE_TOAST_MS);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [pasteWrap]);
+
+  /** Revert one specific fenced paste-wrap, leaving every other edit alone. */
+  function undoPasteWrap(wrap: PasteWrap) {
+    setPasteWrap(null);
+    // Locate the fenced block by content from the paste anchor: edits made
+    // AFTER the paste shift positions, but the block itself is still there.
+    const at = draft.indexOf(wrap.fenced, wrap.start);
+    if (at === -1) return; // edited beyond recognition — nothing left to revert
+    const next = draft.slice(0, at) + wrap.raw + draft.slice(at + wrap.fenced.length);
+    setDraft(next);
+    setCaretTo(at + wrap.raw.length);
+  }
+
   /**
    * Fence opener (COMPOSER_MARKDOWN_SPEC A): caret at the end of a ```lang
-   * line + Enter/Space converts to an open block — newline, cursor on the
-   * empty line inside, closing fence appended iff none lies ahead. A ``` line
-   * reached with an odd fence count above it is the CLOSER of an existing
-   * block — leaving it, not opening a new one. Returns true when handled.
+   * line + Enter/Space converts to an open block. `insertText` is the
+   * character the triggering key itself inserts — Enter's "\n", Space's
+   * " " (review 15: a typed space is never swallowed into the opening
+   * newline). A closing fence ahead means the block is already closed, so
+   * only the key's own text goes in; otherwise an empty middle line and a
+   * closing fence follow, cursor on the middle line. A ``` line reached
+   * with an odd fence count above it is the CLOSER of an existing block —
+   * leaving it, not opening a new one. Returns true when handled.
    */
   function openFence(el: HTMLTextAreaElement, insertText: string): boolean {
     const caret = el.selectionStart;
@@ -276,12 +388,20 @@ export default function Composer({
     const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
     if (isInsideFence(draft, lineStart)) return false;
     if (fenceLanguage(draft.slice(lineStart, caret)) === null) return false;
-    // No close ahead: newline + empty line + closing fence, cursor inside.
-    // Close ahead: single newline — the existing fence closes the block.
-    const insert = hasClosingFenceAhead(draft.slice(caret)) ? insertText : `${insertText}\n\`\`\``;
-    const next = draft.slice(0, caret) + insert + draft.slice(caret);
+    // Close ahead: block already closed — the key's text alone.
+    if (hasClosingFenceAhead(draft.slice(caret))) {
+      const closed = draft.slice(0, caret) + insertText + draft.slice(caret);
+      setDraft(closed);
+      setCaretTo(caret + insertText.length);
+      return true;
+    }
+    // No close ahead: key text + empty middle line + closing fence.
+    // Enter's newline is itself the opener line's end; a space is followed
+    // by one.
+    const opener = insertText === "\n" ? "\n" : `${insertText}\n`;
+    const next = draft.slice(0, caret) + `${opener}\n\`\`\`` + draft.slice(caret);
     setDraft(next);
-    setCaretTo(caret + 1);
+    setCaretTo(caret + opener.length);
     return true;
   }
 
@@ -329,6 +449,10 @@ export default function Composer({
   }
 
   function onTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    // An IME composition owns every keypress until it ends: a markdown chord
+    // fired mid-composition would wrap or fence the in-progress composition
+    // text (review 15). No preventDefault, no edit — the IME keeps the key.
+    if (composing) return;
     const el = e.currentTarget;
     const caret = el.selectionStart;
 
@@ -403,7 +527,7 @@ export default function Composer({
         }
         return;
       }
-      if (e.key === "Enter" && !composing && slashItems.length > 0) {
+      if (e.key === "Enter" && slashItems.length > 0) {
         e.preventDefault();
         runSlash(slashItems[Math.min(slashIdx, slashItems.length - 1)].name);
         return;
@@ -416,19 +540,24 @@ export default function Composer({
       }
     }
     // Spec A: ```lang + Enter/Space on the opener line builds the block.
+    // Alt is left out of the chord so Alt+Space stays a system binding
+    // (window menu) instead of being swallowed.
     if (
       (e.key === "Enter" || e.key === " ") &&
-      !composing &&
       !e.shiftKey &&
       !e.ctrlKey &&
-      !e.metaKey
+      !e.metaKey &&
+      !e.altKey
     ) {
-      if (openFence(el, "\n")) {
+      // Pass the character this key actually inserts — Enter its newline,
+      // Space its literal space (review 15: the space must never be
+      // swallowed into the opening newline).
+      if (openFence(el, e.key === "Enter" ? "\n" : " ")) {
         e.preventDefault();
         return;
       }
     }
-    if (e.key === "Enter" && !composing) {
+    if (e.key === "Enter") {
       // Spec C priority: Ctrl+Enter always sends (1: menus handled above)…
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
@@ -446,18 +575,33 @@ export default function Composer({
       }
       // 3: a list/quote line continues (or an empty marker exits the list —
       // it is stripped and nothing sends; the next Enter on the plain line
-      // sends, per spec B).
+      // sends, per spec B). Only at the END of the line: continuing from a
+      // collapsed mid-line caret would fabricate a bogus next item out of
+      // the line's tail ("1. he\n2. llo" — review 33). Mid-line is a plain
+      // newline on a list line, and never a send.
       if (caret === el.selectionEnd) {
-        const cont = continueList(draft, caret);
-        if (cont !== null) {
-          e.preventDefault();
-          setDraft(cont.text);
-          setCaretTo(cont.caret);
-          return;
+        const lineEndRel = draft.indexOf("\n", caret);
+        const lineEnd = lineEndRel === -1 ? draft.length : lineEndRel;
+        if (caret === lineEnd) {
+          const cont = continueList(draft, caret);
+          if (cont !== null) {
+            e.preventDefault();
+            setDraft(cont.text);
+            setCaretTo(cont.caret);
+            return;
+          }
+        } else {
+          const lineStart = draft.lastIndexOf("\n", caret - 1) + 1;
+          if (draft.slice(lineStart, caret).match(LIST_RE) !== null) {
+            e.preventDefault();
+            setDraft(draft.slice(0, caret) + "\n" + draft.slice(caret));
+            setCaretTo(caret + 1);
+            return;
+          }
         }
       }
       // 4: otherwise Enter sends, Shift+Enter is a newline.
-      if (sendWith !== "ctrl" && !e.shiftKey) {
+      if (sendMode !== "ctrl" && !e.shiftKey) {
         e.preventDefault();
         send();
       }
@@ -470,15 +614,15 @@ export default function Composer({
   const inFence = isInsideFence(draft, caret);
 
   return (
-    <div className="relative min-w-0 rounded-2xl border border-neutral-800 bg-neutral-950 p-3 focus-within:border-ring">
+    <div className="relative min-w-0 rounded-2xl border border-border bg-card p-3 focus-within:border-ring">
       {slashItems !== null && (
         <div
           role="listbox"
           aria-label="Commands"
-          className="absolute right-3 bottom-full left-3 z-10 mb-1 rounded-xl border border-neutral-800 bg-neutral-900 p-1"
+          className="absolute right-3 bottom-full left-3 z-10 mb-1 rounded-xl border border-border bg-popover p-1"
         >
           {slashItems.length === 0 ? (
-            <p className="px-2 py-1.5 text-sm text-neutral-400">No matches</p>
+            <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
           ) : (
             slashItems.map((c, i) => (
               <button
@@ -487,7 +631,7 @@ export default function Composer({
                 role="option"
                 aria-selected={i === slashIdx}
                 className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm ${
-                  i === slashIdx ? "bg-neutral-800" : ""
+                  i === slashIdx ? "bg-accent" : ""
                 }`}
                 onMouseDown={(e) => {
                   e.preventDefault();
@@ -498,7 +642,7 @@ export default function Composer({
                 }}
               >
                 <b>/{c.name}</b>
-                <span className="text-neutral-400">{c.hint}</span>
+                <span className="text-muted-foreground">{c.hint}</span>
               </button>
             ))
           )}
@@ -549,6 +693,8 @@ export default function Composer({
           const next = draft.slice(0, start) + fenced + draft.slice(end);
           setDraft(next);
           setCaretTo(start + fenced.length);
+          // Offer a way back: the toast's Undo reverts exactly this wrap.
+          setPasteWrap({ fenced, raw: pasted, start });
         }}
         onCompositionStart={() => {
           setComposing(true);
@@ -559,6 +705,28 @@ export default function Composer({
         onKeyDown={onTextareaKeyDown}
         className="max-h-48 min-h-12 w-full min-w-0 resize-none overflow-y-auto border-0 bg-transparent shadow-none focus-visible:ring-0"
       />
+      {/* Paste-wrap toast (spec F): non-blocking (the wrapper ignores the
+          pointer, the Undo button does not), self-dismissing, and announced
+          politely via role="status". */}
+      {pasteWrap !== null && (
+        <div
+          data-testid="paste-toast"
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none absolute top-2 right-2 z-20 flex items-center gap-1.5 rounded-lg border border-border bg-popover/95 px-2.5 py-1.5 text-xs text-foreground shadow-md"
+        >
+          <span>Wrapped in code block</span>
+          <button
+            type="button"
+            className="pointer-events-auto rounded px-1 font-medium underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            onClick={() => {
+              undoPasteWrap(pasteWrap);
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
       <div className="mt-2 flex min-w-0 items-center gap-1.5">
         {/* The real file picker: the icon button opens it, the change event
             carries the files to onAttach. No onAttach = disabled + reason. */}
@@ -652,13 +820,13 @@ export default function Composer({
         </Tooltip>
         <div className="flex-1" />
         {inFence && (
-          <span data-testid="fence-hint" className="text-xs text-neutral-500">
+          <span data-testid="fence-hint" className="text-xs text-muted-foreground">
             Code block · Ctrl+Enter to send
           </span>
         )}
         <span
           data-testid="token-hint"
-          className="text-xs text-neutral-400"
+          className="text-xs text-muted-foreground"
           title="Approximate input size: characters ÷ 4"
         >
           {tokens} token{tokens === 1 ? "" : "s"} · estimate
@@ -666,7 +834,11 @@ export default function Composer({
         <Select
           value={effort}
           onValueChange={(v) => {
-            setEffort(threadId, v as Effort);
+            // Narrow at the boundary: only the known levels reach the store —
+            // no cast over an external string (review 30).
+            const match = EFFORTS.find((e) => e.value === v);
+            if (match === undefined) return;
+            setEffort(threadId, match.value);
           }}
         >
           <Tooltip>

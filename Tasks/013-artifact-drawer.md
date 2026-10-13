@@ -9,19 +9,19 @@ that verdict exists — the CSP and sandbox flags would otherwise be designed tw
 
 **Status: backend + drawer states verified 2026-10-05 (Windows host).**
 Tool 3/3 (`crates/clauro-tools/tests/artifact.rs`), drawer state/gate/sandbox
-12/12 (`src/artifact.test.ts`, `src/ArtifactDrawer.test.tsx`), app boots without
+12/12 (`src/features/artifact/store.test.ts`, `src/components/ArtifactDrawer.test.tsx`), app boots without
 crashing in a real browser (boot gate holds without Tauri). Webview-observable
 criteria below are **NOT RUN ON THIS HOST** — no tauri-driver until 021; the
 001 spike proved the *shape* on WebView2, the product frame is unverified.
 
 ## Failing tests first
 
-- [x] The iframe's `contentWindow` has **no reachable command path** to `window.__TAURI_INTERNALS__` — **RUN 2026-10-10 (D124).** Literal absence is unachievable on Windows (wry injects init scripts into every frame); the proven property is inertness: remote-by-construction document host (`src-tauri/src/artifact_doc.rs:421` pins `http://artifact.localhost/__clauro/doc/`, `no_capability_grants_a_remote_context` pins zero remote grants) plus the engine proof — frame-side `invoke('webview_status')` never resolves while the shell's resolves (`scripts/webview-proofs.mjs` claim 1, 8/8 green, report at `target/webdriver/proofs-report.json`). The frame carries no Tauri API import by construction (no `api` import in the drawer tree).
+- [x] The iframe's `contentWindow` has **no reachable command path** to `window.__TAURI_INTERNALS__` — **RUN 2026-10-10 (D124).** Literal absence is unachievable on Windows (wry injects init scripts into every frame); the proven property is inertness: remote-by-construction document host (`src-tauri/src/artifact_doc.rs:441` pins `http://artifact.localhost/__clauro/doc/`, `no_capability_grants_a_remote_context` pins zero remote grants) plus the engine proof — first the frame-side `invoke('webview_status')` never resolves while the shell's resolves, then (2026-10-12, claim 1 rewritten as a sentinel-effect probe) a privileged sentinel command attempted from the frame produces **no effect and no resolved callback** while the shell's own IPC stays healthy (`scripts/webview-proofs.mjs` claim 1, 8/8 green on both runs — sessions `42c54fd511e4d6ef0661f01328fe991d` and `ed94a5ede836c0f155bfc590d662a51d`, and re-run 2026-10-13 at 9/9 after claim 4b added the D123 `connect-src 'none'` policy-text assertion — session `25bbda3d7a84afcaaee6163a98e6d1a8`, report at `target/webdriver/proofs-report.json`; verdict recorded in the audit-13 closeout — the `docs/reviews/` tree was deleted 2026-10-13, findings folded into the closeout report; Windows floor only per §8a). The frame carries no Tauri API import by construction (no `api` import in the drawer tree).
 - [x] `parent.document` access from inside the frame is refused — **RUN 2026-10-10**, same proof run (claim 2: `refused:SecurityError`)
 - [x] `event.origin` from the frame is `"null"` — **RUN 2026-10-10**, same proof run (claim 3)
 - [x] A `fetch` from inside the frame to any host **fails** — **RUN 2026-10-10**, same proof run (claim 4: `failed:TypeError`; CSP assembly is 014's)
 - [x] A refused `MessageChannel` handshake leaves the frame inert, not broken — **RUN 2026-10-10**, same proof run (claim 5: `boots=0, alive="PROOF-OK", channel=ready`; channel is 014's)
-- [x] On a Linux build where the gate fires: artifacts are absent **and** the notice explains why — `src/artifact.test.ts:66`, `src/ArtifactDrawer.test.tsx:44` (gate matrix + notice render; engine proof itself pending 021)
+- [x] On a Linux build where the gate fires: artifacts are absent **and** the notice explains why — `src/features/artifact/store.test.ts:104-152`, `src/components/ArtifactDrawer.test.tsx:126` (gate matrix + notice render; engine proof itself pending 021)
 
 ## Do
 
@@ -67,7 +67,7 @@ nothing to do with artifacts.
 - [x] No reachable command path to Tauri internals — **RUN 2026-10-10 (D124):** present-but-inert, engine proof 8/8 (`scripts/webview-proofs.mjs`, report at `target/webdriver/proofs-report.json`)
 - [x] `parent.document` refused; `event.origin` is `"null"` — **RUN 2026-10-10**, same proof run
 - [x] Outbound request from inside the frame fails — **RUN 2026-10-10**, same proof run (CSP: 014)
-- [x] No user-facing control weakens sandbox tokens or CSP — flags are host-fixed (**D108**) — `src/artifact.test.ts:44-49` (`allow-scripts` exact, `allow-same-origin` throws); no settings UI for flags exists
+- [x] No user-facing control weakens sandbox tokens or CSP — flags are host-fixed (**D108**) — `src/features/artifact/store.test.ts:55-74` (`allow-scripts` exact, `allow-same-origin` throws, no token outside the fixed sandbox); no settings UI for flags exists
 - [x] Windows and Linux both render — or Linux disables with a notice — gate matrix + notice render (see above); engine proof pending 021
 - [x] Artifact tool schema is ours, documented — `crates/clauro-tools/src/registry.rs` artifact block (`title`, `mediaType`, `source`, optional `artifactId`); strict validation in `crates/clauro-tools/src/artifact.rs` (the "classifier" the contract points at)
 - [x] `DESIGN.md` §3 matches the shipped behaviour — §3 states the D45 guarantee; tabs/download promise corrected to v2-only per `SPEC.md` §5 (D87)

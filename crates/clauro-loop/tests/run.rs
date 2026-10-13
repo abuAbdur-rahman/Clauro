@@ -13,7 +13,7 @@ use clauro_loop::run::{
 };
 use clauro_store::{NewProject, NewThread, Store};
 use clauro_tools::Registry;
-use clauro_transport::{BuiltRequest, InboundKind, NormalisedEvent, ToolHeader};
+use clauro_transport::{BuiltRequest, InboundKind, NormalisedEvent, ToolHeader, UsageWire};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -161,7 +161,7 @@ fn prepared(thread_tools: Vec<clauro_tools::MaterializedTool>) -> PreparedThread
         model: "claude-x".to_string(),
         max_tokens: 1024,
         tools: thread_tools,
-        thinking_budget: 10_000,
+        thinking_budget: 512,
         rules: Vec::new(),
     }
 }
@@ -199,6 +199,69 @@ fn bind_echo(reg: &mut Registry, order: Arc<std::sync::Mutex<Vec<String>>>) {
 }
 
 // ── the loop ─────────────────────────────────────────────────────────────────
+
+/// A blockless assistant message (usage-only step, storage blip, empty reply)
+/// must not brick the thread: the next turn's rows land on fresh seqs instead
+/// of colliding with `idx_message_seq` on every turn from then on.
+#[test]
+fn blockless_assistant_message_does_not_brick_the_next_turn() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+
+    // Turn 1: the provider returns a usage-only step — an assistant message
+    // with no blocks at all.
+    let mut ex1 = Script::new(vec![vec![NormalisedEvent::Usage {
+        usage: UsageWire {
+            top_input_tokens: 10,
+            top_output_tokens: 5,
+            iterations: Vec::new(),
+            billing_input_tokens: 10,
+            billing_output_tokens: 5,
+            context_input_tokens: 10,
+        },
+    }]]);
+    let mut turn_loop = TurnLoop::new();
+    let report = turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex1,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &prepared(available_tools()),
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("turn one runs");
+    assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
+    assert_eq!(report.assistant_messages, 1, "{report:?}");
+
+    // Turn 2 must run: its rows reuse no seq, even though the blockless
+    // message already holds one the blocks-only scan cannot see.
+    let mut ex2 = Script::new(vec![text_step("second answer")]);
+    let report = turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex2,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "again",
+                prepared: &prepared(available_tools()),
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("turn two must run after a blockless message");
+    assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
+    assert_eq!(role_texts(&store, "user"), vec!["go", "again"]);
+    assert_eq!(role_texts(&store, "assistant"), vec!["second answer"]);
+}
 
 #[test]
 fn two_tool_uses_run_to_end_turn_in_order() {
@@ -449,6 +512,106 @@ fn prefix_change_is_detected_not_absorbed() {
     assert!(matches!(err, LoopError::PrefixChanged { .. }), "{err:?}");
 }
 
+/// Audit 12 (lead-routed): Anthropic hard-400s `thinking.budget_tokens >=
+/// max_tokens`. The pair is rejected client-side as a typed loop error before
+/// any request exists — never sent, never surfaced as a raw provider 400.
+#[test]
+fn overlong_thinking_budget_is_rejected_before_any_request() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let mut ex = Script::new(vec![text_step("never sent")]);
+    let mut overlong = prepared(available_tools());
+    overlong.thinking_budget = overlong.max_tokens; // equal is already a 400
+    let mut turn_loop = TurnLoop::new();
+    let err = turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &overlong,
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect_err("budget >= max must fail client-side, not at the provider");
+    assert!(
+        matches!(
+            err,
+            LoopError::BudgetNotBelowMax {
+                budget_tokens,
+                max_tokens,
+            } if budget_tokens == overlong.thinking_budget && max_tokens == overlong.max_tokens
+        ),
+        "{err:?}"
+    );
+}
+
+/// NIT run.rs:297 — D27's failure path: when the bounding write fails, the
+/// raw preview must not ship inline at full scale — the row would be re-sent
+/// on every later step. The cap is the documented preview limit.
+#[test]
+fn bounding_failure_caps_the_inline_preview() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let huge = "x".repeat(clauro_tools::PREVIEW_LIMIT_CHARS * 3);
+    reg.set_handler("fs", move |_, _| ToolOutcome::Ok {
+        preview: huge.clone(),
+        preview_path: None,
+        full_path: None,
+    })
+    .expect("bind");
+    let mut ex = Script::new(vec![
+        tool_use_step(&[("call-a", "fs", "{}")]),
+        text_step("done"),
+    ]);
+    let mut turn_loop = TurnLoop::new();
+    turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &prepared(available_tools()),
+                // No such directory: bound_output's write fails here.
+                workspace_dir: &dir.path.join("never-created"),
+            },
+            &mut |_| {},
+        )
+        .expect("turn runs");
+    let full = store
+        .get_tool_result_full("t1", "call-a")
+        .expect("result row");
+    assert!(
+        full.preview.chars().count() <= clauro_tools::PREVIEW_LIMIT_CHARS,
+        "bounding failure must still cap the inline preview: {} chars",
+        full.preview.chars().count()
+    );
+}
+
+/// NIT run.rs:215 — thread-scoped maps must not outlive their thread:
+/// removal releases every map, and `tracked` reports the truth.
+#[test]
+fn remove_thread_releases_every_scoped_map() {
+    let mut turn_loop = TurnLoop::new();
+    let _ = turn_loop.stop_flag("t1");
+    let queued = turn_loop.send_while_busy("t1", "queued text");
+    assert!(!queued.is_empty());
+    assert!(turn_loop.tracked("t1"), "the maps hold the thread");
+    turn_loop.remove_thread("t1");
+    assert!(!turn_loop.tracked("t1"), "the maps released the thread");
+}
+
 #[test]
 fn resent_requests_carry_prior_tool_results() {
     let dir = TestDir::fresh();
@@ -662,6 +825,62 @@ fn send_now_extracts_without_draining() {
     // The sibling stays queued: send-now never drains.
     let rest = turn_loop.drain_next("t1").expect("sibling still queued");
     assert_eq!(rest.id, id_later);
+}
+
+/// A stop that lands before the turn begins still halts it: the flag is the
+/// driver's to clear (once, at claim), never the loop's to wipe at entry —
+/// otherwise a stop arriving during turn preparation is discarded unseen.
+#[test]
+fn stop_set_before_run_turn_halts_the_turn() {
+    let dir = TestDir::fresh();
+    let defs = clauro_tools::eight_definitions();
+    let (_, hash) = first_turn_setup(&defs, None);
+    let store = seeded(&dir, "t1", &hash);
+    let mut reg = Registry::with_eight();
+    let mut ex = Script::new(vec![text_step("never sent")]);
+    let mut turn_loop = TurnLoop::new();
+
+    turn_loop.stop("t1");
+    let report = turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go",
+                prepared: &prepared(available_tools()),
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("turn runs");
+    assert_eq!(report.end, TurnEnd::Stopped, "{report:?}");
+    assert!(
+        ex.bodies.is_empty(),
+        "no request may leave the process after a stop: {:?}",
+        ex.bodies
+    );
+
+    // The driver clears once, at claim (turn.rs) — the same one-line clear —
+    // and the next turn runs clean.
+    turn_loop.stop_flag("t1").store(false, Ordering::SeqCst);
+    let mut ex2 = Script::new(vec![text_step("after")]);
+    let report = turn_loop
+        .run_turn(
+            &store,
+            &mut reg,
+            &mut ex2,
+            TurnPlan {
+                thread_id: "t1",
+                user_text: "go again",
+                prepared: &prepared(available_tools()),
+                workspace_dir: &dir.path,
+            },
+            &mut |_| {},
+        )
+        .expect("second turn");
+    assert_eq!(report.end, TurnEnd::EndTurn, "{report:?}");
 }
 
 // ── regenerate / continue-append (D99, D106) ────────────────────────────────

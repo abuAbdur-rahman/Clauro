@@ -38,6 +38,46 @@ fn backoff_doubles_capped_at_sixty() {
     );
 }
 
+/// Audit 12/finding 3 — absurd HTTP dates fall back, never overflow (RED).
+/// The reviewer's example (`...300000000000000000:00:00 GMT`) never reaches
+/// the arithmetic — the malformed year token fails to parse first — so these
+/// are the shapes that DO overflow `i64` date math: a space-separated
+/// far-future year (`era * 146097`) and `i64::MIN` (`year - 1`). Panic in
+/// debug, silent wrap in release; both must be a backoff fallback.
+#[test]
+fn absurd_http_date_falls_back_to_backoff_not_a_panic() {
+    assert_eq!(
+        retry_delay(
+            429,
+            Some("Fri, 01 Jan 30000000000000000 00:00:00 GMT"),
+            0,
+            0
+        ),
+        Some(Duration::from_secs(1)),
+        "far-future year: fall back to backoff"
+    );
+    assert_eq!(
+        retry_delay(
+            429,
+            Some("Fri, 01 Jan -9223372036854775808 00:00:00 GMT"),
+            0,
+            0
+        ),
+        Some(Duration::from_secs(1)),
+        "i64::MIN year: fall back to backoff"
+    );
+    assert_eq!(
+        retry_delay(
+            429,
+            Some("Fri, 01 Jan 9223372036854775807 00:00:00 GMT"),
+            0,
+            0
+        ),
+        Some(Duration::from_secs(1)),
+        "i64::MAX year: fall back to backoff"
+    );
+}
+
 #[test]
 fn past_date_falls_back_to_backoff() {
     assert_eq!(

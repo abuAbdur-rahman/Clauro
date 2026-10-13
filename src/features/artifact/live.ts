@@ -24,7 +24,13 @@ import {
   type ArtifactLatest,
   type TurnEvent,
 } from "../turn/turn";
-import { useDrawerStore } from "./store";
+import {
+  artifactGate,
+  detectEngineGate,
+  useDrawerStore,
+  withRecentEntry,
+  type EngineGate,
+} from "./store";
 
 export type { ArtifactLatest };
 
@@ -35,10 +41,18 @@ interface ArtifactContentState {
   reset: () => void;
 }
 
+/** Upper bound on remembered thread documents: keyed by thread, evicted by
+ * nothing else, so the bound lives here (audit 14, D27). */
+export const CONTENT_MAX_THREADS = 64;
+
 export const useArtifactContent = create<ArtifactContentState>()((set) => ({
   threads: {},
   set: (threadId, content) => {
-    set((s) => ({ threads: { ...s.threads, [threadId]: content } }));
+    // Refresh-then-bound in one pass: re-setting a key moves it to the recent
+    // end, and the map never grows past its cap (audit 14, D27).
+    set((s) => ({
+      threads: withRecentEntry(s.threads, threadId, content, CONTENT_MAX_THREADS),
+    }));
   },
   reset: () => {
     set({ threads: {} });
@@ -53,6 +67,8 @@ export interface ProducerDeps {
   setLive: (threadId: string, artifactId: string, version: number) => void;
   setContent: (threadId: string, content: ArtifactLatest | null) => void;
   clear: (threadId: string) => void;
+  /** Optional D45 surface: a refused producer says why through it. */
+  setNotice?: (threadId: string, notice: string) => void;
   /** A failed read, as a typed reason — never swallowed, never fatal. */
   onError: (reason: string) => void;
 }
@@ -61,10 +77,23 @@ export interface ProducerDeps {
 export async function startArtifactProducer(
   threadId: string,
   deps: ProducerDeps,
+  gate: EngineGate = detectEngineGate(),
 ): Promise<() => void> {
+  // The D45 gate at the producer boundary (audit 14): a disabled engine gets
+  // no listeners and no fetch — the refusal is stated, not silent.
+  const verdict = artifactGate(gate);
+  if (!verdict.enabled) {
+    deps.setNotice?.(threadId, verdict.notice ?? "artifacts are disabled on this engine (D45)");
+    return () => undefined;
+  }
+  let stopped = false;
   const refresh = async (): Promise<void> => {
     try {
       const latest = await deps.fetchLatest();
+      // A refresh can outlive its producer: unsubscribing stops the listeners
+      // but not a fetch already in flight, and this is where that write would
+      // land (audit 14).
+      if (stopped) return;
       if (latest === null) {
         deps.setContent(threadId, null);
         // Nothing on disk: whatever spinner an unresolved call left must not
@@ -92,6 +121,7 @@ export async function startArtifactProducer(
   // without a turn having run.
   await refresh();
   return () => {
+    stopped = true;
     offEvents();
     offDone();
   };
@@ -129,6 +159,9 @@ export function useArtifactProducer(threadId: string, onError: (reason: string) 
       },
       clear: (t) => {
         useDrawerStore.getState().clear(t);
+      },
+      setNotice: (t, notice) => {
+        useDrawerStore.getState().setNotice(t, notice);
       },
       onError: (reason) => {
         if (!cancelled) onErrorRef.current(reason);

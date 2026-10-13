@@ -37,8 +37,8 @@ use clauro_loop::{
 };
 use clauro_store::{NewThread, Store};
 use clauro_transport::{
-    openai_request::translate_request, retry_delay, AnthropicParser, BuiltRequest, InboundKind,
-    NormalisedEvent, OpenAiParser, SseFramer, StreamParser,
+    openai_request::translate_request, AnthropicParser, BuiltRequest, InboundKind, NormalisedEvent,
+    OpenAiParser, SseFramer, StreamParser,
 };
 
 /// Per-event channel: emitted as each provider event arrives.
@@ -73,11 +73,7 @@ pub fn validate_start(
     provider: &str,
     model: &str,
 ) -> Result<(), TurnError> {
-    if thread_id.trim().is_empty() {
-        return Err(TurnError::BadInput {
-            reason: "thread_id must not be blank".to_string(),
-        });
-    }
+    validate_thread_id(thread_id)?;
     if text.trim().is_empty() {
         return Err(TurnError::BadInput {
             reason: "text must not be blank".to_string(),
@@ -89,6 +85,66 @@ pub fn validate_start(
         });
     }
     Ok(())
+}
+
+/// Thread ids arrive from JS and become path components (`sessions/<id>`)
+/// and store keys. The charset is the frontend's own — UUIDs and
+/// `thread-<epoch-ms>` — and excludes everything that could escape the
+/// session root (`../`, absolute, UNC) or smuggle a separator. Validated at
+/// every command boundary, before any filesystem or store call (review 13:
+/// thread_id traversal).
+pub fn validate_thread_id(thread_id: &str) -> Result<(), TurnError> {
+    let ok = !thread_id.is_empty()
+        && thread_id.len() <= 128
+        && thread_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(TurnError::BadInput {
+            reason: "thread_id must be 1..=128 chars of [A-Za-z0-9_-]".to_string(),
+        })
+    }
+}
+
+/// Output-token ceiling for one request. The UI's per-model `max_output` is
+/// the real limit; this is the host-side sanity bound against a forged
+/// invoke (review 13 NIT: cost amplification) — 64k is the largest documented
+/// `max_output` in the shipped catalogue.
+pub const MAX_TOKENS_CEILING: u32 = 64_000;
+
+#[must_use]
+pub fn clamp_max_tokens(requested: u32) -> u32 {
+    requested.clamp(1_024, MAX_TOKENS_CEILING)
+}
+
+/// The tools the model may actually dispatch: the safe six. `bash` is off by
+/// default (D28) and `compact` is host-driven only (D14), so neither belongs
+/// in the prompt's inventory or the request surface — an advertised tool that
+/// cannot dispatch is a hallucination farm (review 13: dead policy wiring).
+/// The prompt, the granted set, and the denial all read this one list, so
+/// they cannot drift apart. Enabling bash per project opens a fresh thread
+/// with a new frozen hash (D67).
+pub const MODEL_TOOLS: [&str; 6] = [
+    "memory",
+    "artifact",
+    "web-search",
+    "web-fetch",
+    "fs",
+    "question",
+];
+
+#[must_use]
+pub fn thread_tool_state() -> clauro_tools::ThreadToolState {
+    let mut state = clauro_tools::ThreadToolState::default();
+    for name in MODEL_TOOLS {
+        state.granted.insert(name.to_string());
+    }
+    // D26: bash is denied at first sight — removed from the request surface
+    // entirely, never shipped deferred.
+    state.denied.insert("bash".to_string());
+    state
 }
 
 /// Ensure the thread row exists with this frozen hash (D19). Returns whether
@@ -139,6 +195,16 @@ pub fn map_loop_error(e: LoopError) -> TurnError {
         },
         LoopError::Approval(e) => TurnError::Transport {
             message: format!("approval error: {e}"),
+        },
+        // A budget at or above the output cap is a configuration refusal,
+        // not a transport one: raise max_tokens or lower the effort knob.
+        LoopError::BudgetNotBelowMax {
+            budget_tokens,
+            max_tokens,
+        } => TurnError::BadInput {
+            reason: format!(
+                "thinking budget {budget_tokens} must stay below max_tokens {max_tokens}; raise the output cap or lower the effort"
+            ),
         },
     }
 }
@@ -269,11 +335,12 @@ pub(crate) fn wire_for(
 /// The live HTTP exchange: one SSE stream per `step` (D24, D56), on whichever
 /// wire the provider row named (D48).
 ///
-/// Blocking client, called from the dedicated turn thread. Retries use
-/// `retry_delay` unchanged — the policy's second real caller (the first is
-/// `stream_step` in tests). Bytes are framed and parsed incrementally: each
-/// parsed event is sunk **before** the next chunk is read, which is what makes
-/// the turn stream rather than appear whole.
+/// Blocking client, called from the dedicated turn thread. Retries run
+/// through `clauro_transport::send::run_with_retry`, so the hard attempt cap
+/// (D56) is the crate's, not a counter this file could forget. Bytes are
+/// framed and parsed incrementally: each parsed event is sunk **before** the
+/// next chunk is read, which is what makes the turn stream rather than
+/// appear whole.
 ///
 /// `build_http` is the seam between the two wires — pure, so URL, headers,
 /// and translation are provable without a socket. The Anthropic wire posts
@@ -284,6 +351,10 @@ pub struct LiveExchange {
     client: reqwest::blocking::Client,
     api_key: String,
     wire: Wire,
+    /// Review 21's cancellation seam: the thread's stop flag, handed over by
+    /// the loop before the first step. Checked per read and around every
+    /// retry so a long stream halts mid-turn, not only between steps.
+    stop: Arc<AtomicBool>,
 }
 
 /// Everything a send needs, decided by the wire alone. Pure output of
@@ -296,7 +367,16 @@ struct WireRequest {
 
 impl LiveExchange {
     pub fn new(wire: Wire, api_key: String) -> Result<Self, TurnError> {
+        // Per-phase read timeouts are not expressible on reqwest's BLOCKING
+        // builder (0.13: `read_timeout` is async-only), so the total-request
+        // cap stays — dropping it would let a stalled read hang the turn
+        // forever (audit 12). `connect_timeout` gives the fast failure for
+        // the common case; the cap bounds the worst case, as before.
+        // NOTE for the lead: switching LiveExchange to `clauro_transport::
+        // client()`'s async client (which has the true per-phase pair) needs
+        // an async seam in the turn thread — routed, not rushed.
         let client = reqwest::blocking::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| TurnError::Transport {
@@ -306,6 +386,7 @@ impl LiveExchange {
             client,
             api_key,
             wire,
+            stop: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -346,10 +427,8 @@ impl LiveExchange {
                 // never sent as an empty `Bearer `.
                 let mut body = translate_request(&request.body);
                 body["stream"] = serde_json::Value::Bool(true);
-                let mut headers = vec![(
-                    "content-type".to_string(),
-                    "application/json".to_string(),
-                )];
+                let mut headers =
+                    vec![("content-type".to_string(), "application/json".to_string())];
                 if !self.api_key.trim().is_empty() {
                     headers.push((
                         "authorization".to_string(),
@@ -391,22 +470,51 @@ impl LiveExchange {
     }
 }
 
+/// The provider-returned-HTTP failure message, in the format the view has
+/// always rendered: status, an attempt count when the retry cap ended it,
+/// and the sanitised body snippet when the provider sent one.
+fn http_failure_message(status: u16, attempts: Option<u32>, detail: &str) -> String {
+    let head = match attempts {
+        Some(n) => format!("provider returned HTTP {status} after {n} attempts"),
+        None => format!("provider returned HTTP {status}"),
+    };
+    if detail.trim().is_empty() {
+        head
+    } else {
+        format!("{head}: {}", detail.trim())
+    }
+}
+
 impl Exchange for LiveExchange {
+    /// Review 21's cancellation seam: the loop hands over the thread's stop
+    /// flag before the first step (clauro-loop `run.rs`, `set_stop_flag` at
+    /// drive-turn entry). The trait default is a no-op, which is exactly why
+    /// a stream could not be halted mid-read; the flag now rides alongside
+    /// every read and retry in `step`.
+    fn set_stop_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.stop = flag;
+    }
+
     fn step(
         &mut self,
         request: &BuiltRequest,
         sink: &mut dyn FnMut(NormalisedEvent),
     ) -> Result<Vec<NormalisedEvent>, ExchangeFailure> {
-        let mut attempt: u32 = 0;
-        loop {
-            let resp = match self.send_once(request) {
-                Ok(r) => r,
-                Err(e) => {
-                    return Err(ExchangeFailure {
-                        message: e.to_string(),
-                    });
-                }
-            };
+        use clauro_transport::send::{run_with_retry, SendError};
+        use clauro_transport::TransportError;
+        // The last error body, kept outside the closure so the final failure
+        // can render it — `run_with_retry`'s error carries only status and
+        // retry-after.
+        let detail_cell = std::cell::RefCell::new(String::new());
+        // Review 21 (cancellation): a stop already raised means no wire work
+        // at all — the loop's stop check ends the turn on an empty step.
+        if self.stop.load(Ordering::Relaxed) {
+            return Ok(Vec::new());
+        }
+        let retry_result = run_with_retry(|_| {
+            let resp = self
+                .send_once(request)
+                .map_err(|e| SendError::Transport(e.to_string()))?;
             let status = resp.status().as_u16();
             if status != 200 {
                 let retry_after = resp
@@ -414,74 +522,144 @@ impl Exchange for LiveExchange {
                     .get("retry-after")
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string);
-                // Read the error body for a human message, bounded: an error
-                // page can be megabytes and none of it renders.
-                let detail: String = resp.text().unwrap_or_default().chars().take(500).collect();
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                match retry_delay(status, retry_after.as_deref(), attempt, now) {
-                    Some(delay) => {
-                        if !delay.is_zero() {
-                            std::thread::sleep(delay);
-                        }
-                        attempt += 1;
-                        continue;
-                    }
-                    None => {
-                        return Err(ExchangeFailure {
-                            message: if detail.trim().is_empty() {
-                                format!("provider returned HTTP {status}")
-                            } else {
-                                format!("provider returned HTTP {status}: {}", detail.trim())
-                            },
-                        });
-                    }
-                }
+                // Read the error body for a human message, bounded and
+                // redacted: an error page can be megabytes, and a proxy can
+                // echo our own Authorization header back into it — neither
+                // may land in a persisted error (review 13 NIT).
+                *detail_cell.borrow_mut() = crate::providers::sanitise_provider_detail(
+                    &resp.text().unwrap_or_default(),
+                    &self.api_key,
+                );
+                return Err(SendError::Status {
+                    status,
+                    retry_after,
+                });
             }
-            // 200: frame + parse incrementally, sinking each event before the
-            // next chunk is read. A fresh framer per step: resuming a stale
-            // buffer across steps would replay a judged prefix.
-            let mut framer = SseFramer::new();
-            // The wire names the parser: same union, two framings (D48).
-            let mut parser: Box<dyn StreamParser> = match &self.wire {
-                Wire::Anthropic => Box::new(AnthropicParser::new()),
-                Wire::OpenAi { .. } => Box::new(OpenAiParser::new()),
-            };
-            let mut out = Vec::new();
-            let mut stream = resp;
-            let mut buf = [0u8; 8192];
-            use std::io::Read as _;
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let raw = framer.feed(&buf[..n]).map_err(|e| ExchangeFailure {
-                            message: format!("stream framing failed: {e}"),
-                        })?;
+            Ok(resp)
+        })
+        .map_err(|e| {
+            let detail = detail_cell.borrow();
+            match &e {
+                // A non-retryable status passes through unchanged: same
+                // message the old loop produced.
+                TransportError::Send(SendError::Status { status, .. }) => ExchangeFailure {
+                    message: http_failure_message(*status, None, &detail),
+                },
+                // The hard attempt cap (D56) ended a provider that stayed
+                // retryable — the old loop would have retried forever.
+                TransportError::RetriesExhausted {
+                    attempts, status, ..
+                } => ExchangeFailure {
+                    message: http_failure_message(*status, Some(*attempts), &detail),
+                },
+                other => ExchangeFailure {
+                    message: other.to_string(),
+                },
+            }
+        });
+        let resp = match retry_result {
+            Ok(resp) => resp,
+            Err(failure) => {
+                // A stop pressed while connecting or backing off surfaces as
+                // a transport failure; the stop wins. Nothing was sunk, so
+                // there is nothing to persist and no failure to notice — the
+                // loop ends the turn Stopped. The flag can flip any time
+                // before this match, including between retry attempts (no
+                // deterministic test can pin that window; the per-read check
+                // above and this swallow share the same flag).
+                if self.stop.load(Ordering::Relaxed) {
+                    return Ok(Vec::new());
+                }
+                return Err(failure);
+            }
+        };
+        // 200: frame + parse incrementally, sinking each event before the
+        // next chunk is read. A fresh framer per step: resuming a stale
+        // buffer across steps would replay a judged prefix.
+        let mut framer = SseFramer::new();
+        // The wire names the parser: same union, two framings (D48).
+        let mut parser: Box<dyn StreamParser> = match &self.wire {
+            Wire::Anthropic => Box::new(AnthropicParser::new()),
+            Wire::OpenAi { .. } => Box::new(OpenAiParser::new()),
+        };
+        let mut out = Vec::new();
+        // D80: a 2xx body that ends before `Stop` is truncated, not a
+        // success — same semantics as `send::SendError::Truncated`.
+        let mut stopped = false;
+        let mut observe = |event: NormalisedEvent| {
+            if matches!(event, NormalisedEvent::Stop { .. }) {
+                stopped = true;
+            }
+            sink(event);
+        };
+        let mut stream = resp;
+        let mut buf = [0u8; 8192];
+        use std::io::Read as _;
+        // Review 21 (record-vs-hint): a failure mid-stream used to return Err
+        // after the sink had already rendered the prefix — the loop's Err arm
+        // persisted only a notice, erasing what the view showed. Every
+        // failure now ends Ok with a TRAILING Error event, so the loop
+        // persists the sunk text and the notice together (record == view).
+        let mut stream_error: Option<String> = None;
+        loop {
+            // Review 21 (cancellation): stop checked per read — a long or
+            // stalled stream halts here, keeping every event already sunk
+            // (D65), instead of only between steps.
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => match framer.feed(&buf[..n]) {
+                    Ok(raw) => {
                         for event in raw {
                             for normalised in parser.feed(&event) {
-                                sink(normalised.clone());
+                                observe(normalised.clone());
                                 out.push(normalised);
                             }
                         }
                     }
                     Err(e) => {
-                        return Err(ExchangeFailure {
-                            message: format!("stream read failed: {e}"),
-                        });
+                        stream_error = Some(format!("stream framing failed: {e}"));
+                        break;
                     }
+                },
+                Err(e) => {
+                    stream_error = Some(format!("stream read failed: {e}"));
+                    break;
                 }
             }
+        }
+        // The framer's tail flush: `finish()` keeps a final complete event
+        // and discards an unterminated line, exactly as the crate's
+        // `stream_step` does. Skipped after a framing failure — that tail is
+        // suspect, not merely unterminated.
+        if stream_error.is_none() {
             for event in framer.finish() {
                 for normalised in parser.feed(&event) {
-                    sink(normalised.clone());
+                    observe(normalised.clone());
                     out.push(normalised);
                 }
             }
+        }
+        if let Some(message) = stream_error {
+            out.push(NormalisedEvent::Error { message });
             return Ok(out);
         }
+        // A user stop is neither a failure nor truncation: return what was
+        // sunk, with no error row for an intentional halt (D65).
+        if self.stop.load(Ordering::Relaxed) {
+            return Ok(out);
+        }
+        // D80 keeps its meaning: a 2xx body that ends before `Stop` is not a
+        // success — it is Ok carrying a trailing Error event, which the loop
+        // persists as a notice inside the assistant message.
+        if !stopped {
+            out.push(NormalisedEvent::Error {
+                message: "stream ended before a stop event (truncated body)".to_string(),
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -566,7 +744,17 @@ pub fn latest_artifact_document(
     let Some(row) = store.latest_artifact(thread_id) else {
         return Ok(None);
     };
-    let path = session_root.join(&row.source_path);
+    // The row's path is store data, not truth: it must stay a relative path
+    // under the session root. `check_relative_path` refuses absolute paths,
+    // `..` traversal, and reserved names before anything is joined (review
+    // 13 NIT: a tampered row must not read an arbitrary file into a frame).
+    let rel = clauro_fs::check_relative_path(&row.source_path).map_err(|e| TurnError::Store {
+        reason: format!(
+            "artifact {} v{} has an unsafe source path: {e}",
+            row.id, row.version
+        ),
+    })?;
+    let path = session_root.join(rel);
     let source = std::fs::read_to_string(&path).map_err(|e| TurnError::Store {
         reason: format!(
             "artifact {} v{} source unreadable: {e}",
@@ -584,11 +772,12 @@ pub fn latest_artifact_document(
 
 /// Command: the webview's producer calls this on turn-done and on mount to
 /// put the drawer live (D121).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn artifact_latest(
     state: tauri::State<'_, TurnState>,
     thread_id: String,
 ) -> Result<Option<ArtifactLatest>, TurnError> {
+    validate_thread_id(&thread_id)?;
     let store = state.store.lock().map_err(|_| TurnError::Store {
         reason: "store lock poisoned".to_string(),
     })?;
@@ -640,12 +829,16 @@ pub fn build_registry(
     Ok(reg)
 }
 
-/// Assemble the frozen prompt + hash for a turn. The tool inventory is the
-/// fixed eight's definitions; per-project memory instructions arrive later
+/// Assemble the frozen prompt + hash for a turn. The tool inventory lists
+/// only what can dispatch ([`MODEL_TOOLS`]); `bash` and `compact` never
+/// reach the model's eyes. Per-project memory instructions arrive later
 /// with 018.
 #[must_use]
 pub fn first_turn() -> (String, String) {
-    let defs = clauro_tools::eight_definitions();
+    let defs: Vec<clauro_tools::ToolDefinition> = clauro_tools::eight_definitions()
+        .into_iter()
+        .filter(|d| MODEL_TOOLS.contains(&d.name.as_str()))
+        .collect();
     clauro_loop::prompt::first_turn_setup(&defs, None)
 }
 
@@ -754,7 +947,7 @@ pub struct TurnStarted {
 // Eight arguments because Tauri commands take flat invoke args — the
 // framework dictates the signature, so bundling is not available here.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn turn_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, TurnState>,
@@ -798,7 +991,7 @@ pub fn turn_start(
     let api_key = crate::keyring_store::retrieve(&provider).map_err(|_| TurnError::NoKey {
         provider: provider.clone(),
     })?;
-    if api_key.trim().is_empty() && !crate::providers::allows_blank_key(&provider) {
+    if crate::providers::blank_key_rejected(&provider, &api_key) {
         return Err(TurnError::NoKey { provider });
     }
 
@@ -842,7 +1035,7 @@ pub fn turn_start(
     let session_dir = state.session_dir(&thread_id)?;
     let project_dir = state.project_dir()?;
     let budget = thinking_budget(&effort);
-    let max = max_tokens.max(1_024);
+    let max = clamp_max_tokens(max_tokens);
 
     std::thread::Builder::new()
         .name(format!("clauro-turn-{thread_owned}"))
@@ -943,24 +1136,11 @@ fn prepare_loop(
         ensure_thread(&guard, job.thread_id, &frozen_hash)?;
     }
     let registry = build_registry(job.store.clone(), job.session_dir, job.project_dir, false)?;
-    // The request surface: the safe six, granted. `bash` stays out (D28) and
-    // `compact` never reaches the schema (D14) — `materialize` enforces both
-    // structurally rather than by convention.
-    let granted = {
-        use clauro_tools::{materialize, ThreadToolState};
-        let mut state = ThreadToolState::default();
-        for name in [
-            "memory",
-            "artifact",
-            "web-search",
-            "web-fetch",
-            "fs",
-            "question",
-        ] {
-            state.granted.insert(name.to_string());
-        }
-        materialize(None, &state).anthropic_tools
-    };
+    // The request surface: the safe six granted, bash denied at first sight
+    // ([`thread_tool_state`]) — `compact` never reaches the schema (D14) —
+    // `materialize` enforces all of it structurally rather than by
+    // convention.
+    let granted = clauro_tools::materialize(None, &thread_tool_state()).anthropic_tools;
     let prepared = PreparedThread {
         system_text,
         frozen_hash,
@@ -1072,6 +1252,7 @@ fn run_turn_blocking(job: TurnJob<'_>) -> Result<TurnReport, TurnError> {
 /// whether a turn was actually running.
 #[tauri::command]
 pub fn turn_stop(state: tauri::State<'_, TurnState>, thread_id: String) -> Result<bool, TurnError> {
+    validate_thread_id(&thread_id)?;
     let stops = state.stops.lock().map_err(|_| TurnError::Store {
         reason: "turn lock poisoned".to_string(),
     })?;
@@ -1086,11 +1267,12 @@ pub fn turn_stop(state: tauri::State<'_, TurnState>, thread_id: String) -> Resul
 
 /// Read one thread's transcript as contract rows. The repair path for a missed
 /// event: whatever the event channel dropped, the store still has.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn transcript_read(
     state: tauri::State<'_, TurnState>,
     thread_id: String,
 ) -> Result<Vec<RenderRow>, TurnError> {
+    validate_thread_id(&thread_id)?;
     read_transcript(&state, &thread_id)
 }
 
@@ -1120,7 +1302,7 @@ fn store_failed(e: impl std::fmt::Display) -> clauro_loop::run::AnswerError {
 // Nine arguments because Tauri commands take flat invoke args — the
 // framework dictates the signature, so bundling is not available here.
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
+#[tauri::command(async)]
 pub fn question_answer(
     app: tauri::AppHandle,
     state: tauri::State<'_, TurnState>,
@@ -1133,11 +1315,16 @@ pub fn question_answer(
     max_tokens: u32,
 ) -> Result<clauro_tools::AnswerResolution, clauro_loop::run::AnswerError> {
     use clauro_loop::run::AnswerError;
-    if thread_id.trim().is_empty() || tool_call_id.trim().is_empty() {
+    if tool_call_id.trim().is_empty() {
         return Err(AnswerError::BadInput {
-            reason: "thread and question ids must not be blank".to_string(),
+            reason: "question id must not be blank".to_string(),
         });
     }
+    // The thread id becomes a session path component — same charset rule as
+    // every other command boundary (review 13: thread_id traversal).
+    validate_thread_id(&thread_id).map_err(|_| AnswerError::BadInput {
+        reason: "thread_id must be 1..=128 chars of [A-Za-z0-9_-]".to_string(),
+    })?;
     if provider.trim().is_empty() || model.trim().is_empty() {
         return Err(AnswerError::BadInput {
             reason: "a model must be selected to resume the turn".to_string(),
@@ -1168,7 +1355,7 @@ pub fn question_answer(
     })?;
     // Same keyless-Ollama exemption as `turn_start` (D125): a resume never
     // switches wire mid-thread, and the row already decided this one.
-    if api_key.trim().is_empty() && !crate::providers::allows_blank_key(&provider) {
+    if crate::providers::blank_key_rejected(&provider, &api_key) {
         return Err(AnswerError::NoKey { provider });
     }
     {
@@ -1209,7 +1396,7 @@ pub fn question_answer(
     let session_dir = state.session_dir(&thread_id).map_err(store_failed)?;
     let project_dir = state.project_dir().map_err(store_failed)?;
     let budget = thinking_budget(&effort);
-    let max = max_tokens.max(1_024);
+    let max = clamp_max_tokens(max_tokens);
     std::thread::Builder::new()
         .name(format!("clauro-turn-{thread_owned}"))
         .spawn(move || {
@@ -1294,6 +1481,325 @@ mod tests {
             validate_start("t1", "hi", "anthropic", "  "),
             Err(TurnError::BadInput { .. })
         ));
+    }
+
+    // ── Command-boundary input validation (review 13) ─────────────────────
+
+    #[test]
+    fn thread_ids_that_could_leave_the_session_root_are_refused() {
+        let long = "x".repeat(129);
+        for bad in [
+            "",
+            "   ",
+            "../evil",
+            "..\\evil",
+            "a/b",
+            "a\\b",
+            "C:\\evil",
+            "\\\\server\\share",
+            "has space",
+            long.as_str(),
+        ] {
+            let err = validate_thread_id(bad).expect_err("must refuse");
+            assert!(
+                matches!(err, TurnError::BadInput { .. }),
+                "{bad:?}: {err:?}"
+            );
+        }
+        for good in [
+            "t1",
+            "thread-001",
+            "Thread_2",
+            "0f9e8d7c-1234-4abc-9def-0123456789ab",
+            "thread-1728537600000",
+        ] {
+            validate_thread_id(good).expect(good);
+        }
+    }
+
+    #[test]
+    fn max_tokens_is_clamped_on_both_ends() {
+        assert_eq!(clamp_max_tokens(0), 1_024);
+        assert_eq!(clamp_max_tokens(64), 1_024);
+        assert_eq!(clamp_max_tokens(4_000), 4_000);
+        assert_eq!(clamp_max_tokens(MAX_TOKENS_CEILING), MAX_TOKENS_CEILING);
+        assert_eq!(
+            clamp_max_tokens(u32::MAX),
+            MAX_TOKENS_CEILING,
+            "a forged invoke cannot amplify cost past the ceiling"
+        );
+    }
+
+    #[test]
+    fn the_prompt_lists_only_tools_that_can_dispatch() {
+        let (text, hash) = first_turn();
+        for name in MODEL_TOOLS {
+            assert!(
+                text.contains(&format!("{name}:")),
+                "the prompt must list {name}"
+            );
+        }
+        assert!(
+            !text.contains("bash"),
+            "bash cannot dispatch (D28); never advertise it"
+        );
+        assert!(
+            !text.contains("compact"),
+            "compact is host-driven only (D14)"
+        );
+        assert!(!hash.is_empty());
+    }
+
+    #[test]
+    fn the_tool_surface_grants_the_six_and_denies_bash() {
+        let state = thread_tool_state();
+        let granted: Vec<&str> = state.granted.iter().map(String::as_str).collect();
+        assert_eq!(
+            granted,
+            vec![
+                "artifact",
+                "fs",
+                "memory",
+                "question",
+                "web-fetch",
+                "web-search"
+            ],
+            "exactly the safe six, in BTreeSet order"
+        );
+        assert!(
+            state.denied.contains("bash"),
+            "bash is denied at first sight (D26) — absent, never deferred"
+        );
+        let surface = clauro_tools::materialize(None, &state);
+        assert!(surface.anthropic_tools.iter().all(|t| t.name != "bash"));
+        assert!(surface.openai_tools.iter().all(|t| t.name != "bash"));
+    }
+
+    #[test]
+    fn an_artifact_row_with_an_escaping_source_path_is_refused() {
+        let store = clauro_store::Store::open_memory().expect("store");
+        store
+            .insert_thread(clauro_store::NewThread {
+                id: "t1".to_string(),
+                project_id: None,
+                title: None,
+                incognito: false,
+                memory_off: false,
+                system_frozen: "hash".to_string(),
+                tools_frozen: String::new(),
+            })
+            .expect("thread");
+        store
+            .insert_artifact(clauro_store::NewArtifact {
+                id: "a1".to_string(),
+                thread_id: "t1".to_string(),
+                title: "t".to_string(),
+                media_type: "text/html".to_string(),
+                source_path: "../../evil.html".to_string(),
+                created_at: 0,
+            })
+            .expect("artifact");
+        let root = std::env::temp_dir().join(format!("clauro-srcpath-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("dir");
+        let err = latest_artifact_document(&store, &root, "t1")
+            .expect_err("an escaping source path must be refused");
+        let msg = err.to_string();
+        assert!(msg.contains("unsafe source path"), "{msg}");
+    }
+
+    // ── LiveExchange over a loopback server (D56 retry cap, D80 truncation)
+    // A raw TcpListener answers with a canned HTTP response and counts the
+    // requests it served: no key, no internet, loopback only.
+
+    fn serve_canned(
+        responses: Vec<String>,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<u64>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = std::thread::spawn(move || {
+            let mut served = 0u64;
+            for response in responses {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                use std::io::{Read as _, Write as _};
+                // Drain the request head so the client's write completes,
+                // then answer and close.
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                served += 1;
+            }
+            served
+        });
+        (addr, handle)
+    }
+
+    fn exchange_against(addr: std::net::SocketAddr) -> LiveExchange {
+        LiveExchange::new(
+            Wire::OpenAi {
+                endpoint: format!("http://{addr}/v1/chat/completions"),
+            },
+            String::new(),
+        )
+        .expect("client")
+    }
+
+    fn bare_request() -> BuiltRequest {
+        BuiltRequest {
+            headers: vec![],
+            body: serde_json::json!({"model": "m", "messages": []}),
+        }
+    }
+
+    /// A 200 SSE response, chunked-transfer framed, that delivers `payload`
+    /// as one chunk and then holds the connection open for `hold` before
+    /// closing — the window a mid-stream stop must halt the read (review 21's
+    /// cancellation finding). Chunked, not close-framed: with no length and
+    /// no chunks, reqwest cannot expose a body byte before EOF, and the test
+    /// would measure the hold instead of the flag.
+    fn serve_head_then_hold(payload: String, hold: std::time::Duration) -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            use std::io::{Read as _, Write as _};
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let chunk = format!("{:x}\r\n{payload}\r\n", payload.len());
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{chunk}"
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.flush();
+            std::thread::sleep(hold);
+        });
+        addr
+    }
+
+    #[test]
+    fn a_truncated_stream_is_ok_with_a_trailing_error_event() {
+        // D80 keeps its meaning under review 21's record-parity fix: a body
+        // that ends before Stop is not a silent success — the step ends Ok
+        // carrying a TRAILING Error event, so the loop persists the sunk text
+        // AND the failure notice (record == view) instead of persisting a
+        // bare notice and erasing what the sink already rendered.
+        let body = "data: {\"type\":\"message_start\"}\r\n\r\n";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (addr, served) = serve_canned(vec![response]);
+        let mut ex = exchange_against(addr);
+        let events = ex
+            .step(&bare_request(), &mut |_| ())
+            .expect("truncation is Ok with a trailing Error event, never Err");
+        match events.last() {
+            Some(NormalisedEvent::Error { message }) => {
+                assert!(message.contains("truncated body"), "{message}");
+            }
+            other => panic!("expected a trailing Error event, got {other:?}"),
+        }
+        assert_eq!(served.join().expect("server"), 1);
+    }
+
+    #[test]
+    fn stop_before_the_step_short_circuits_to_empty_ok() {
+        // A port nothing listens on: any request attempt would fail the
+        // step. A stop already raised must return Ok with nothing — the
+        // loop's stop check ends the turn; there is no failure to notice.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        let mut ex = exchange_against(addr);
+        ex.set_stop_flag(std::sync::Arc::new(AtomicBool::new(true)));
+        let events = ex
+            .step(&bare_request(), &mut |_| ())
+            .expect("a stopped turn is not a transport failure");
+        assert!(events.is_empty(), "nothing was sunk, nothing to persist");
+    }
+
+    #[test]
+    fn mid_stream_stop_halts_the_read_and_keeps_the_sunk_events() {
+        // The provider delivers one delta and then goes quiet (the server
+        // holds the socket open past the test's patience). The user presses
+        // stop mid-read: the step must return promptly with the events it
+        // already sank — no error row for an intentional halt (D65), and no
+        // waiting for EOF (review 21: a 300s stream is not a 300s stop).
+        let payload = "data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n".to_string();
+        let addr = serve_head_then_hold(payload, std::time::Duration::from_secs(8));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let mut ex = exchange_against(addr);
+        ex.set_stop_flag(stop.clone());
+        let started = std::time::Instant::now();
+        let events = ex
+            .step(&bare_request(), &mut |event| {
+                if matches!(event, NormalisedEvent::BlockDelta { .. }) {
+                    stop.store(true, Ordering::SeqCst);
+                }
+            })
+            .expect("a user stop is not an error");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(4),
+            "the read halted on the flag, not on EOF ({:?})",
+            started.elapsed()
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, NormalisedEvent::BlockDelta { .. })),
+            "the sunk delta is returned for persistence: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| !matches!(e, NormalisedEvent::Error { .. })),
+            "a user stop is not an error row: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_stays_retryable_ends_at_the_attempt_cap() {
+        let response = "HTTP/1.1 429 Too Many Requests\r\nretry-after: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string();
+        let responses = vec![response; clauro_transport::MAX_ATTEMPTS as usize];
+        let (addr, served) = serve_canned(responses);
+        let mut ex = exchange_against(addr);
+        let err = ex
+            .step(&bare_request(), &mut |_| ())
+            .expect_err("the turn must end at the cap");
+        assert_eq!(
+            served.join().expect("server"),
+            u64::from(clauro_transport::MAX_ATTEMPTS),
+            "exactly the hard cap, never an unbounded retry"
+        );
+        assert!(err.message.contains("429"), "{}", err.message);
+        assert!(err.message.contains("attempts"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_non_retryable_status_fails_once_and_keeps_its_message_format() {
+        let body = "quota exceeded";
+        let response = format!(
+            "HTTP/1.1 402 Payment Required\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (addr, served) = serve_canned(vec![response]);
+        let mut ex = exchange_against(addr);
+        let err = ex
+            .step(&bare_request(), &mut |_| ())
+            .expect_err("fails at once");
+        assert_eq!(
+            err.message, "provider returned HTTP 402: quota exceeded",
+            "the message format survives the retry-loop rewrite"
+        );
+        assert_eq!(
+            served.join().expect("server"),
+            1,
+            "no retry on a non-retryable status"
+        );
     }
 
     // ── Wire routing (D48: two adapters, the provider row decides) ─────────

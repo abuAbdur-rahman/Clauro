@@ -61,7 +61,8 @@ loss. `clear_thinking_20251015` must be serialised **before** `clear_tool_uses_2
 
 ## On-demand is the primary path (`D95`); threshold is the fallback
 
-The docs say plainly: *"Use on-demand compaction wherever it is available."* So the branch order is:
+The guidance (paraphrased, source URL in `D95`) is unambiguous: prefer on-demand compaction
+whenever the provider offers it. So the branch order is:
 
 1. **`capabilities.compaction` reports on-demand** → on-demand. `/compact` maps here, and so does the
    automatic trigger at `D82`'s threshold.

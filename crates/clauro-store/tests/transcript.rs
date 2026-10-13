@@ -245,6 +245,32 @@ fn aborted_carries_aborted_status() {
     assert_eq!(results[0].status, ToolStatus::Aborted);
 }
 
+/// Review 20, IMPORTANT 6: a tampered row must never silently vanish from
+/// `blocks_for_thread` — a truncated transcript feeds I1/I3 a partial prefix
+/// and they report "clean". Loud refusal until the reader grows a typed error
+/// return (that follow-up needs clauro-loop call-site changes).
+#[test]
+#[should_panic(expected = "transcript rows must decode")]
+fn a_malformed_message_row_fails_loud_instead_of_truncating() {
+    let dir = TestDir::fresh();
+    let store = seeded(&dir);
+    tool_use_block(&store, "b1", "call-1");
+    {
+        let raw = rusqlite::Connection::open(dir.path.join("test.db")).expect("raw connection");
+        raw.execute(
+            "INSERT INTO message (id, thread_id, seq, role, created_at) VALUES ('m-bad', 't1', 'not-a-number', 'user', 0)",
+            [],
+        )
+        .expect("corrupt-seeded message");
+        raw.execute(
+            "INSERT INTO block (id, message_id, seq, kind, payload, generation) VALUES ('b-bad', 'm-bad', 0, 'text', '{}', 0)",
+            [],
+        )
+        .expect("corrupt-seeded block");
+    }
+    let _ = store.blocks_for_thread("t1");
+}
+
 // ── thinking ─────────────────────────────────────────────────────────────────
 
 #[test]

@@ -20,17 +20,27 @@ pub struct RawSseEvent {
 /// refuses it: a stream without newlines must not grow memory without limit.
 pub const MAX_LINE_LEN: usize = 1024 * 1024;
 
+/// One event's cumulative `data:` bytes may buffer at most this much before
+/// the framer refuses it. Each individual line is capped by
+/// [`MAX_LINE_LEN`], but a hostile stream can send `data: x\n` forever, and
+/// `pending_data` would grow without limit between blank lines.
+pub const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+
 /// Why framing failed. The caller drops the framer after an error: resuming
 /// mid-line would re-emit a prefix the transcript already judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FramerError {
     LineTooLong(usize),
+    EventTooLong(usize),
 }
 
 impl fmt::Display for FramerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::LineTooLong(n) => write!(f, "unterminated line past {MAX_LINE_LEN} bytes ({n})"),
+            Self::EventTooLong(n) => {
+                write!(f, "event data past {MAX_EVENT_BYTES} bytes ({n})")
+            }
         }
     }
 }
@@ -45,6 +55,11 @@ pub struct SseFramer {
     carry: Vec<u8>,
     pending_type: Option<String>,
     pending_data: Vec<String>,
+    /// Cumulative bytes in `pending_data`, reset on dispatch.
+    pending_bytes: usize,
+    /// The previous terminator was a lone CR: a leading LF in the next
+    /// chunk is the second half of that CRLF pair and is dropped.
+    last_was_cr: bool,
 }
 
 impl SseFramer {
@@ -55,6 +70,8 @@ impl SseFramer {
             carry: Vec::new(),
             pending_type: None,
             pending_data: Vec::new(),
+            pending_bytes: 0,
+            last_was_cr: false,
         }
     }
 
@@ -96,14 +113,41 @@ impl SseFramer {
         self.carry = held.to_vec();
 
         let mut out = Vec::new();
-        while let Some(pos) = self.text.find('\n') {
-            let mut line: String = self.text.drain(..=pos).collect();
-            line.pop(); // the newline
-            if line.ends_with('\r') {
-                line.pop();
-            }
+        // Line terminators are `\n`, `\r\n`, and a lone `\r` (SSE spec). A
+        // CR terminates its line **eagerly**; a following LF — in this
+        // buffer or the next feed — is the second half of a CRLF pair and
+        // is dropped, never a second terminator.
+        while let Some(pos) = self.text.find(['\r', '\n']) {
+            let terminator_len = match self.text.as_bytes()[pos] {
+                b'\n' if self.last_was_cr && pos == 0 => {
+                    // LF half of a CRLF pair whose CR was already consumed.
+                    self.last_was_cr = false;
+                    self.text.drain(..1);
+                    continue;
+                }
+                b'\n' => {
+                    self.last_was_cr = false;
+                    1
+                }
+                _ => {
+                    let double = self.text.as_bytes().get(pos + 1) == Some(&b'\n');
+                    // Consumed together → no LF left to drop; a lone CR
+                    // leaves one pending for a possible next-feed LF.
+                    self.last_was_cr = !double;
+                    if double {
+                        2
+                    } else {
+                        1
+                    }
+                }
+            };
+            let line: String = self.text.drain(..pos).collect();
+            self.text.drain(..terminator_len);
             if let Some(event) = self.handle_line(&line) {
                 out.push(event);
+            }
+            if self.pending_bytes > MAX_EVENT_BYTES {
+                return Err(FramerError::EventTooLong(self.pending_bytes));
             }
         }
         if self.text.len() > MAX_LINE_LEN {
@@ -112,15 +156,13 @@ impl SseFramer {
         Ok(out)
     }
 
-    /// End of stream: dispatch a final event if lines are still pending.
+    /// End of stream. A non-newline-terminated tail line is **discarded**,
+    /// per the SSE spec: dispatching it would make a truncated stream look
+    /// whole (audit 12). A pending event whose lines were all complete is
+    /// still flushed.
     pub fn finish(&mut self) -> Vec<RawSseEvent> {
+        self.text.clear();
         let mut out = Vec::new();
-        if !self.text.is_empty() {
-            let line = std::mem::take(&mut self.text);
-            if let Some(event) = self.handle_line(line.trim_end_matches('\r')) {
-                out.push(event);
-            }
-        }
         if let Some(event) = self.dispatch() {
             out.push(event);
         }
@@ -138,24 +180,43 @@ impl SseFramer {
         if let Some(value) = line.strip_prefix("event:") {
             self.pending_type = Some(value.strip_prefix(' ').unwrap_or(value).to_string());
         } else if let Some(value) = line.strip_prefix("data:") {
-            self.pending_data
-                .push(value.strip_prefix(' ').unwrap_or(value).to_string());
+            self.push_data(value.strip_prefix(' ').unwrap_or(value));
+        } else if line == "data" {
+            // A field with no colon carries the empty string, per spec —
+            // it is not a drop.
+            self.push_data("");
+        } else if line == "event" {
+            self.pending_type = Some(String::new());
         }
         // `id:` and `retry:` are ignored: v1 has no resume (deferred with
         // retries), and anything else unknown is ignored per SSE.
         None
     }
 
+    fn push_data(&mut self, value: &str) {
+        self.pending_bytes += value.len();
+        self.pending_data.push(value.to_string());
+    }
+
     fn dispatch(&mut self) -> Option<RawSseEvent> {
-        if self.pending_type.is_none() && self.pending_data.is_empty() {
+        if self.pending_data.is_empty() {
+            self.pending_type = None;
+            return None;
+        }
+        let data = std::mem::take(&mut self.pending_data).join("\n");
+        self.pending_bytes = 0;
+        if data.is_empty() {
+            // Empty data buffer: per spec the event (and its type) is
+            // discarded — a type-only event was never sent.
+            self.pending_type = None;
             return None;
         }
         Some(RawSseEvent {
-            event_type: self
-                .pending_type
-                .take()
-                .unwrap_or_else(|| "message".to_string()),
-            data: std::mem::take(&mut self.pending_data).join("\n"),
+            event_type: match self.pending_type.take() {
+                Some(t) if !t.is_empty() => t,
+                _ => "message".to_string(),
+            },
+            data,
         })
     }
 }

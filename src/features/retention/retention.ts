@@ -10,7 +10,12 @@ export function stripThinkingForExport(blocks: readonly ExportBlock[]): ExportBl
 
 /** Export must contain no key material. */
 export function containsKeyMaterial(s: string): boolean {
-  return /api[_-]?key\s*=\s*\S+/i.test(s) || /sk-[A-Za-z0-9]{8,}/.test(s);
+  // Review 31 #9: the old `[A-Za-z0-9]{8,}` stopped at the first `-`, so
+  // `sk-proj-…` / `sk-ant-api03-…` keys never matched and shipped in exports.
+  // `-`/`_` are now in the class and the floor covers the whole tail, prefix
+  // segments included. This errs toward blocking: a false positive refuses an
+  // export (safe), a false negative leaks a key.
+  return /api[_-]?key\s*=\s*\S+/i.test(s) || /sk-[A-Za-z0-9_-]{10,}/.test(s);
 }
 
 export interface ThreadRow {

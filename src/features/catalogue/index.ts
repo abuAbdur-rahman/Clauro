@@ -9,8 +9,6 @@ export {
   shortError,
   refreshCatalogue,
   webviewStatus,
-  keyringStore,
-  keyringRetrieve,
   keyringAvailable,
   CatalogueModelSchema,
   type CatalogueModel,

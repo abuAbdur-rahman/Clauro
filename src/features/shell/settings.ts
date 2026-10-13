@@ -23,12 +23,22 @@ interface SettingsStore {
   setDisplayName: (name: string) => void;
   openSettings: (section?: SettingsSection) => void;
   closeSettings: () => void;
+  /** Providers surface open state (review 31): lives here because the
+      settings dialog's own "Open Providers" CTA must reach the dialog the
+      shell renders — a shell-local useState is unreachable from a feature
+      component. */
+  providersOpen: boolean;
+  openProviders: () => void;
+  closeProviders: () => void;
 }
+
+/** Greeting fallback; the General pane's blank name maps back to this. */
+export const DEFAULT_DISPLAY_NAME = "Abu";
 
 export const useSettingsStore = create<SettingsStore>()((set) => ({
   open: false,
   section: "providers",
-  displayName: "Abu",
+  displayName: DEFAULT_DISPLAY_NAME,
   setDisplayName: (displayName) => {
     set({ displayName });
   },
@@ -37,5 +47,12 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
   },
   closeSettings: () => {
     set({ open: false });
+  },
+  providersOpen: false,
+  openProviders: () => {
+    set({ providersOpen: true });
+  },
+  closeProviders: () => {
+    set({ providersOpen: false });
   },
 }));

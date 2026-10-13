@@ -5,11 +5,13 @@ import {
   HOST_TO_FRAME,
   hostSide,
   isAllowed,
+  parseFrameMessage,
   send,
   validHandshake,
   wireInbound,
   type HostLog,
 } from "./channel";
+import { setRenderNonce } from "./store";
 
 /**
  * The handshake is the whole of D6, and it has three independent properties,
@@ -21,8 +23,12 @@ import {
  */
 
 /** jsdom refuses a non-MessagePort `source`, so the fields are set directly. */
-function helloFrom(origin: string, source: unknown): Event {
-  const event = new MessageEvent("message", { data: { type: "artifact.hello" } });
+function helloFrom(
+  origin: string,
+  source: unknown,
+  data: unknown = { type: "artifact.hello" },
+): Event {
+  const event = new MessageEvent("message", { data });
   Object.defineProperty(event, "origin", { value: origin });
   Object.defineProperty(event, "source", { value: source });
   return event;
@@ -162,9 +168,10 @@ describe("host side wiring", () => {
       frameWindow: window,
       createChannel: () => channel,
       onLog: () => undefined,
+      expectedNonce: "render-1",
     });
 
-    window.dispatchEvent(helloFrom("null", window));
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "render-1" }));
     // `postMessage` to the frame's window is async delivery: poll for the
     // one host→frame message instead of guessing a tick count.
     await untilSettled(() => boots.length === 1, "artifact.boot delivery");
@@ -194,12 +201,17 @@ describe("host side wiring", () => {
         logs.push(l);
       },
       onReady,
+      expectedNonce: "render-1",
     });
 
-    window.dispatchEvent(helloFrom("null", impostor));
+    window.dispatchEvent(
+      helloFrom("null", impostor, { type: "artifact.hello", nonce: "render-1" }),
+    );
     await tick();
 
-    expect(created).toHaveBeenCalledOnce();
+    // The validity check and the channel creation are one step: a refused
+    // hello must not even allocate a channel (audit 14, NIT).
+    expect(created).not.toHaveBeenCalled();
     expect(boots).toEqual([]);
     expect(logs).toEqual([]);
     expect(onReady).not.toHaveBeenCalled();
@@ -209,10 +221,15 @@ describe("host side wiring", () => {
 
   it("a second hello does not re-open the channel", async () => {
     const created = vi.fn(() => new MessageChannel());
-    const host = hostSide({ frameWindow: window, createChannel: created, onLog: () => undefined });
-    window.dispatchEvent(helloFrom("null", window));
+    const host = hostSide({
+      frameWindow: window,
+      createChannel: created,
+      onLog: () => undefined,
+      expectedNonce: "render-1",
+    });
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "render-1" }));
     await tick();
-    window.dispatchEvent(helloFrom("null", window));
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "render-1" }));
     await tick();
     expect(created).toHaveBeenCalledOnce();
     host.dispose();
@@ -240,12 +257,167 @@ describe("host side wiring", () => {
       frameWindow,
       createChannel: () => channel,
       onLog: () => undefined,
+      expectedNonce: "render-1",
     });
 
-    window.dispatchEvent(helloFrom("null", frameWindow));
+    window.dispatchEvent(
+      helloFrom("null", frameWindow, { type: "artifact.hello", nonce: "render-1" }),
+    );
     await untilSettled(() => boots.length === 1, "boot delivered into the frame window");
     expect(boots).toEqual([{ type: "artifact.boot" }]);
     host.dispose();
     el.remove();
+  });
+});
+
+describe("the hello is bound to the document this host published (D6/D123)", () => {
+  it("refuses a hello carrying a foreign nonce", async () => {
+    const created = vi.fn(() => new MessageChannel());
+    const boots: unknown[] = [];
+    const spy = vi.fn((e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "artifact.boot") boots.push(data);
+    });
+    window.addEventListener("message", spy);
+    const host = hostSide({
+      frameWindow: window,
+      createChannel: created,
+      onLog: () => undefined,
+      expectedNonce: "render-1",
+    });
+
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "other" }));
+    await tick();
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello" }));
+    await tick();
+    window.dispatchEvent(
+      helloFrom("null", window, { type: "artifact.hello", nonce: 42 }),
+    );
+    await tick();
+
+    // A page the frame navigated to can say hello with origin "null" from the
+    // frame's own window — everything the old gate checked — but it cannot
+    // name the nonce of the document the host built.
+    expect(created).not.toHaveBeenCalled();
+    expect(boots).toEqual([]);
+    window.removeEventListener("message", spy);
+    host.dispose();
+  });
+
+  it("uses the render nonce prepare recorded when no explicit one is passed", async () => {
+    setRenderNonce("recorded-1");
+    const created = vi.fn(() => new MessageChannel());
+    const boots: unknown[] = [];
+    const spy = vi.fn((e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "artifact.boot") boots.push(data);
+    });
+    window.addEventListener("message", spy);
+    const host = hostSide({ frameWindow: window, createChannel: created, onLog: () => undefined });
+
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello" }));
+    await tick();
+    expect(created).not.toHaveBeenCalled();
+
+    window.dispatchEvent(
+      helloFrom("null", window, { type: "artifact.hello", nonce: "recorded-1" }),
+    );
+    await untilSettled(() => boots.length === 1, "boot for the recorded render nonce");
+    expect(boots).toEqual([{ type: "artifact.boot" }]);
+    window.removeEventListener("message", spy);
+    host.dispose();
+    setRenderNonce(null);
+  });
+
+  it("with no nonce recorded anywhere, nothing is handed a port", async () => {
+    setRenderNonce(null);
+    const created = vi.fn(() => new MessageChannel());
+    const host = hostSide({ frameWindow: window, createChannel: created, onLog: () => undefined });
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "" }));
+    await tick();
+    expect(created).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it("dispose closes the port it started", async () => {
+    const logs: HostLog[] = [];
+    const channel = new MessageChannel();
+    const closed = vi.spyOn(channel.port1, "close");
+    const boots: unknown[] = [];
+    const spy = vi.fn((e: MessageEvent) => {
+      const data = e.data as { type?: string } | null;
+      if (data?.type === "artifact.boot") boots.push(data);
+    });
+    window.addEventListener("message", spy);
+    const host = hostSide({
+      frameWindow: window,
+      createChannel: () => channel,
+      onLog: (l) => {
+        logs.push(l);
+      },
+      expectedNonce: "render-1",
+    });
+    window.dispatchEvent(helloFrom("null", window, { type: "artifact.hello", nonce: "render-1" }));
+    await untilSettled(() => boots.length === 1, "boot before dispose");
+    expect(closed).not.toHaveBeenCalled();
+
+    host.dispose();
+    // The started port is ours to close: a disposed host keeps no channel
+    // that could still deliver a frame message into the shell.
+    expect(closed).toHaveBeenCalledOnce();
+    window.removeEventListener("message", spy);
+  });
+});
+
+describe("wire messages are Zod-validated (AGENTS §5)", () => {
+  it("accepts the closed set and strips everything off it", () => {
+    const parsed = parseFrameMessage({
+      type: "artifact.log",
+      level: "warn",
+      text: "hi",
+      invoke: "artifact.eval",
+      code: "1",
+    });
+    expect(parsed).toEqual({ type: "artifact.log", level: "warn", text: "hi" });
+  });
+
+  it("drops anything whose type is missing or not on the allowlist", () => {
+    for (const data of [
+      null,
+      "artifact.log",
+      42,
+      {},
+      { type: "artifact.eval" },
+      { type: "__TAURI_INTERNALS__.invoke" },
+      { type: "" },
+    ]) {
+      expect(parseFrameMessage(data)).toBeNull();
+    }
+  });
+
+  it("keeps the sound coercions: a bad level or text never drops the message", () => {
+    expect(parseFrameMessage({ type: "artifact.log", level: 5, text: { deep: true } })).toEqual({
+      type: "artifact.log",
+      level: undefined,
+      text: "",
+    });
+    expect(parseFrameMessage({ type: "artifact.hello" })).toEqual({ type: "artifact.hello" });
+  });
+
+  it("bounds the text slice on the way through the port", async () => {
+    const logs: HostLog[] = [];
+    const onReady = vi.fn();
+    const channel = new MessageChannel();
+    wireInbound(channel.port1, {
+      onLog: (l) => {
+        logs.push(l);
+      },
+      onReady,
+    });
+    channel.port2.postMessage({ type: "artifact.log", level: "info", text: "x".repeat(600) });
+    await untilSettled(() => logs.length === 1, "long text arrives");
+    expect(logs[0].text).toHaveLength(500);
+    channel.port1.close();
+    channel.port2.close();
   });
 });

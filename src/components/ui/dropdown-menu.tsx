@@ -1,3 +1,7 @@
+// Ported from shadcn/ui (MIT): https://github.com/shadcn-ui/ui — new-york v4 registry
+// copy, adapted in place (D112/D127, component code only). Provenance: PORTED
+// (FEATURES.md); attribution per AGENTS.md §4.
+
 import * as React from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { CheckIcon, ChevronRightIcon, CircleIcon } from "lucide-react";
@@ -84,7 +88,10 @@ function DropdownMenuCheckboxItem({
         "focus:bg-accent focus:text-accent-foreground relative flex cursor-default items-center gap-2 rounded-sm py-1.5 pr-2 pl-8 text-sm outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className,
       )}
-      checked={checked}
+      /* Spread so an absent `checked` is really absent — exactOptionalPropertyTypes
+         rejects passing `undefined` to Radix's optional prop, and omission is
+         what `undefined` meant (uncontrolled). */
+      {...(checked === undefined ? {} : { checked })}
       {...props}
     >
       <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">

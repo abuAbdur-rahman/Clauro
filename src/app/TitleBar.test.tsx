@@ -36,7 +36,7 @@ describe("TitleBar", () => {
       expect(btn.className).toContain("h-8");
     }
     expect(screen.getByRole("button", { name: "Close" }).className).toContain(
-      "hover:bg-[#C42B1C]",
+      "hover:bg-destructive",
     );
   });
 

@@ -59,6 +59,10 @@ pub struct BuiltRequest {
 /// A normal request: `context_management` edits ride along, `compaction` is
 /// absent by construction (D21). `prefix_mismatch_behavior` sits at
 /// `thinking.block_binding`, never top-level, with its beta header (D20).
+///
+/// Note: this infallible builder does not validate the thinking budget
+/// against `max_tokens` — Anthropic hard-400s `budget_tokens >= max_tokens`.
+/// Prefer [`try_build_normal_request`], which rejects the pair client-side.
 pub fn build_normal_request(input: NormalBuildInput) -> BuiltRequest {
     let mut thinking = json!({
         "type": "enabled",
@@ -89,6 +93,41 @@ pub fn build_normal_request(input: NormalBuildInput) -> BuiltRequest {
         }),
     }
 }
+
+/// Checked variant of [`build_normal_request`]: Anthropic hard-400s a
+/// `thinking.budget_tokens` that is not strictly below `max_tokens`, so the
+/// pair is rejected here with a clear typed error (audit 12).
+pub fn try_build_normal_request(input: NormalBuildInput) -> Result<BuiltRequest, NormalBuildError> {
+    if input.thinking.budget_tokens >= input.max_tokens {
+        return Err(NormalBuildError::BudgetNotBelowMax {
+            budget_tokens: input.thinking.budget_tokens,
+            max_tokens: input.max_tokens,
+        });
+    }
+    Ok(build_normal_request(input))
+}
+
+/// Overlong-budget rejection (Anthropic hard 400).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NormalBuildError {
+    BudgetNotBelowMax { budget_tokens: u32, max_tokens: u32 },
+}
+
+impl fmt::Display for NormalBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BudgetNotBelowMax {
+                budget_tokens,
+                max_tokens,
+            } => write!(
+                f,
+                "thinking budget_tokens {budget_tokens} must be below max_tokens {max_tokens} (Anthropic hard 400)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NormalBuildError {}
 
 /// An on-demand compaction request: `compaction` rides along, everything else
 /// is absent by construction (D21, D74). Overlong instructions are rejected

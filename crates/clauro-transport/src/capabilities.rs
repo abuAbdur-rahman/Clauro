@@ -31,8 +31,11 @@ pub fn compaction_path(model_json: &Value) -> CompactionPath {
 }
 
 /// Select path from probed capability, no live key (D81/D95).
-/// On-demand-first: use on-demand wherever available; threshold-only
-/// takes threshold path; neither falls back to client-side (D58).
+///
+/// Identity by design (D95): the probe already names the path — on-demand
+/// where available, threshold where that is all there is, client-side
+/// summarisation otherwise. Kept as the seam so a future preference
+/// ordering has one place to land; v1 has no ordering.
 #[must_use]
 pub fn select_compaction_path(probed: CompactionPath) -> CompactionPath {
     probed

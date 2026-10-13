@@ -164,6 +164,68 @@ describe("a real compile through the real transform", () => {
   });
 });
 
+describe("the close tag is matched the way the HTML tokenizer matches it", () => {
+  // The extractor and the tokenizer must agree on where a block ends: if the
+  // extractor misses a close the tokenizer honours, `</SCRIPT>` lands inside
+  // the compiled `<script>` context and breaks out of it (audit 14).
+  const closes = ["</script>", "</SCRIPT>", "</ScRiPt >", "</script\n>", "</script/>"];
+  for (const close of closes) {
+    it(`ends the block at ${JSON.stringify(close)}`, () => {
+      const src = `${BLOCK_OPEN}export default () => <b>x</b>${close}<p>tail</p>`;
+      const { blocks, markup } = extractJsxBlocks(src);
+      expect(blocks).toEqual(["export default () => <b>x</b>"]);
+      expect(blocks[0]).not.toMatch(/<\/script/i);
+      expect(markup).toContain("<p>tail</p>");
+    });
+  }
+
+  it("does not treat a longer tag name as a close", () => {
+    const src = `${BLOCK_OPEN}code</scriptx>${BLOCK_CLOSE}`;
+    const { blocks } = extractJsxBlocks(src);
+    expect(blocks).toEqual(["code</scriptx>"]);
+  });
+});
+
+describe("the output cap is computed by the host, not reported by the worker", () => {
+  function fakeWorker(reply: { code: string; bytes?: number }): WorkerLike {
+    const w = idle();
+    w.postMessage = () => {
+      queueMicrotask(() => {
+        w.onmessage?.({ data: { kind: "ok", ...reply } });
+      });
+    };
+    return w;
+  }
+
+  it("a worker that under-reports bytes cannot smuggle code past the cap", async () => {
+    const out = await compileBlocks(["a"], {
+      createWorker: () => fakeWorker({ code: "x".repeat(64), bytes: 1 }),
+      timeoutMs: 100,
+      maxBytes: 8,
+    });
+    expect(out.kind).toBe("too-big");
+  });
+
+  it("a worker that over-reports bytes does not refuse small code", async () => {
+    const out = await compileBlocks(["a"], {
+      createWorker: () => fakeWorker({ code: "tiny", bytes: 999_999 }),
+      timeoutMs: 100,
+      maxBytes: 1024,
+    });
+    expect(out.kind).toBe("ok");
+  });
+
+  it("counts bytes as UTF-8, so non-ASCII code is measured honestly", async () => {
+    // "é" is one UTF-16 code unit but two UTF-8 bytes: `length` undercounts.
+    const out = await compileBlocks(["a"], {
+      createWorker: () => fakeWorker({ code: "é".repeat(6) }),
+      timeoutMs: 100,
+      maxBytes: 10,
+    });
+    expect(out.kind).toBe("too-big");
+  });
+});
+
 describe("limits", () => {
   it("are exported and sized deliberately", () => {
     expect(COMPILED_MAX_BYTES).toBe(1024 * 1024);

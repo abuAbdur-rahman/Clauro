@@ -59,6 +59,21 @@ kill), handler 5/5 (`crates/clauro-tools/tests/bash.rs`). Approval routing,
 opt-in notes, and the approval dialog are specified in `DESIGN.md` §4 but have
 no UI yet; `MISSION.md` §5 already states the claim and the caveat, unchanged.
 
+**Host wiring, named (review 21, lead 2026-10-13).** "No UI yet" understates the gap in three
+parts, each owed by this task before `bash` approval works end-to-end in the running app:
+
+1. `src-tauri/src/lib.rs` registers **no** approve/reject/queue commands — an `AwaitingApproval`
+   turn can never be approved from the app (the loop's `approve_call` resume is tested
+   crate-side only).
+2. `src-tauri/src/turn.rs` builds the registry with the policy surface dead: hardcoded granted
+   six, `rules: Vec::new()`, `build_registry(…, false)` — `project.bash_enabled` never reaches
+   `granted_with_bash`, and `bash_ask_rule` has no production caller.
+3. The approval dialog UI itself (`DESIGN.md` §4).
+
+When (1) lands, the queue/approval maps must leave the turn-long `turns.lock()` for their own
+`Arc<Mutex<…>>` handles (the `stops` map is the pattern) — review 21's lock-split finding, which
+has no user-visible effect until commands exist to block.
+
 ## Acceptance criteria
 
 - [x] Absent from schema unless opted in — ungranted `bash` declares `defer_loading: true` (007 `materialize`); `granted_with_bash` maps `project.bash_enabled` (`bash.rs:30`)

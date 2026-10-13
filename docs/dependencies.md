@@ -245,6 +245,66 @@ Adopted 2026-10-12 for transcript and composer-preview code blocks (`src/feature
 
 Wired as a **post-sanitisation DOM pass**: `renderMarkdown` stays plaintext, and `enhanceCodeBlocks` colourises the already-purified `<pre><code>` by copying shiki's token nodes in — nothing re-enters the string-HTML path.
 
+### 4.6 Verification note (2026-10-12, audit 43) — the four "missing" Rust rows dissolve
+
+Audit 43 asked for dated §5a rows for `dirs`, `uuid`, `chrono`/`time`, and `pulldown-cmark`
+"or whichever markdown crate". **All four dissolve on inspection — none is a direct dependency,
+so §5a has nothing to record.** Verified by reading every `[dependencies]` and
+`[build-dependencies]` block in the workspace:
+
+| Claimed missing | Verdict |
+|---|---|
+| `dirs` | **Not a direct dep.** No crate lists it. |
+| `uuid` | **Not a direct dep.** Thread/project ids are opaque strings chosen by us, not UUIDs. |
+| `chrono` / `time` | **Not a direct dep.** Timestamps ride `rusqlite`'s own types. |
+| `pulldown-cmark` | **No Rust markdown crate exists at all.** The transcript's markdown engine is the **npm** package `marked` ^18.1.0 (`package.json:36`), purified by `dompurify` and highlighted by `shiki` (§4.5). |
+
+The complete set of **external direct Rust dependencies** is nine, and each already has its record
+or its §6 entry: `serde`, `serde_json`, `rusqlite`, `html2text`, `reqwest`, `sha2`, `keyring` (§4.1),
+`tauri`/`tauri-build` (§2, D92 pin). Everything else in `Cargo.lock` is transitive, and §5a's
+"record the reference" duty attaches to what *we* choose, not to what a chosen crate pulls in.
+The `glib` advisory (§6.1) is the one worked example of a transitive dep being tracked anyway —
+because it carried an open advisory, not because transitivity alone demands a row.
+
+**npm runtime dependencies — the four-part record, continued.** §4.3 (`zustand`), §4.4 (`zod`) and
+§4.5 (`shiki`) already carry it. The remainder, which §5a also covers:
+
+| Package | Licence | Why it is here / rejected alternative | Verified |
+|---|---|---|---|
+| `marked` ^18.1.0 | **MIT** | Markdown → HTML for the transcript. **Rejected: `pulldown-cmark`** — would have put a Rust markdown parser on the transcript path for no gain, since the render target is a browser DOM, not a terminal; and **`markdown-it`** — larger, plugin-model surface we do not need under a strict purifier allowlist (D100). Always used **behind DOMPurify**, never trusted directly (`markdown.ts` comment: trusting `marked`'s own escaping leaves a hole a new feature can reopen). | 2026-10-12 (`package.json:36`) |
+| `dompurify` ^3.4.16 | **MPL-2.0** | The purifier on both HTML paths (transcript `markdown.ts`, artifact SVG `sanitize.ts`). File-level copyleft — fine for bundling, and the one npm licence outside the MIT/ISC/Apache/CC0 allowlist that §6.1 of `TECH_STACK.md` tolerates. **Rejected: hand-rolled escaping** — the exact class of bug D100 exists to prevent. Loaded **dynamically** so ~100 KB is not paid on every launch. | 2026-10-12 (`package.json:34`) |
+| `sucrase` ^3.35.1 | **MIT** | In-browser JSX/TS transform for artifacts, inside a Worker with a timeout and an output cap (D4). **Rejected: Babel** — an order of magnitude heavier for a transform-only need; **rejected: bundling a JS runtime** — D110 ships a 20-line `h()` instead, so no second component model enters the security boundary. | 2026-10-12 (`package.json:40`) |
+| `zustand` ^5.0.15 | **MIT** | Frontend state. See §4.3. | 2026-10-04 |
+| `zod` ^4.6.5 | **MIT** | Boundary validation. See §4.4. | 2026-10-04 |
+| `react` / `react-dom` ^19.1.0 | **MIT** | The UI framework; version matches the Tauri v2 template. **Rejected: solid/svelte** — no Tauri-template parity, and React 19 is what the shell code and the vendored shadcn primitives are written against. | 2026-10-04 (template) |
+| `@tauri-apps/api` ^2.12.1 | **MIT OR Apache-2.0** | The IPC surface. Pinned to the same version as the `tauri` crate (D92) — a version skew between the JS API and the Rust runtime is exactly the class of mismatch that made the D124 internals object observable. | 2026-10-12 |
+| `zustand`-adjacent UI kit: `@radix-ui/*` (11 packages), `class-variance-authority`, `clsx`, `tailwind-merge`, `tw-animate-css`, `lucide-react` | **MIT** (cva: Apache-2.0) | App-shell-only primitives, vendored or pinned per D112/D96/D127. Full per-package record and rejected alternatives in **§7** below. Radix never enters the artifact frame (D2, D3, D83). | 2026-10-12 |
+
+**Advisory-scan status, dated (audit 43 asked for this to be recorded rather than assumed):**
+
+| Scan | Status | Date |
+|---|---|---|
+| `pnpm audit --json` | **Clean — 0 vulnerabilities across 329 packages.** | 2026-10-11 (audit 43) |
+| `cargo audit` | **NOT INSTALLED on this host → the Rust advisory scan has never been executed.** This is a real gap, not a pass. Trivy (in `ci.yml`) does scan `Cargo.lock`, but its advisory check is **report-only** and does not fail the build, so no gate currently enforces Rust advisories. | recorded 2026-10-12 |
+| Trivy (CI) | Runs on every push: vulnerabilities, secrets, misconfiguration. **Report-only for advisories** until `Tasks/022` wires a failing gate. | live |
+
+> **The `cargo audit` gap is the honest open item here.** It belongs to `Tasks/022` (packaging and
+> dependency audit), which is still open in Phase 6. Until that task lands, the Rust advisory state
+> is *unknown*, and the §6 register above is built from Dependabot alerts rather than from a full
+> advisory sweep. Do not read "no §6 entry" as "no advisory" — read it as "no advisory *found by the
+> two tools that actually ran*". (`deny-workflow.yml` does **not** exist in this repo, so the audit
+> 43 suggestion to check whether it already runs `cargo deny` resolves to: there is nothing to check
+> — the workflows are `ci.yml`, `malware-ioc.yml` and `release.yml`.)
+
+**npm licence diversity, measured (audit 43 FYI, run 2026-10-12):** `npx license-checker --summary
+--production` over the production tree reports **MIT ×21, (Apache-2.0 OR MIT) ×1
+(`@tauri-apps/api`), Apache-2.0 ×1 (`class-variance-authority`), (MPL-2.0 OR Apache-2.0) ×1
+(`dompurify`), ISC ×1, UNLICENSED ×1** — the UNLICENSED entry is the root package itself, which
+carries no `"license"` field in `package.json` (the repo's `LICENSE` file is MIT; adding the field
+is a one-line packaging fix left to the packaging owner). **No copyleft (GPL/AGPL) runtime
+dependency**; the only non-permissive-adjacent licence is dompurify's file-level MPL, already
+recorded in `TECH_STACK.md` §7.1 and tolerated by §6.1.
+
 ---
 
 ## 5. Identified, vetted, NOT installed
@@ -309,19 +369,27 @@ theme wiring over it. A hand-rolled dialog is a bug farm with a focus trap.
 **Scope is the app shell, exactly like `lucide-react` (D96).** Nothing Radix
 ever enters the artifact frame (`D2`, `D3`, `D83`).
 
-### 7.1 Chat batch (`Tasks/026`)
+### 7.1 Chat batch (`Tasks/026`) — components deleted under **D130**
 
 | Package | Resolved | Licence | Use |
 |---|---|---|---|
-| `@radix-ui/react-avatar` | **1.2.6** | MIT | Message-row avatars (`MessageAvatar` slot) |
-| `@radix-ui/react-dropdown-menu` | **2.1.24** | MIT | Message actions (copy/retry/feedback in `MessageFooter`) |
-| `@radix-ui/react-progress` | **1.1.16** | MIT | Compaction/usage progress |
-| `@radix-ui/react-scroll-area` | **1.2.18** | MIT | Themed transcript scrollbars |
+| ~~`@radix-ui/react-avatar`~~ | ~~1.2.6~~ | MIT | **Removed 2026-10-13 (D130):** `avatar.tsx` was part of the never-wired chat batch; the dependency leaves with it |
+| `@radix-ui/react-dropdown-menu` | **2.1.24** | MIT | Rail thread/project menus (`ProjectsRail`) — survives the batch deletion |
+| `@radix-ui/react-progress` | **1.1.16** | MIT | Compaction/usage progress (`ChatView`, `ProjectDetail`) — survives the batch deletion |
+| ~~`@radix-ui/react-scroll-area`~~ | ~~1.2.18~~ | MIT | **Removed 2026-10-13 (D130):** `scroll-area.tsx` was part of the never-wired chat batch; the dependency leaves with it |
 
-**Deferred with owner:** `message-scroller` follow-output lives in the
-`@shadcn/react` headless package — a non-Radix dependency needing its own
-vetting, owned by the transcript loop (`006`). Presentational `Message` is
-vendored; scroll behaviour is not.
+**Deleted, with reason (D130, 2026-10-13).** The Task 026 chat-batch components (`Bubble`,
+`Message`, `Avatar`, `Attachment`, `Alert`, `Badge`, `Spinner`, `Marker`, `Empty`, `ScrollArea`)
+were vendored fresh from the shadcn registry and never wired — the transcript and composer
+hand-roll their own rows — so they sat at "implemented, tested, no caller" (AGENTS §7a) and
+guaranteed drift against the surfaces that ship. Deleted rather than adopted; their two exclusive
+Radix dependencies (`react-avatar`, `react-scroll-area`) leave with them, and the batch's smoke
+test is trimmed to what ships (`ui-kit.test.tsx`). `dropdown-menu` and `progress` stay, used by the
+rail and the usage displays.
+
+**Deferred with owner:** ~~`message-scroller` follow-output in `@shadcn/react`~~ — moot for the
+kit: `ScrollArea`/`Message` are deleted (D130), and the transcript's own scroller owns
+follow-output in `006`.
 
 ---
 

@@ -211,7 +211,7 @@ fn phase_two_turn_runs_end_to_end() {
         model: "claude-x".to_string(),
         max_tokens: 1024,
         tools: granted,
-        thinking_budget: 10_000,
+        thinking_budget: 512,
         rules: Vec::new(),
     };
 

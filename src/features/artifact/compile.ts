@@ -28,7 +28,15 @@ export const COMPILED_MAX_BYTES = 1024 * 1024;
 export const COMPILE_TIMEOUT_MS = 3000;
 
 const BLOCK_OPEN = '<script type="text/jsx">';
-const BLOCK_CLOSE = "</script>";
+/**
+ * Where the HTML tokenizer ends a script element, for the extractor (audit 14).
+ * `"</script>"` alone misses `</SCRIPT>`, `</script >` and `</script\n>` — closes
+ * the tokenizer honours — and a missed close lands the block's tail inside the
+ * envelope's compiled `<script>` context. The pattern can also close *earlier*
+ * than the tokenizer (a quoted `>` inside an attribute), which errs toward less
+ * code in the block and more of it as inert markup — never more code.
+ */
+const BLOCK_CLOSE_PATTERN = /<\/script(?:[\s/][^>]*)?>/gi;
 
 export type CompileOutcome =
   | { kind: "ok"; blocks: string[] }
@@ -65,11 +73,15 @@ export function extractJsxBlocks(source: string): {
     const start = source.indexOf(BLOCK_OPEN, cursor);
     if (start < 0) break;
     const bodyStart = start + BLOCK_OPEN.length;
-    const end = source.indexOf(BLOCK_CLOSE, bodyStart);
-    if (end < 0) break;
+    // Exec, not indexOf: the close must be the one the tokenizer would honour,
+    // case-insensitively and across the whitespace the tag name allows.
+    BLOCK_CLOSE_PATTERN.lastIndex = bodyStart;
+    const close = BLOCK_CLOSE_PATTERN.exec(source);
+    if (!close) break;
+    const end = close.index;
     blocks.push(source.slice(bodyStart, end));
     markup += `${source.slice(cursor, start)}<!--jsx:${String(blocks.length - 1)}-->`;
-    cursor = end + BLOCK_CLOSE.length;
+    cursor = end + close[0].length;
   }
   markup += source.slice(cursor);
   return { markup, blocks };
@@ -142,9 +154,10 @@ function runBlock(
         });
         return;
       }
-      // The worker reports the byte count of what it produced; the cap is
-      // checked before the code reaches the document.
-      const bytes = data.bytes ?? data.code.length;
+      // The worker's byte count is a claim about its own untrusted output;
+      // recompute it here (audit 14). `TextEncoder` is a platform global, so
+      // the module keeps its zero-import property (asserted in compile.test).
+      const bytes = new TextEncoder().encode(data.code).length;
       if (bytes > maxBytes) {
         finish({
           kind: "too-big",

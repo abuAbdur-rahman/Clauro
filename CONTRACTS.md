@@ -1,6 +1,6 @@
 # Clauro — CONTRACTS.md
 
-**The shapes every test hangs off.** `DECISIONS.md` (D1–D124) says *why*. This file says *what you can
+**The shapes every test hangs off.** `DECISIONS.md` (D1–D130) says *why*. This file says *what you can
 assert against*. Nothing here is a new decision — every type traces to one.
 
 **Rule:** if a type in this file cannot cite a D-number, it is either missing a decision or it is a
@@ -77,6 +77,29 @@ CREATE TABLE block (
   dropped    INTEGER NOT NULL DEFAULT 0   -- (D71) set when input_transformations reports a drop
 );
 CREATE INDEX idx_block_msg ON block(message_id, seq);
+
+-- D19 is enforced by the engine, not only by review. Both triggers are
+-- idempotent (IF NOT EXISTS) and applied on EVERY open, so a database created
+-- before they existed gains them without a schema-version migration or a
+-- user_version bump. DELETE is deliberately NOT banned: the D10 delete paths
+-- (delete_thread / delete_project) must still remove these rows, and a trigger
+-- cannot tell that path apart from a rogue rewrite — the delete path is
+-- covered by behavioural tests instead. Residual: INSERT OR REPLACE resolves
+-- its conflict through that same delete path, which the source scan refuses
+-- outright at the spelling.
+CREATE TRIGGER IF NOT EXISTS trg_message_append_only
+  BEFORE UPDATE
+  ON message
+  BEGIN
+    SELECT RAISE(ABORT, 'append-only (D19): message rows are never rewritten');
+  END;
+
+CREATE TRIGGER IF NOT EXISTS trg_block_append_only
+  BEFORE UPDATE
+  ON block
+  BEGIN
+    SELECT RAISE(ABORT, 'append-only (D19): block rows are never rewritten');
+  END;
 
 -- ── usage: TWO CHANNELS, NEVER FOLDED (D57) ────────────────────────────────
 -- summary_* is separate from the ordinary totals because a compaction call
@@ -439,22 +462,33 @@ export interface TokenMeter {
 
 export interface Measurement {
   inputTokens: number;
-  reserved: number;        // max(maxOutputTokens, buffer)      (D64)
-  headroomTokens: number;  // from the model policy
+  reserved: number;        // min(max(requestMaxTokens, 20_000), 0.50 × contextWindow)   (D82)
+  headroomTokens: number;  // min(headroomIn, 65_536, 0.25 × contextWindow)              (D82)
   usableTokens: number;    // contextWindow − reserved − headroomTokens
   ratioBound: number;      // 0.8 × contextWindow
-  triggerTokens: number;   // min(ratioBound, usableTokens)     (D64, audit 2)
+  triggerTokens: number;   // max(fixedCost + 2_048, min(ratioBound, usableTokens)),
+                           // clamped to contextWindow                                    (D82)
   contextWindow: number;
 }
 ```
 
+`fixedCost = systemTokens + Σ toolSchemaTokens + 512` is internal to the computation — it is **not**
+a field on the wire, and `Measurement` stays exactly these seven camelCase keys (`clauro-tokens`
+`Measurement` carries the same seven, renamed the same way).
+
 ```
-trigger = min(0.8 × contextWindow, (contextWindow − max(maxOutputTokens, buffer)) − headroom)
+fixedCost   = systemTokens + Σ toolSchemaTokens + 512
+trigger     = min( max(fixedCost + 2_048, min(ratioBound, usableTokens)), contextWindow )
 ```
 
-Both bounds, because both failure modes are real: a large-output model on a modest window overflows
-before a ratio fires, and an over-eager bound compacts constantly. DeepSeek already takes the `min`;
-we keep both.
+**The trigger is floored, not merely bounded (D82 — supersedes D64's arithmetic).** The old
+contract here still read `min(0.8 × window, …)`, which is D64's pre-audit shape and is wrong: the
+2,048 floor sat *below* fixed overhead, so on a small-window model the trigger was permanently
+exceeded and compaction fired every turn. Both bounds are real, and now the floor is too — a large
+output model on a modest window overflows before a ratio fires, an over-eager bound compacts
+constantly, and a floor below the fixed cost compacts every turn. DeepSeek takes the `min`; we
+keep the `min`, the `max`, and the final clamp to the window so the trigger stays reachable
+(`0 < triggerTokens ≤ contextWindow`).
 
 **Policy receives intent, never arithmetic (D25).**
 
@@ -614,7 +648,8 @@ export interface UnknownModel {
       notice naming the reason** (D45). The build is one package; the gate is a runtime check.
 
 **Compaction**
-- [ ] Compaction fires on `min(0.8 × window, usable − headroom)` (D64).
+- [ ] Compaction fires on `max(fixedCost + 2_048, min(0.8 × window, usable − headroom))`, clamped to
+      the window (D82).
 - [ ] A summariser that changes nothing yields `no-progress` and cannot authorise a retry (D63).
 - [ ] Usage after compaction is read from `usage.iterations`, not the zeroed top-level fields (D70).
 - [ ] The summary call is a prefix extension: identical leading tokens, one trailing instruction,
@@ -638,6 +673,6 @@ Every one of these is assertable with no provider, no network, and no webview:
 | §3 `ToolOutcome` | every tool returns a discriminated result; **nothing throws** (D55) |
 | §3 permission `resolve` | `deny` wins over `allow` regardless of order; most recent rule wins |
 | §3 output bounding | full output survives, preview is bounded, `previewPath` re-reads identically (D27) |
-| §4 `Measurement` | `triggerTokens` equals the `min` for a matrix of window/output/headroom values (D64) |
+| §4 `Measurement` | `triggerTokens` equals `min(max(fixedCost + 2_048, min(ratioBound, usableTokens)), contextWindow)` for a matrix of window/output/headroom values (D82) |
 | §4 `no-progress` | a summariser returning identical text cannot authorise a retry (D63) |
 | §5 P1–P4 | feed raw SSE fixtures for omitted thinking, a compaction response, an unknown event, and a dropped block |

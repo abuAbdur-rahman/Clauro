@@ -11,8 +11,10 @@
 import { Minus, Square, X } from "lucide-react";
 
 interface TitleBarProps {
-  /** Current thread/view label shown beside the app name. */
-  title?: string;
+  /** Current thread/view label shown beside the app name. `| undefined`
+   *  because the shell passes `title ?? "New chat"`-style values through —
+   *  exactOptionalPropertyTypes pins that explicitness (tsconfig). */
+  title?: string | undefined;
 }
 
 /** Minimize without ever throwing outside a Tauri runtime. */
@@ -27,8 +29,10 @@ async function minimizeWindow(): Promise<void> {
   }
 }
 
-/** Maximize/restore toggle without ever throwing outside a Tauri runtime. */
-async function toggleMaximizeWindow(): Promise<void> {
+/** Maximize/restore toggle without ever throwing outside a Tauri runtime.
+ *  Exported so the F11 hotkey calls the same handler the caption button uses
+ *  instead of clicking through the DOM (review 30 NIT). */
+export async function toggleMaximizeWindow(): Promise<void> {
   try {
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow()
@@ -51,18 +55,19 @@ async function closeWindow(): Promise<void> {
   }
 }
 
-const CAPTION_BUTTON = "flex w-[46px] h-8 items-center justify-center text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100";
+const CAPTION_BUTTON =
+  "flex w-[46px] h-8 items-center justify-center text-muted-foreground hover:bg-accent hover:text-accent-foreground";
 
 export function TitleBar({ title }: TitleBarProps): React.JSX.Element {
   return (
     <div
       data-testid="app-titlebar"
       data-tauri-drag-region
-      className="flex h-8 w-full shrink-0 select-none items-center gap-2 bg-neutral-950 pl-3 text-xs text-neutral-300"
+      className="flex h-8 w-full shrink-0 select-none items-center gap-2 bg-background pl-3 text-xs text-foreground"
     >
-      <span className="font-semibold text-neutral-100">Clauro</span>
+      <span className="font-semibold text-foreground">Clauro</span>
       {title !== undefined && title.length > 0 && (
-        <span className="truncate text-neutral-500">{title}</span>
+        <span className="truncate text-muted-foreground">{title}</span>
       )}
       <span data-tauri-drag-region className="min-w-0 flex-1" />
       <div className="flex shrink-0 items-center">
@@ -92,7 +97,7 @@ export function TitleBar({ title }: TitleBarProps): React.JSX.Element {
           onClick={() => {
             void closeWindow();
           }}
-          className={`${CAPTION_BUTTON} hover:bg-[#C42B1C] hover:text-white`}
+          className={`${CAPTION_BUTTON} hover:bg-destructive hover:text-destructive-foreground`}
         >
           <X size={16} strokeWidth={1.75} />
         </button>

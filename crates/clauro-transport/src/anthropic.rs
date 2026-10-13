@@ -138,14 +138,13 @@ impl StreamParser for AnthropicParser {
                 .collect(),
             "content_block_start" => block_start(&data),
             "content_block_delta" => block_delta(&data),
-            "content_block_stop" => data
-                .get("index")
-                .and_then(Value::as_u64)
-                .map(|index| NormalisedEvent::BlockStop {
-                    index: index as u32,
-                })
-                .into_iter()
-                .collect(),
+            "content_block_stop" => match data.get("index").and_then(Value::as_u64) {
+                Some(index) => match u32::try_from(index) {
+                    Ok(index) => vec![NormalisedEvent::BlockStop { index }],
+                    Err(_) => Self::ignored("oversize-index"),
+                },
+                None => Vec::new(),
+            },
             "message_delta" => message_delta(&data),
             "message_stop" => Vec::new(),
             "ping" => vec![NormalisedEvent::Ping],
@@ -171,6 +170,13 @@ fn block_start(data: &Value) -> Vec<NormalisedEvent> {
             raw_type: "content_block_start".to_string(),
         }];
     };
+    // A wire index ≥ 2³² truncated (`as u32`) to 0 and hijacked the first
+    // block. Oversize is nonsense from a provider: `Ignored`, never an alias.
+    let Ok(index) = u32::try_from(index) else {
+        return vec![NormalisedEvent::Ignored {
+            raw_type: "oversize-index".to_string(),
+        }];
+    };
     let kind = match block.get("type").and_then(Value::as_str) {
         Some("text") => InboundKind::Text,
         Some("thinking") | Some("redacted_thinking") => InboundKind::Thinking,
@@ -194,11 +200,7 @@ fn block_start(data: &Value) -> Vec<NormalisedEvent> {
             .unwrap_or("")
             .to_string(),
     });
-    vec![NormalisedEvent::BlockStart {
-        index: index as u32,
-        kind,
-        tool,
-    }]
+    vec![NormalisedEvent::BlockStart { index, kind, tool }]
 }
 
 fn block_delta(data: &Value) -> Vec<NormalisedEvent> {
@@ -208,9 +210,14 @@ fn block_delta(data: &Value) -> Vec<NormalisedEvent> {
             raw_type: "content_block_delta".to_string(),
         }];
     };
+    let Ok(index) = u32::try_from(index) else {
+        return vec![NormalisedEvent::Ignored {
+            raw_type: "oversize-index".to_string(),
+        }];
+    };
     let event = match delta.get("type").and_then(Value::as_str) {
         Some("text_delta") => NormalisedEvent::BlockDelta {
-            index: index as u32,
+            index,
             text: delta
                 .get("text")
                 .and_then(Value::as_str)
@@ -219,7 +226,7 @@ fn block_delta(data: &Value) -> Vec<NormalisedEvent> {
         },
         // P2: one EMPTY thinking_delta, then signature_delta — both kept.
         Some("thinking_delta") => NormalisedEvent::BlockDelta {
-            index: index as u32,
+            index,
             text: delta
                 .get("thinking")
                 .and_then(Value::as_str)
@@ -227,7 +234,7 @@ fn block_delta(data: &Value) -> Vec<NormalisedEvent> {
             signature: None,
         },
         Some("signature_delta") => NormalisedEvent::BlockDelta {
-            index: index as u32,
+            index,
             text: None,
             signature: delta
                 .get("signature")
@@ -235,7 +242,7 @@ fn block_delta(data: &Value) -> Vec<NormalisedEvent> {
                 .map(str::to_string),
         },
         Some("input_json_delta") => NormalisedEvent::BlockDelta {
-            index: index as u32,
+            index,
             text: delta
                 .get("partial_json")
                 .and_then(Value::as_str)
@@ -317,8 +324,14 @@ fn usage_wire(usage: &Value) -> UsageWire {
         UsageWire {
             top_input_tokens,
             top_output_tokens,
-            billing_input_tokens: iterations.iter().map(|i| i.input_tokens).sum(),
-            billing_output_tokens: iterations.iter().map(|i| i.output_tokens).sum(),
+            // Iteration counts are untrusted wire input: saturate, never
+            // overflow-panic (audit 12).
+            billing_input_tokens: iterations
+                .iter()
+                .fold(0u64, |acc, i| acc.saturating_add(i.input_tokens)),
+            billing_output_tokens: iterations
+                .iter()
+                .fold(0u64, |acc, i| acc.saturating_add(i.output_tokens)),
             context_input_tokens: iterations.last().map(|i| i.input_tokens).unwrap_or(0),
             iterations,
         }
@@ -330,10 +343,11 @@ fn usage_wire(usage: &Value) -> UsageWire {
 /// than a missed signal.
 fn parse_dropped(value: &Value) -> Option<u64> {
     if let Some(arr) = value.as_array() {
+        // Untrusted wire counts: saturate, never overflow-panic (audit 12).
         let total: u64 = arr
             .iter()
             .filter_map(|e| e.get("dropped_thinking_blocks").and_then(Value::as_u64))
-            .sum();
+            .fold(0u64, u64::saturating_add);
         return Some(total);
     }
     value.get("dropped_thinking_blocks").and_then(Value::as_u64)

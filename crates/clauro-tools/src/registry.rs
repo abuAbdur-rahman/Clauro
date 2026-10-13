@@ -82,12 +82,15 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
             name: "memory".to_string(),
             description: "Keep small durable notes the user asked to remember, scoped to a topic. Reads merge into the reply; writes replace one topic at a time and never store secrets.".to_string(),
             // Refined by 008, which owns this contract: six commands over
-            // project-scoped topic rows.
+            // project-scoped topic rows. `reset` is deliberately absent —
+            // it is a host-driven account control (D8), never a model
+            // command (audit 10: a prompt-injected `confirm:true` wiped
+            // every memory in every project).
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["command"],
                 "properties": {
-                    "command": {"enum": ["view", "create", "str_replace", "insert", "delete", "rename", "reset"]},
+                    "command": {"enum": ["view", "create", "str_replace", "insert", "delete", "rename"]},
                     "path": {"type": "string"},
                     "category": {"type": "string"},
                     "body": {"type": "string"},
@@ -98,7 +101,6 @@ pub fn eight_definitions() -> Vec<ToolDefinition> {
                     "old_path": {"type": "string"},
                     "new_path": {"type": "string"},
                     "sensitive": {"type": "boolean"},
-                    "confirm": {"type": "boolean"},
                 },
             }),
             writes_to_disk: true,

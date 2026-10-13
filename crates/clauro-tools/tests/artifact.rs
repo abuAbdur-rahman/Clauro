@@ -244,3 +244,28 @@ fn bad_media_type_oversize_and_shape_refused() {
     ));
     assert!(svg.contains('1'));
 }
+
+#[test]
+fn poisoned_store_lock_is_a_typed_error_not_a_panic() {
+    // audit 10 NIT: `store_guard.lock().expect("store lock must hold")`
+    // turned a poisoned mutex into a host panic mid-dispatch. D55: nothing
+    // throws across the tool boundary — the model gets a typed error.
+    let t = trees();
+    let (reg, epoch) = host(&t);
+    let s = t.store.clone();
+    let _ = std::thread::spawn(move || {
+        let _guard = s.lock().expect("pre-poison");
+        panic!("deliberate poison");
+    })
+    .join();
+    assert!(t.store.is_poisoned(), "the lock must be poisoned now");
+    let out = run(
+        &reg,
+        epoch,
+        json!({"title": "P", "mediaType": "text/html", "source": "<p>x</p>"}),
+    );
+    let ToolOutcome::Error { message } = out else {
+        panic!("poisoned lock must be a typed error, got {out:?}");
+    };
+    assert!(message.contains("busy"), "{message}");
+}

@@ -123,6 +123,26 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     expect(screen.queryByTitle("artifact-frame")).toBeNull();
   });
 
+  it("a switched artifact never presents the previous artifact's frame", async () => {
+    // Review 32 NIT: `result` outlived `artifactId`, so switching artifacts
+    // flashed the OLD artifact's document (or its failure) until the new
+    // prepare resolved. Compiling must cover that window.
+    useDrawerStore.getState().setCompiling("t1", "a1");
+    draw();
+    await screen.findByTitle("artifact-frame");
+    act(() => {
+      useDrawerStore.getState().setCompiling("t1", "a2");
+    });
+    // Synchronously after the switch, before a2's prepare can resolve.
+    expect(screen.queryByTitle("artifact-frame")).toBeNull();
+    expect(screen.getByText(/compiling/i)).not.toBeNull();
+    // And the new artifact still prepares and lands.
+    await waitFor(() => {
+      expect(prepare.fn).toHaveBeenCalledTimes(2);
+    });
+    await screen.findByTitle("artifact-frame");
+  });
+
   it("disabled gate shows the notice instead of the frame", () => {
     useDrawerStore.getState().setNotice("t1", "Stored context line.");
     draw({ engine: { platform: "linux", opaqueProven: false } });
@@ -172,8 +192,12 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
   it("attaches the channel host half to the live frame (D6, D122)", async () => {
     // The handshake's host side exists for a caller, and this is it: attach
     // when a live frame is on screen, report readiness when the frame has
-    // claimed its port, and treat an error-level report as a reason through
-    // the same failed presentation a prepare failure gets.
+    // claimed its port, and take a runtime error report as a STATUS LINE —
+    // never as a shell failure (review 14 NIT): the frame stays up so the
+    // user can keep looking at the artifact that just complained, and a
+    // frame-supplied string is attributed to the frame, in muted styling,
+    // instead of tearing the frame down and rendering the string as the
+    // drawer's own failure text.
     useDrawerStore.getState().setLive("t1", "a9", 2);
     const { unmount } = draw({ title: "Demo" });
     const frame = await screen.findByTitle<HTMLIFrameElement>("artifact-frame");
@@ -188,15 +212,19 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     });
     expect(frame.getAttribute("data-artifact-channel")).toBe("ready");
     // The frame's own runtime reports its errors down the port; a silence
-    // there is the blank-frame bug again.
+    // there is the blank-frame bug again. The report is visible — as the
+    // frame's report, beside the still-live frame.
     act(() => {
       options.onLog({ level: "error", text: "artifact threw at runtime" });
     });
-    await waitFor(() => {
-      expect(screen.getByText(/artifact threw at runtime/)).not.toBeNull();
-    });
-    // The host half is disposed the moment its frame goes away — by the
-    // frame failing here, or by unmount in the steady case.
+    const report = await screen.findByTestId("artifact-frame-report");
+    expect(report.textContent).toContain("artifact threw at runtime");
+    expect(report.className).toContain("text-muted-foreground");
+    expect(report.className).not.toContain("text-destructive");
+    expect(screen.getByTitle("artifact-frame")).not.toBeNull();
+    expect(screen.queryByText("Compiling…")).toBeNull();
+    // The host half is disposed the moment its frame goes away — here only
+    // by unmount: an error report never tears the frame down.
     unmount();
     const disposal = host.hostSide.mock.results[0].value as HostSide;
     expect(disposal.dispose).toHaveBeenCalledOnce();

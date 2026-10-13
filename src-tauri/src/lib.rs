@@ -13,30 +13,19 @@ mod turn;
 use tauri::Manager;
 
 use catalogue::{
-    is_fresh, read_cache, resolve, write_cache, Catalogue, CatalogueError, CATALOGUE_TTL_SECS,
-    MODELS_DEV_URL,
+    is_fresh, read_cache, resolve, write_cache, CatalogueError, CATALOGUE_TTL_SECS, MODELS_DEV_URL,
 };
 use keyring_store::KeyringError;
 use platform::WebviewStatus;
 
 // ── keyring commands ───────────────────────────────────────────────────────
 
-#[tauri::command]
-fn keyring_store(account: String, secret: String) -> Result<(), KeyringError> {
-    keyring_store::store(&account, &secret)
-}
-
-#[tauri::command]
-fn keyring_retrieve(account: String) -> Result<String, KeyringError> {
-    keyring_store::retrieve(&account)
-}
-
-#[tauri::command]
+#[tauri::command(async)]
 fn keyring_delete(account: String) -> Result<(), KeyringError> {
     keyring_store::delete(&account)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn keyring_available() -> Result<(), KeyringError> {
     keyring_store::is_available()
 }
@@ -58,7 +47,9 @@ fn cache_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, CatalogueErro
         })
 }
 
-#[tauri::command]
+/// Reads and parses the whole 5.3 MB cache: `async` so that work lands on a
+/// runtime worker, never on the WebView2 IPC thread (A-perf-ipc).
+#[tauri::command(async)]
 fn catalogue_status(app: tauri::AppHandle) -> Result<serde_json::Value, CatalogueError> {
     let dir = cache_dir(&app)?;
     let now = now_secs();
@@ -136,12 +127,33 @@ async fn fetch_models_dev() -> Result<Vec<u8>, CatalogueError> {
             reason: format!("HTTP {}", resp.status()),
         });
     }
-    resp.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| CatalogueError::Network {
-            reason: format!("cannot read body: {e}"),
-        })
+    // Bound the response: the catalogue is ~5.3 MB, and a hostile or broken
+    // server must not stream an arbitrary body into memory (review 13 NIT).
+    // The declared length is refused before the body is read; the actual
+    // length is refused after, for servers that lie or omit it.
+    if resp
+        .content_length()
+        .is_some_and(|len| len > catalogue::MAX_CACHE_BYTES)
+    {
+        return Err(CatalogueError::Network {
+            reason: format!(
+                "catalogue response is over the {} byte cap",
+                catalogue::MAX_CACHE_BYTES
+            ),
+        });
+    }
+    let bytes = resp.bytes().await.map_err(|e| CatalogueError::Network {
+        reason: format!("cannot read body: {e}"),
+    })?;
+    if bytes.len() as u64 > catalogue::MAX_CACHE_BYTES {
+        return Err(CatalogueError::Network {
+            reason: format!(
+                "catalogue response is over the {} byte cap",
+                catalogue::MAX_CACHE_BYTES
+            ),
+        });
+    }
+    Ok(bytes.to_vec())
 }
 
 // ── artifact policy ─────────────────────────────────────────────────────────
@@ -170,24 +182,27 @@ fn artifact_publish(
 
 // ── platform commands ──────────────────────────────────────────────────────
 
-#[tauri::command]
+/// Reads the WebView2 registry key on Windows: `async` keeps that I/O off
+/// the IPC thread — it is one of the first invokes of every launch.
+#[tauri::command(async)]
 fn webview_status() -> WebviewStatus {
     platform::webview_status()
-}
-
-#[allow(dead_code)]
-fn _catalogue_types() -> Option<(Catalogue, CatalogueError)> {
-    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         // D123/D124: the artifact documents live on their own `artifact`
-        // scheme, registered here at the wry level — never through Tauri's
-        // protocol map, whose ignorance of the scheme is what keeps the
-        // documents remote to Tauri's IPC. The shell's own `tauri` scheme
-        // keeps its built-in handler untouched, including `csp_header`.
+        // scheme, registered here through Tauri's public hook. Note what
+        // that does and does not buy (tauri-2.12.1 `webview/mod.rs:1961-2002`):
+        // the scheme DOES land in Tauri's protocol map, but `is_local_url`'s
+        // Windows arm compares the URL's scheme against the tauri ASSET
+        // protocol's scheme (`http` != `tauri`), so a document at
+        // `http://artifact.localhost/…` resolves `Origin::Remote` and the
+        // ACL denies every command (no remote capability — pinned by test in
+        // `artifact_doc.rs`, empirically by `scripts/webview-proofs.mjs`
+        // claim 1). The shell's own `tauri` scheme keeps its built-in
+        // handler untouched, including `csp_header`.
         .register_uri_scheme_protocol(artifact_doc::SCHEME, |ctx, request| {
             artifact_doc::handle_request(ctx.app_handle(), &request)
         })
@@ -204,14 +219,17 @@ pub fn run() {
             let state =
                 turn::TurnState::open(&dir).map_err(|e| format!("cannot open turn store: {e}"))?;
             app.manage(state);
+            // The enrichment cache is parsed once per file version and shared
+            // by every `provider_models_enriched` invoke — two ModelPickers
+            // mount at boot, and without this each one re-read and re-parsed
+            // 5.3 MB on the IPC thread (A-perf-ipc). Keyed by mtime inside.
+            app.manage(catalogue::EnrichmentMemo::default());
             // Published artifact documents live as long as the app does; the
             // registry is bounded, and a re-render republishes (D123).
             app.manage(artifact_doc::DocRegistry::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            keyring_store,
-            keyring_retrieve,
             keyring_delete,
             keyring_available,
             catalogue_status,
@@ -261,5 +279,417 @@ mod tests {
         assert!(cache_or_none(&dir).is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// True when the `#[tauri::command]` attribute that precedes `fn <name>`
+    /// is `async`-marked, or the function itself is `async fn`.
+    ///
+    /// The reason this is worth pinning: tauri-macros 2.7.1 runs a plain sync
+    /// command INLINE wherever the invoke arrives (`command/wrapper.rs`
+    /// `body_blocking` → `$path(...)` before responding), which on Windows is
+    /// the WebView2 IPC callback — the UI thread. Every read, keychain call,
+    /// and parse in such a command stalls repaint and input for its whole
+    /// duration. `#[tauri::command(async)]` / `async fn` route the body
+    /// through `async_runtime::spawn` instead (`body_async`).
+    fn command_is_async(src: &str, name: &str) -> bool {
+        // The needle is assembled at runtime so this test's own source cannot
+        // satisfy it (same trick as `generic_keyring_commands_are_not_registered`).
+        let decl = format!("fn {}(", name);
+        let Some(fn_at) = src.find(&decl) else {
+            return false;
+        };
+        let Some(attr_at) = src[..fn_at].rfind("#[tauri::command") else {
+            return false;
+        };
+        src[attr_at..fn_at].contains("async")
+    }
+
+    // Every command that touches the filesystem, the keychain, SQLite, the
+    // network, or a 5.3 MB parse runs off the IPC thread. Deliberately NOT
+    // on this list: `artifact_csp` (pure string), `artifact_publish`
+    // (in-memory registry), `turn_stop` (one atomic store under a lock) —
+    // none does I/O, and a round-trip to the thread pool would cost more
+    // than they do.
+    #[test]
+    fn io_commands_are_marked_async_so_they_leave_the_ipc_thread() {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let targets: &[(&str, &[&str])] = &[
+            (
+                "src/lib.rs",
+                &[
+                    "keyring_delete",
+                    "keyring_available",
+                    "catalogue_status",
+                    "catalogue_refresh",
+                    "webview_status",
+                ],
+            ),
+            (
+                "src/providers.rs",
+                &[
+                    "provider_list",
+                    "provider_add_builtin",
+                    "provider_add_custom",
+                    "provider_remove",
+                    "provider_set_key",
+                    "provider_models",
+                    "provider_models_enriched",
+                    "provider_refresh",
+                ],
+            ),
+            (
+                "src/turn.rs",
+                &[
+                    "turn_start",
+                    "transcript_read",
+                    "artifact_latest",
+                    "question_answer",
+                ],
+            ),
+        ];
+        for (file, names) in targets {
+            let src = std::fs::read_to_string(manifest.join(file))
+                .unwrap_or_else(|e| panic!("{file} is readable: {e}"));
+            for name in *names {
+                assert!(
+                    command_is_async(&src, name),
+                    "{file}: `{name}` must be async (async fn or \
+                     #[tauri::command(async)]) — a sync command runs on the \
+                     WebView2 IPC thread and stalls the UI for its whole duration"
+                );
+            }
+        }
+    }
+
+    // The 60-second network fetch leaves the async runtime too, not just the
+    // IPC thread: `async fn` bodies run on a runtime worker, and a worker
+    // blocked for a minute delays every other command (review 13 FYI).
+    #[test]
+    fn the_blocking_pool_offloads_the_heavy_command_work() {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        // Assembled at runtime so this test's source cannot satisfy it.
+        let heavy = format!("{}_blocking", "spawn");
+        let src = std::fs::read_to_string(manifest.join("src/providers.rs"))
+            .unwrap_or_else(|e| panic!("src/providers.rs is readable: {e}"));
+        assert!(
+            src.contains(&heavy),
+            "src/providers.rs: the cold-cache fetch and the5.3 MB parse must \
+             run on the blocking pool, not on a runtime worker"
+        );
+    }
+
+    // Review 13, item 3: generic store/retrieve commands took an arbitrary
+    // account name and returned the raw secret — the frontend never called
+    // them, so they were pure attack surface reachable from any context the
+    // ACL allowed. The typed `provider_*` commands cover every real need
+    // (provider_set_key / provider_remove drive the keyring internally).
+    // The availability probe stays: it reads no secret.
+    #[test]
+    fn generic_keyring_commands_are_not_registered() {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib = std::fs::read_to_string(manifest.join("src/lib.rs")).expect("lib.rs is readable");
+        // The needles are assembled at runtime so this very test's source
+        // cannot satisfy the `contains` checks below.
+        let store_cmd = format!("fn {}(", "keyring_store");
+        let retrieve_cmd = format!("fn {}(", "keyring_retrieve");
+        assert!(
+            !lib.contains(&store_cmd),
+            "keyring_store must not exist as a command"
+        );
+        assert!(
+            !lib.contains(&retrieve_cmd),
+            "keyring_retrieve must not exist as a command"
+        );
+        // The keyring module keeps existing for its real callers — the typed
+        // provider path and the turn driver, never a generic command.
+        assert!(lib.contains("mod keyring_store;"), "the module stays");
+        let providers =
+            std::fs::read_to_string(manifest.join("src/providers.rs")).expect("readable");
+        assert!(
+            providers.contains("keyring_store::store"),
+            "provider_set_key still writes keys through the keyring module"
+        );
+        let turn = std::fs::read_to_string(manifest.join("src/turn.rs")).expect("readable");
+        assert!(
+            turn.contains("keyring_store::retrieve"),
+            "turn_start/question_answer still read keys through the keyring module"
+        );
+    }
+
+    // ── invoke ↔ generate_handler contract (review 40, top-risk 2) ─────────
+    //
+    // Nothing cross-checked the frontend's `invoke("…")` call sites against
+    // the `generate_handler![]` registration. Every layer is mocked
+    // (`@tauri-apps/api/core` in vitest, `src/dev/mock-tauri.ts` in the
+    // browser harness), so a renamed or deleted Rust command stayed green
+    // through every test on both sides and broke only in the shipped app.
+    // This test scans both sides of the boundary and asserts the two name
+    // sets agree, modulo two explicit allowlists — each entry carries the
+    // reason it is allowed to drift, and each entry fails the test once it
+    // goes stale, so the lists cannot rot silently.
+
+    use std::collections::BTreeSet;
+
+    /// Registered commands the UI may invoke WITHOUT a registration — each
+    /// with the reason the drift is allowed. Empty means "no known drift".
+    ///
+    /// Was non-empty for `keyring_store`/`keyring_retrieve` while the dead
+    /// frontend wrappers existed; A-final deleted them (review 13 item 3's
+    /// TODO), so the drift is gone and this list is honestly empty again.
+    const FRONTEND_DRIFT: &[(&str, &str)] = &[];
+
+    /// Registered commands with NO frontend caller — each with the reason they
+    /// stay registered. Empty means "nothing host-only".
+    const HOST_ONLY: &[(&str, &str)] = &[
+        (
+            "keyring_delete",
+            "No production frontend caller (repo-wide grep 2026-10-12): key deletion \
+             goes through `provider_remove`, which drives `keyring_store::delete` \
+             in-process. Registered for host/manual invocation only (e.g. devtools \
+             in a debug build); removing it changes the command ACL and needs a \
+             D-number, which is a lead decision, not this test's.",
+        ),
+        (
+            "catalogue_status",
+            "Read-only cache-status probe; the UI drives `catalogue_refresh` and \
+             never calls status. Registered for host/manual diagnostics only — \
+             same ACL/D-number argument as `keyring_delete`.",
+        ),
+    ];
+
+    /// Production frontend sources: everything under the repo `src/` except
+    /// tests (they drive the MOCK, so their command names are arbitrary) and
+    /// `src/dev/` (the browser harness — its own header says production
+    /// builds never see it, and its `invoke` is a dispatcher, not a call
+    /// site). Returns `(relative path, source)` pairs.
+    fn frontend_sources() -> Vec<(String, String)> {
+        let root = std::path::PathBuf::from(format!("{}/../src", env!("CARGO_MANIFEST_DIR")));
+        let mut out = Vec::new();
+        let mut stack = vec![root];
+        while let Some(top) = stack.pop() {
+            for entry in std::fs::read_dir(&top).expect("repo src/ must be listable") {
+                let path = entry.expect("dir entry must read").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().expect("file has a name").to_string_lossy();
+                if !(name.ends_with(".ts") || name.ends_with(".tsx")) {
+                    continue;
+                }
+                if name.contains(".test.") || name.contains(".spec.") {
+                    continue;
+                }
+                let rel = path.to_string_lossy().replace('\\', "/");
+                if rel.contains("/src/dev/") {
+                    continue;
+                }
+                let body = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{} is readable: {e}", path.display()));
+                out.push((rel, body));
+            }
+        }
+        // A walker that finds nothing must fail loudly here, not pass the
+        // contract vacuously below.
+        assert!(
+            !out.is_empty(),
+            "repo src/ must yield frontend sources — a moved root is a scan \
+             failure, not an empty contract"
+        );
+        out
+    }
+
+    /// Every `invoke("…")` / `invoke('…')` literal first argument in one
+    /// source file. Hand-rolled: this crate has no `regex` dependency and
+    /// adding one for a two-token scan would be waste (§5a). Skipped
+    /// deliberately: invocations whose first argument is not a string
+    /// literal (production has none — the only dynamic one is the mock
+    /// dispatcher, excluded above) and identifiers merely ending in
+    /// `invoke(` (word-boundary guard).
+    fn frontend_invokes_in(src: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut rest = src;
+        while let Some(at) = rest.find("invoke(") {
+            let after = &rest[at + "invoke(".len()..];
+            // Word boundary: `fooInvoke(` / `$invoke(` are not Tauri's
+            // `invoke`. A preceding `.` IS accepted — a future
+            // `core.invoke("…")` call site must count.
+            let prev_ok = at == 0
+                || !rest[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+            if prev_ok {
+                let trimmed = after.trim_start();
+                if let Some(q) = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'') {
+                    let body = &trimmed[1..];
+                    if let Some(end) = body.find(q) {
+                        names.push(body[..end].to_string());
+                    }
+                }
+            }
+            rest = after;
+        }
+        names
+    }
+
+    /// Command names inside the `generate_handler!` registration in lib.rs,
+    /// last path segment only (`turn::turn_start` → `turn_start`). The
+    /// needle is assembled at runtime so this test's own source cannot
+    /// satisfy the search (same trick as the tests above), and the FIRST
+    /// match is the real registration — which precedes this module.
+    fn registered_commands(lib_src: &str) -> Vec<String> {
+        let open = format!("{}![", "generate_handler");
+        let start = lib_src.find(&open).expect("lib.rs registers a handler");
+        let after = &lib_src[start + open.len()..];
+        let end = after.find(']').expect("the registration list closes");
+        // Defend against future inline comments inside the list.
+        let body: String = after[..end]
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(l))
+            .collect();
+        body.split(',')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(|e| {
+                e.rsplit("::")
+                    .next()
+                    .expect("non-empty segment")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Both directions of the contract, plus staleness of both allowlists.
+    /// Pure so the synthetic test below can prove it bites.
+    fn contract_violations(
+        frontend: &BTreeSet<String>,
+        registered: &BTreeSet<String>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        for name in frontend {
+            if !registered.contains(name) && !FRONTEND_DRIFT.iter().any(|(n, _)| n == name) {
+                out.push(format!(
+                    "frontend invokes `{name}` but the handler list does not \
+                     register it — the shipped app would fail this call"
+                ));
+            }
+        }
+        for name in registered {
+            if !frontend.contains(name) && !HOST_ONLY.iter().any(|(n, _)| n == name) {
+                out.push(format!(
+                    "`{name}` is registered but no production frontend file \
+                     invokes it and it is not in HOST_ONLY"
+                ));
+            }
+        }
+        for (name, _) in FRONTEND_DRIFT.iter().copied() {
+            if registered.contains(name) {
+                out.push(format!(
+                    "FRONTEND_DRIFT entry `{name}` is stale: it IS registered now — \
+                     remove the entry"
+                ));
+            }
+            if !frontend.contains(name) {
+                out.push(format!(
+                    "FRONTEND_DRIFT entry `{name}` is stale: no frontend file invokes \
+                     it anymore — remove the entry"
+                ));
+            }
+        }
+        for (name, _) in HOST_ONLY.iter().copied() {
+            if !registered.contains(name) {
+                out.push(format!(
+                    "HOST_ONLY entry `{name}` is stale: it is no longer registered — \
+                     remove the entry"
+                ));
+            }
+            if frontend.contains(name) {
+                out.push(format!(
+                    "HOST_ONLY entry `{name}` is stale: the frontend now invokes it — \
+                     remove the entry"
+                ));
+            }
+        }
+        out
+    }
+
+    /// The permanent bite-proof (review 6: a test that has never failed
+    /// proves nothing): a synthetic pair with one name missing in each
+    /// direction must produce a violation naming it. This fails if the
+    /// scanner or the comparison ever rots into matching nothing.
+    #[test]
+    fn the_invoke_contract_check_flags_a_synthetic_mismatch() {
+        let frontend: BTreeSet<String> = ["turn_start", "fake_missing_command"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let registered: BTreeSet<String> = ["turn_start", "fake_uncalled_command"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let v = contract_violations(&frontend, &registered);
+        assert!(
+            v.iter().any(|m| m.contains("fake_missing_command")),
+            "an invoke the handler list lacks must be flagged: {v:?}"
+        );
+        assert!(
+            v.iter().any(|m| m.contains("fake_uncalled_command")),
+            "a registered command nothing invokes must be flagged: {v:?}"
+        );
+    }
+
+    /// The contract itself: every production `invoke("…")` name is
+    /// registered, every registered command has a caller or an explicit
+    /// reason, and neither allowlist has gone stale.
+    #[test]
+    fn frontend_invokes_match_the_registered_handler() {
+        let mut frontend = BTreeSet::new();
+        for (path, body) in frontend_sources() {
+            // A file importing the REAL invoke must call it with a literal:
+            // a dynamic call there would slip the contract. Files that do
+            // not import it (barrels, views, stores) contribute nothing.
+            if body.contains("from \"@tauri-apps/api/core\"") {
+                let names = frontend_invokes_in(&body);
+                assert!(
+                    !names.is_empty(),
+                    "{} imports the real invoke but contains no literal invoke \
+                     call — either the scanner is stale or the call site became \
+                     dynamic",
+                    path
+                );
+                frontend.extend(names);
+            } else {
+                frontend.extend(frontend_invokes_in(&body));
+            }
+        }
+        // Anchors against a scanner that silently degrades: these two are
+        // invoked/registered today and must be seen by the scan.
+        assert!(frontend.contains("turn_start"), "scan sees turn_start");
+        assert!(
+            frontend.contains("artifact_publish"),
+            "scan sees artifact_publish"
+        );
+
+        let lib_src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        )
+        .expect("lib.rs is readable");
+        let registered: BTreeSet<String> = registered_commands(&lib_src).into_iter().collect();
+        assert!(
+            registered.contains("keyring_available"),
+            "scan sees the registration list"
+        );
+        assert!(
+            registered.len() >= 15,
+            "handler list has every command: {registered:?}"
+        );
+
+        let violations = contract_violations(&frontend, &registered);
+        assert!(
+            violations.is_empty(),
+            "invoke ↔ handler contract broken:\n  {}",
+            violations.join("\n  ")
+        );
     }
 }

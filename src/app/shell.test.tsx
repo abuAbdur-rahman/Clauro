@@ -44,7 +44,10 @@ describe("App shell wires Phase 5", () => {
     expect(await screen.findByRole("button", { name: /send/i })).toBeDefined();
     expect(screen.queryByLabelText("command palette")).toBeNull();
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true }));
-    expect(await screen.findByLabelText("command palette")).toBeDefined();
+    // The palette is a lazy chunk: under full-suite parallel load its transform
+    // can exceed findBy's 1s default (the same reason this test's it() timeout
+    // is already raised to 30s).
+    expect(await screen.findByLabelText("command palette", undefined, { timeout: 15000 })).toBeDefined();
   },
   // Full-App render: exceeds the 5s default under full-suite parallel load.
   30000);

@@ -36,12 +36,19 @@ thing is **wired into whatever uses it**, not merely implemented:
 rg -n 'resolve\(\)|ApprovalQueue|note_call|bound_output' crates -g '*.rs'
 ```
 
-> **Corrected 2026-10-06.** That claim had gone stale and is the reason this paragraph now carries a
-> date. Three of the four are now wired from `clauro-loop/src/run.rs` — `resolve()` at `run.rs:436`,
-> `ApprovalQueue` via `approvals_for` at `run.rs:155`, `note_call` at `run.rs:167` and `reset` at
-> `run.rs:389`. **`resolve_answer` is still test-only** (`question.rs:105`, called only from
-> `tests/question.rs`), so it remains the live example of this trap. Re-run the `rg` above before
-> trusting any of this; the sentence is a dated observation, not a standing fact.
+> **Corrected 2026-10-12 (audit 41).** The 2026-10-06 version of this note said `resolve_answer` was
+> "still test-only (`question.rs:105`, called only from `tests/question.rs`)" — that was already
+> false when written, and the anchors around it had drifted too (`run.rs:436/:155/:167/:389` are not
+> the symbols claimed). All four components are now wired from `clauro-loop/src/run.rs`:
+> `resolve()` at `run.rs:954` (and again at `:1455` filtering deny), `ApprovalQueue` via
+> `approvals_for` at `run.rs:290` (called at `:374` approve, `:472` reject, `:858`, `:971`),
+> `note_call` at `run.rs:321` with `reset` at `run.rs:887`, `bound_output` at `run.rs:350`, and
+> `resolve_answer` — defined in `clauro-tools/src/question.rs:108`, re-exported from
+> `clauro-tools/src/lib.rs:35` — imported at `run.rs:25` and called on the answer path at
+> `run.rs:407`. (Anchors re-run 2026-10-12 during the review-35 closeout; `run.rs` was under active
+> edit that day, which is exactly why this paragraph distrusts its own line numbers.) **There is no live example of this trap in the four original symbols any more**;
+> the trap itself is unchanged, which is why this paragraph stays. Re-run the `rg` above before
+> trusting any of this; every sentence here is a dated observation, not a standing fact.
 
 A symbol appearing only in its own file and its own test is not done. Say so in the task file.
 
