@@ -358,6 +358,33 @@ Settings (Ctrl+,) stays in-app deliberately — one global chord, no competition
 `useSettingsHotkey` in `src/features/shell/hotkey.ts`. The frontend's `react-hotkeys-hook` row in §5
 is unaffected: the in-app listeners are two keydown handlers, still not a dependency.
 
+### 4.9 `libc` (Rust) — the group kill and its proof go to the kernel
+
+| Field | Value |
+|---|---|
+| Crate | `libc` **0.2.190** (already in `Cargo.lock`, transitive through tauri/wry — no new package enters the graph) |
+| Licence | **MIT OR Apache-2.0** — compatible |
+| URL | https://crates.io/crates/libc · https://github.com/rust-lang/libc |
+| Maintenance | The canonical Unix FFI bindings. 0.2.190 released **2026-10-02**; 1.77B downloads (408M recent); MSRV 1.65. |
+| Verified | 2026-10-13 (crates.io API) |
+
+**Why it is in (D131).** `kill_group` in `clauro-fs` (D29's runner, D28/D30's contract) shipped as an
+external `kill -KILL -<pgid>` plus a `kill -0 -<pgid>` poll. On the linux CI runner the probe
+returned rc 1 for a group that still held our own un-reaped leader, so every successful kill burned
+its whole 50×100 ms poll and returned `Err` — two red jobs for working code. The replacement signals
+and verifies through the kernel: `libc::kill(-pgid, SIGKILL)`, `libc::kill(-pgid, 0)`
+(rc 0 / EPERM / ESRCH), and `waitpid(WNOHANG)` to reap our own zombie leader before each emptiness
+check. The dependency is `cfg(not(windows))`-only (Windows keeps `taskkill /T /F`) and sits inside
+the tool host, so per §6.1 rule 5 it carries **D131**.
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Keep the external `kill(1)`, fix the poll instead | The probe's lie is the bug: an exit-code contract that does not exist across images will lie again, and the next witness is a red release job, not a dev box. |
+| `nix` (rust-unix bindings) | A broad syscall/fd/process API adopted for three calls, against §6.1's "every dependency needs a reason"; `libc` is the thin, universal substrate every higher crate (including `nix`) builds on. |
+| Weaken the proof (drop the poll, trust the signal) | Breaks D28/D30: never claim a kill we have not seen. The bounded poll stays; only its honesty was repaired. |
+
 ---
 
 ## 5. Identified, vetted, NOT installed

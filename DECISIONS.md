@@ -1613,6 +1613,26 @@ progress, sheet, separator, tooltip, skeleton) stays under D127's component-code
 future task that wants kit chat primitives vendors them again from the registry — a fresh copy, not
 a stale one.
 
+**D131 — The process-group kill and its liveness proof are kernel syscalls (`libc`), never an
+external `kill(1)`: a shipped binary whose probe lies turns a working kill into a reported failure.**
+
+Decided 2026-10-13 (two red linux CI jobs, lead). `kill_group` shipped as `kill -KILL -<pgid>` plus
+a `kill -0 -<pgid>` poll (D29's runner behind D28/D30's claim). On the runner the probe returned
+rc 1 for a group that still held our own un-reaped leader — zombies count as group members, and
+`kill(1)`'s exit codes are not a contract across images — so every kill that worked burned the full
+50×100 ms poll and returned `Err`, failing `killing_kills_the_group_not_just_the_shell` and
+`wall_clock_timeout_kills_a_hung_command` in CI while passing on dev. The fix strengthens the
+claim instead of loosening it: `libc::kill(-pgid, SIGKILL)` delivers, `libc::kill(-pgid, 0)`
+verifies (rc 0 = a member exists; EPERM = alive but not ours; only ESRCH = empty), and the poll
+reaps our own leader with `waitpid(WNOHANG)` before each check — the callers' `child.wait()` runs
+only after the poll returns, so without the in-loop reap the zombie leader is a permanent member.
+The bounded 50-tick poll and the never-claim-an-unseen-kill contract stand. `libc` 0.2.190
+(MIT OR Apache-2.0, released 2026-10-02, MSRV 1.65) was already in the lockfile, transitive
+through tauri/wry, and is `cfg(not(windows))`-only here — Windows keeps `taskkill /T /F`. Records:
+`TECH_STACK.md` §6.2, `docs/dependencies.md` §4.9. Pinned in-tree by the red-first unit probe
+(`crates/clauro-fs/src/runner.rs`) plus the two integration contracts, which reproduce the CI
+failure signature against the old implementation.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

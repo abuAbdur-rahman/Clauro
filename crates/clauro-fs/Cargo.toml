@@ -7,3 +7,9 @@ license.workspace = true
 [dependencies]
 clauro-core = { path = "../clauro-core" }
 serde = { version = "1", features = ["derive"] }
+
+# D131: the process-group liveness probe and the group SIGKILL go straight
+# to the kernel. `libc` is already in the lockfile at 0.2.190 (transitive
+# through tauri/wry) and is Unix-only here — Windows keeps `taskkill`.
+[target.'cfg(not(windows))'.dependencies]
+libc = "0.2"
