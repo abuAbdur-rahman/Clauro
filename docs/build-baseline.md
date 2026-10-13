@@ -67,3 +67,35 @@ which is the property that matters — the D4 separation holds across four unrel
 
 Headroom: binary unchanged, frontend main chunk now ~0.52 MB total. Still two orders of
 magnitude inside the ~25 MB budget; no action.
+
+## Re-measurement — 2026-10-13, `Tasks/022` (packaging + dependency audit)
+
+The first re-build of the binary since `003`'s 8.08 MB record, with Rust work from `004`–`021` behind
+it — so the delta is real dependency weight, not drift: the six tools, `rusqlite` **bundled** SQLite,
+`reqwest` + `rustls`, the keyring, the transport/loop crates, the Windows job-object kill
+(`windows-sys`, D128), both Tauri plugins, and `libc` (D131). Cold build (`pnpm build`, then
+`cargo build --release`): **31m 57s**.
+
+| Asset | Bytes | Delta vs `028` row | Loads when |
+|---|---|---|---|
+| `clauro.exe` (release) | **11,779,072 B = 11.23 MiB** (11.78 MB decimal) | **+3.23 MiB** — first re-build since `003` | always |
+| `index-*.js` (main chunk) | **427,933 B (417.9 kB)** | **−40.7 kB** — the syntax grammars split into lazy chunks | always |
+| `compile.worker-*.js` | **202,656 B** | **0** — byte-identical; the D4 split still holds across four more landings | only for JSX artifacts |
+| `purify.es-*.js` | **28,086 B** | **0** — byte-identical | only for SVG artifacts |
+| `index-*.css` | **69,952 B (68.3 kB)** | **+12.8 kB** — themes, accents, density (`Tasks/020`, Phase 5) | always |
+| `dist/` total | 69 files, **3.44 MiB** | — shiki grammars are per-language and lazy | on demand |
+
+**The number `Tasks/022` asks for: 11.23 MiB against a ~25 MB budget — ~13.8 MiB of headroom.**
+`release.yml:166` already asserts it on every release build (largest `*.exe`/`clauro` under
+`target/`), so the claim is checked rather than hoped. **Measured on the Windows dev host with
+`cargo build --release`; the CI assertion on the shipped bundles is authoritative** (`AGENTS.md` §8a)
+— the runners are not this machine, and the release job bundles via `pnpm tauri build`.
+
+**The catalogue is still not in the binary, and that is now checked rather than asserted.** Eight
+provider slugs that exist only in `models.dev/api.json` (`moonshotai`, `zhipuai`, `novita-ai`,
+`fireworks-ai`, `togetherai`, `siliconflow`, `alibaba`, `hyperbolic`) appear **zero** times in
+`clauro.exe` and in `dist/`, with a **positive control** — the fetch URL `models.dev/api.json` *is*
+present in the binary, which proves the search method works on that artefact rather than silently
+matching nothing. No `models-dev-cache.json` is shipped either. The runtime path is unchanged
+(`catalogue.rs:28`, cached with a 16 MB read cap); at ~5.3 MB it stays larger than the whole budget,
+which is why D23 keeps it out.
