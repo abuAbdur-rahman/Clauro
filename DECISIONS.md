@@ -1633,6 +1633,25 @@ through tauri/wry, and is `cfg(not(windows))`-only here — Windows keeps `taskk
 (`crates/clauro-fs/src/runner.rs`) plus the two integration contracts, which reproduce the CI
 failure signature against the old implementation.
 
+**D132 — Clauro v1 is Windows-only: the Linux platform implementation is removed, not deferred.**
+
+Decided 2026-10-13 (user decision: "strictly win only for now"). D114/D115 parked the Linux CI jobs
+and D126 restored them; this goes further and takes the platform out of the product's scope. Gone
+from `ci.yml`: the `linux primary` / `linux floor` matrix jobs and the `Install Linux webview deps`
+and `Record the Linux floor WebKitGTK runtime version` steps. Gone from `release.yml`: the two
+`*-unknown-linux-gnu` targets, the Linux apt step, and the `appimage` branch in the bundle selector.
+The reason is the platform, not the effort: the first release run this repo ever executed failed on
+its `aarch64-unknown-linux-gnu` leg while both Windows legs proceeded, and the only Linux-specific
+*product* behaviour left — D45's runtime disable for an unproven WebKitGTK opaque origin — is a
+fallback that exists solely because the platform was never proven. **What stays, deliberately:** the
+`#[cfg(not(windows))]` arms in `clauro-fs` and `clauro-tools` with their tests. They are inert on
+Windows, cost nothing at build time, and keep those crates compiling anywhere; deleting them is
+churn with no benefit while the product is Windows-only. Consequences elsewhere: D126's "both
+floors" now means the two Windows jobs and nothing else, and `SPEC.md` §6.3's platform clause reads
+Windows-only. D114/D115's parking and D126's restoration are **superseded** rather than rewritten —
+the history is why this decision is cheap to reverse. Re-entering Linux is a new decision and the
+proof D45 always asked for, never a revert of this one.
+
 ## 5. Security posture — stated plainly
 
 Clauro makes these claims and this is what backs them:

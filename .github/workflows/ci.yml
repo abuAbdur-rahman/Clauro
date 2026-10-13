@@ -41,17 +41,11 @@ jobs:
       - name: Check D-refs, task count, crate names, DDL count
         run: python3 scripts/check-docs.py
 
-  # 2. Platform matrix — Windows primary + floor, Linux primary + floor.
-  #
-  # Linux re-enabled 2026-10-12 (review 42; AGENTS.md §9 / D50: the Windows and
-  # Linux floors are release blockers, and release.yml ships Linux AppImages).
-  # D114 parked these jobs on 2026-10-06 because cold builds hit 35-minute walls
-  # against a 30-minute limit with no cargo cache, and its own restore plan was
-  # "re-enable together with the cargo cache and timeout budget" — which is what
-  # this job now has: rust-cache below and a 60-minute timeout. The parked
-  # definitions from `.github/workflows/linux-matrix.yml.disabled` (matrix
-  # entries, apt step) are restored verbatim and that file is deleted. A new
-  # D-number superseding D114/D115's parking is owed to DECISIONS.md.
+  # 2. Platform matrix — Windows primary + floor. **Windows-only (D132)**: the
+  # Linux jobs and their WebKitGTK steps were removed with the rest of the
+  # Linux implementation. The ubuntu-hosted jobs elsewhere in this file (docs,
+  # secrets, scans) stay where they are: they are CI infrastructure and make
+  # no claim about the platform Clauro ships on.
   check:
     name: ${{ matrix.job }}
     runs-on: ${{ matrix.os }}
@@ -64,10 +58,6 @@ jobs:
             os: windows-latest
           - job: windows floor
             os: windows-latest
-          - job: linux primary
-            os: ubuntu-24.04
-          - job: linux floor
-            os: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -121,37 +111,6 @@ jobs:
         with:
           node-version-file: ".nvmrc"
           cache: pnpm
-
-      # Restored verbatim from `.github/workflows/linux-matrix.yml.disabled`
-      # when the Linux jobs came back (D114 parked it; review 42 / D50
-      # re-enabled 2026-10-12).
-      - name: Install Linux webview deps
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev
-
-      # The Linux floor records its WebKitGTK runtime the way the Windows floor
-      # records WebView2 (D50: a floor that records nothing is a label, not a
-      # floor). 2.40 is D50's floor; a pinned-version install is Phase 7
-      # (Tasks/021).
-      - name: Record the Linux floor WebKitGTK runtime version
-        if: matrix.job == 'linux floor'
-        shell: bash
-        run: |
-          v=$(pkg-config --modversion webkit2gtk-4.1 2>/dev/null || true)
-          if [ -z "$v" ]; then
-            echo "::warning::no webkit2gtk-4.1 found via pkg-config - see Tasks/021"
-            exit 0
-          fi
-          echo "WebKitGTK version: $v"
-          if [ "$(printf '%s\n' 2.40.0 "$v" | sort -V | head -n1)" = "2.40.0" ]; then
-            echo "at or above the D50 floor (2.40+)"
-          else
-            echo "::error::WebKitGTK $v is below the D50 floor (2.40+)"
-            exit 1
-          fi
 
       # The Windows floor pins a FIXED WebView2 runtime rather than relying on
       # whatever the image happens to ship. Full fixed-version install lands
