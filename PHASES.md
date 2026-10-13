@@ -60,7 +60,9 @@ floors now *record* their webview runtime (`ci.yml:139` for WebKitGTK, `ci.yml:1
 and the Linux floor **asserts** its 2.40 floor, failing the job below it. What remains belongs to
 `Tasks/021`: the Windows floor still records rather than *pins*, and neither platform has a
 fixed-version install. A recorded-but-unpinned floor is a step, not a guarantee, and `D50` still
-has teeth only where the version is asserted.
+has teeth only where the version is asserted. **Superseded 2026-10-13 (`D132`):** the Linux jobs and
+the WebKitGTK floor were removed with the platform, so what remains of this paragraph is the Windows
+floor — and `Tasks/021` still owns pinning its WebView2 runtime rather than recording the image's.
 
 **Document corrections made 2026-10-05.** Five false claims were found and corrected in the task
 files rather than left standing (`AGENTS.md` §5a): `Tasks/004` said "Eleven tables" when the schema
@@ -86,7 +88,7 @@ a display.
 
 | Task | State | Contract | D-refs |
 |---|---|---|---|
-| `Tasks/001-dual-engine-sandbox-spike.md` | ◐ Windows verified · **Linux not run** | — (produces a verdict, not code) | D2, D6, D45, D77 |
+| `Tasks/001-dual-engine-sandbox-spike.md` | ✅ Windows verified · Linux column withdrawn (**D132**) | — (produces a verdict, not code) | D2, D6, D45, D77 |
 | `Tasks/002-workspace-skeleton-and-ci.md` | ✅ | — | D50 |
 | `Tasks/003-keyring-and-model-catalogue.md` | ✅ verified 2026-10-04, Windows + Linux CI; providers addendum 2026-10-07 (D116/D117) | `ProviderAdapter.limits` + §1 (`provider`, `provider_model`) | D19, D23, D49, D50, D53, D76, D116, D117 |
 | `Tasks/033-five-provider-set.md` | ✅ verified 2026-10-11, Windows host (lib 80/80, vitest 473/473, tsc + eslint green; live-key proof not run by rule) | §1 (`provider` builtin ids) | D125 |
@@ -97,9 +99,8 @@ Windows CI jobs. **Linux jobs were parked 2026-10-06 (D114/D115); restored to `c
 
 **Gate status:** ✅ closed Windows-only 2026-10-09 (D115, CI clause since superseded by D126).
 `002` and `003` are complete; `001`'s Windows verdict is committed
-(`docs/spikes/sandbox-verdict.md`). The Linux column — the WebKitGTK app,
-`event.origin`/`event.source` capture — is still owned by Phase 7 and gates nothing here (D50),
-but the two Linux *jobs* now run on every change (D126). (`event.origin`/`event.source` capture
+(`docs/spikes/sandbox-verdict.md`). The Linux column this gate once waited on is withdrawn with the
+platform (**D132**), so nothing is outstanding here. (`event.origin`/`event.source` capture
 on Windows itself remains open under `Tasks/014` — that is Phase 3 work, not this gate.)
 
 > **The two floor jobs are labels, not floors yet.** *(Written 2026-10-05; partly obsolete.)* Both
@@ -228,8 +229,8 @@ loop), Phase 4 (compaction needs tools to compact around).
 | Task | State | Contract | D-refs | Gate |
 |---|---|---|---|---|
 | `Tasks/012-bash-tool.md` | ✅ backend 11+5 | §3 | D28, D29, D30, D46, D66, D67 | D19, D28, D29, D30, D46, D55, D66, D67 |
-| `Tasks/013-artifact-drawer.md` | ✅ tool + drawer + engine proofs 8/8 (D123, D124); Linux floor stays 021 | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77, D121, D122, D123, D124 |
-| `Tasks/014-artifact-compile-and-channel.md` | ✅ compile/channel/CSP + engine proofs; Tailwind CSS needs 022, Linux floor 021 | §3 | D4, D5, D6, D12, D110, D111 | D2, D4, D5, D6, D12, D78, D102, D123, D124 |
+| `Tasks/013-artifact-drawer.md` | ✅ tool + drawer + engine proofs 8/8 (D123, D124) | §1, §2 | D1, D2, D3, D45, D63, D77 | D1, D2, D3, D45, D63, D77, D121, D122, D123, D124 |
+| `Tasks/014-artifact-compile-and-channel.md` | ✅ compile/channel/CSP + engine proofs; Tailwind CSS needs 022 | §3 | D4, D5, D6, D12, D110, D111 | D2, D4, D5, D6, D12, D78, D102, D123, D124 |
 | `Tasks/028-phase3-gate-e2e-and-persist-hardening.md` | ✅ e2e both halves green; silent drops now loud; webview items stay 021 | §1, §2, §3 | D65, D68, D113 | D2, D4, D6, D27 |
 
 **Gate:** artifacts render live and the iframe has no reachable command path to app internals; a denied
@@ -248,8 +249,8 @@ What cannot be met yet, and why, in the order it blocks:
 1. **"No reachable command path to app internals"** and **"a denied network request fails"** are claims
    about a running engine. `Tasks/001` proved the same properties in a throwaway probe app on
    WebView2; the *product* frame is now observed on Windows too — `pnpm proofs`, 8/8 green
-   (D123 served document, D124 remote-by-construction host). What stays open is the Linux
-   floor (`021`, D45), which the Windows proofs say nothing about.
+   (D123 served document, D124 remote-by-construction host). Nothing on this item stays open: the
+   only part that did was the Linux floor, and **D132** removed the platform.
 2. **"Artifacts render live"** in the product: proven end to end across the seam by `Tasks/028`
    — the Rust half drives `artifact` through the real loop into versioned rows + paired results
    (`e2e_phase3.rs`), the frontend half drives a tool result through the real store actions and
@@ -327,49 +328,46 @@ live and fixed with a pinning test). Telemetry audit: `rg` zero hits source + ma
 
 | Task | State | Contract | D-refs |
 |---|---|---|---|
-| `Tasks/021-platform-floors-and-linux-gate.md` | ◐ Linux CI restored to `ci.yml` (D126) — floors record + Linux floor asserts 2.40; fixed-version installs + the Linux gate proof still open | §7 | D2, D45, D46, D50, D77, D79 |
+| `Tasks/021-platform-floors-and-linux-gate.md` | ◐ Windows floor records its WebView2 runtime; its Linux half is **withdrawn (D132)** (the filename keeps its old name — renaming it would break every reference). Still open *for Windows*: a **pinned** runtime install, because a floor that records is a step, not a guarantee | §7 | D2, D45, D46, D50, D77, D79 |
 | `Tasks/022-packaging-and-dependency-audit.md` | ◐ installers exist; `THIRD_PARTY_NOTICES` + the cargo-audit workflow wiring are release-time, still open | — | D4, D23, D24, D39, D49, D53, D59, D60, D127 |
 | `Tasks/029-dual-mode-shell-parity.md` | ◐ slice 1 landed 2026-10-10 on Windows; `docs/blockers.md` row follow-ups remain | — | D112 |
 | `Tasks/030-cold-launch.md` | ✅ landed (code); one environmental item for the human (Defender exclusion on `node_modules`) | — | D112 |
 | `Tasks/031-ui-upgrade-wave.md` | ◐ T1–T7 landed in `65e46f4` (2026-10-11); the task file's boxes are unticked and its status still reads "open" — tick-with-evidence is owed by its owner (review 41), not by this document | — | D112 |
 | `Tasks/032-interaction-layout-pass.md` | ✅ landed, all four groups + criteria ticked with `path:line` evidence (corrected 2026-10-12) | — | D112 |
 
-**Gate:** **both floors** pass, not just the primaries. Installers exist for Windows and Linux.
+**Gate:** **the Windows floor** passes, not just the primary. Installers exist for Windows (msi +
+nsis). **D132** narrowed this from "both platforms" — there is no Linux installer to ship.
 Dependency audit confirms nothing was ported from LobeHub or from proprietary wording.
 
-**Linux CI restored 2026-10-12 (D126).** The parking that D114/D115 imposed on 2026-10-06 is
-lifted: `ci.yml` runs windows primary, windows floor, linux primary and linux floor on every
-change, with the cargo cache (`Swatinem/rust-cache`) and `timeout-minutes: 60` that D114 itself
-named as the restore condition. `.github/workflows/linux-matrix.yml.disabled` was deleted — the
-definitions were restored verbatim into `ci.yml`. What still belongs to `Tasks/021` and to Phase 7
-is the fixed-version runtime *install* and the `001` Linux column, not the jobs. `D50` is unchanged
-(a failed floor blocks everything) and now has both floors actually running behind it.
+**Windows-only, 2026-10-13 (D132).** The Linux jobs, the WebKitGTK floor, both Linux release targets
+and the AppImage upload paths are removed. The sequence is worth keeping because it is why the
+decision was cheap: D114/D115 parked the Linux jobs, D126 restored them on 2026-10-12, and the first
+release run this repo ever executed failed on its `aarch64-unknown-linux-gnu` leg while both Windows
+legs proceeded. `D50` is unchanged (a failed floor blocks everything) and now has the two Windows
+jobs behind it.
 
 **A floor failure is a release blocker, not a warning.** The floors are where the sandbox guarantee
 gets falsified. **D50.**
 
 ---
 
-## Phase 7 — Linux and floors (post-deployment)
+## Phase 7 — Deferred platforms (retired)
 
-**Purpose:** everything Linux-shaped that Phases 0–6 provably don't need on Windows, in one
-place with one gate, so no earlier phase stays open for it. Created 2026-10-07 (**D115**);
-no new tasks — the work already has numbers, only the phase assignment moves.
-**Narrowed 2026-10-12 (D126):** the CI jobs and the cache/timeout budget are no longer here —
-they are back in `ci.yml` and gate every change. What remains is the runtime and verdict work.
+**Retired 2026-10-13 (D132).** Clauro v1 ships Windows-only, so this phase has no in-scope work left.
+It is kept as a stub rather than deleted because the *history* is exactly what makes re-entry cheap:
+every item below was reached by a decision with its reason, and reversing one means reading that
+reason first.
 
-| Item | Was in | Here now | State |
-|---|---|---|---|
-| `001` Linux column (WebKitGTK verdict, `event.origin`/`event.source` capture) | Phase 0 gate | Phase 7 gate | ⬜ open |
-| Linux primary + Linux floor CI | parked per `D114` in `.github/workflows/linux-matrix.yml.disabled` | **returned to the Phase 6 / every-change gate 2026-10-12 (D126)** | ✅ no longer here |
-| Cargo cache + job-timeout budget that make Linux jobs meaningful | `021` | **landed in `ci.yml` 2026-10-12 (D126)** | ✅ no longer here |
-| Linux runtime gate proof (`021`, **D45**) | Phase 6 | Phase 7 gate | ⬜ open |
-| Fixed-version runtime installs (pinned WebKitGTK; pinned WebView2 on the Windows floor) | `021` | Phase 7 gate | ⬜ open |
+| Item | Where it went | State |
+|---|---|---|
+| `001` Linux column (WebKitGTK verdict, `event.origin`/`event.source` capture) | Phase 0 gate → here → **withdrawn** | ⏹ out of scope (D132) |
+| Linux primary + Linux floor CI | `ci.yml` → **removed** | ⏹ out of scope (D132) |
+| Linux runtime gate proof (`021`, **D45**) and its frontend disable branch | Phase 6 → here → **removed** | ⏹ out of scope (D132) |
+| Pinned WebKitGTK install | `021` → here → **withdrawn** | ⏹ out of scope (D132) |
+| Pinned **WebView2** install (Windows floor) | `021` | ⬜ **still in scope** — the one item that was never about the Linux question |
 
-**Gate:** the `001` Linux column is filled on real WebKitGTK, the Linux gate
-fires-or-stays-silent correctly, and both floors install a pinned runtime rather than recording
-whatever the image ships. `SPEC.md` §6.3 reads "both floors" as all four jobs since D126 — the
-narrowing that D115 introduced ("both floors" = the two Windows jobs) is lifted with the parking.
+**Gate:** none. The sole survivor — pinning the WebView2 runtime — belongs to `Tasks/021` and to
+Phase 6's gate, not here.
 
 **Unblocks:** nothing — this phase is terminal by design.
 

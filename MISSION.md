@@ -73,10 +73,11 @@ We do not claim to have invented the wheel. We claim to have picked it up correc
 
 ## The one thing that could kill this
 
-The sandbox spike, `Tasks/001`. Whether WebKitGTK holds an opaque origin is not documented anywhere
-and cannot be resolved by reading. If it does not, artifacts are disabled at runtime on Linux — one
-package, told to the user plainly — and D2 is withheld on that engine rather than weakened
-everywhere.
+The sandbox spike, `Tasks/001`. Whether WebView2 holds an opaque origin is not documented anywhere
+and cannot be resolved by reading. It does hold one — and `pnpm proofs` asserts it on every run, so
+the claim is checked rather than assumed. The second engine the spike was written for (WebKitGTK) is
+out of scope: Clauro ships Windows-only (**D132**), so there is no platform left where the guarantee
+has to be withheld.
 
 That is why it is the first task.
 ### The one claim we deliberately narrowed

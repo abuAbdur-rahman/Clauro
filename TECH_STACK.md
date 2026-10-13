@@ -9,7 +9,7 @@ is then a real obligation rather than a courtesy, and the research assumed open 
 
 | | Choice | Why this and not the obvious alternative |
 |---|---|---|
-| Shell | **Tauri v2** (Rust) | Chromium-free. WebView2 on Windows, WebKitGTK on Linux. ~25 MB binary vs ~150 MB for Electron. Pinned at **2.12.1**, far above the CVE-2024-35222 fix. |
+| Shell | **Tauri v2** (Rust) | Chromium-free. WebView2 on Windows — **Windows-only since D132**. ~25 MB binary vs ~150 MB for Electron. Pinned at **2.12.1**, far above the CVE-2024-35222 fix. |
 | Language (shell) | **Rust, 2021 edition** | Required by Tauri. Also the right language for a process runner and a path-safety layer. |
 | Language (web) | **TypeScript 6.0, strict** | The whole contract surface is types. `strict` is non-negotiable. **Pinned to what Tauri's own `react-ts` template ships** — see §1.1. |
 | UI | **React 19 + vendored shadcn** (Radix primitives, `cva`/`clsx`/`tailwind-merge`, app-shell only — D112) | The ecosystem and the concurrent-rendering model suit a streaming transcript. Hand-rolled Sidebar/Dialog/Select re-opens the a11y bugs Radix closed. |
@@ -20,7 +20,7 @@ is then a real obligation rather than a courtesy, and the research assumed open 
 | Persistence | **SQLite via `rusqlite`** (bundled) | Single file, WAL, synchronous. No ORM. `CONTRACTS.md` §1 is 12 tables of DDL we write by hand. |
 | Serialisation | **`serde`** | Rust boundary. |
 | Validation | **Zod 4** at every boundary | Tool inputs are untrusted. No `any` crosses into the tool host. |
-| Secrets | **`keyring`** crate | OS keychain. Windows Credential Manager, libsecret on Linux. Never touches SQLite. |
+| Secrets | **`keyring`** crate | OS keychain — the Windows Credential Manager (**D132**: Windows-only). Never touches SQLite. |
 
 ### 1.1 TypeScript is pinned to Tauri, not to latest
 
@@ -132,7 +132,7 @@ has a fixture:
 |---|---|---|
 | Rust | **`cargo test`**, no webview | The point of the workspace. Core, tokens, fs and transport are all testable headless. |
 | Web | **Vitest** | Matches the Vite build. |
-| Integration | **`tauri-driver` + WebDriver**, Windows + Linux CI | For the two things that cannot be tested headless: the webview sandbox and the keyring round-trip. |
+| Integration | **`tauri-driver` + WebDriver**, Windows CI | For the two things that cannot be tested headless: the webview sandbox and the keyring round-trip. |
 | Fixtures | Recorded SSE transcripts under `crates/clauro-transport/tests/fixtures/` | Omitted thinking, a compaction response, a dropped block, an unknown event. Synthetic, not captured from a live key. |
 
 **No test requires a live API key.** That is a design constraint, not a convenience: a test that
@@ -140,17 +140,15 @@ needs a key is a test that silently stops running.
 
 ## 5. CI matrix
 
-`D50` — the floor is the oldest LTS tier with **WebKitGTK 2.40+**. The matrix is the real contract,
-because Cargo ships WebKit2GTK sys crates while distro-native builds differ again.
+`D50` — the floor is the oldest supported runtime tier. **Windows-only since D132:** the WebKitGTK
+rows and the Linux jobs are gone with the platform, so the matrix is the two Windows jobs.
 
 ```
-ubuntu-24.04         WebKitGTK system version   Linux, primary
-ubuntu-24.04         WebKitGTK 2.4x, older      Linux, floor
-windows-latest       WebView2 (evergreen)       Windows, primary
+windows-latest                                    WebView2 (evergreen)   Windows, primary
 windows-latest + fixed-version WebView2 runtime   Windows, floor
 ```
 
-Four jobs. Two are floors, and floors are where the sandbox gate gets falsified — so a floor failure
+Two jobs. One is a floor, and floors are where the sandbox gate gets falsified — so a floor failure
 is a **release blocker**, not a warning.
 
 **Corrected 2026-10-04 by external audit.** Two of the original labels were not testable floors:

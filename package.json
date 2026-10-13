@@ -5,10 +5,10 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node api.js && vite",
     "dev:web": "vite --mode browser --port 1420 --strictPort",
     "dev:mock": "vite --mode mock --port 1430 --strictPort",
-    "build": "tsc && vite build",
+    "build": "node api.js && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
