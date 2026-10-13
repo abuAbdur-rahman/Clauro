@@ -101,16 +101,16 @@ describe("drawer store bound (audit 14, IMPORTANT: never-evicted maps)", () => {
   });
 });
 
-describe("engine gate derived from this runtime (D45)", () => {
+describe("engine gate derived from this runtime (D45, D132)", () => {
   beforeEach(() => {
     recordOpaqueOriginProbe(false);
   });
 
-  it("reports this platform and starts unproven", () => {
+  it("reports Windows or other, and starts unproven", () => {
     const gate = detectEngineGate();
-    expect(["windows", "linux", "mac", "other"]).toContain(gate.platform);
-    // No 021 probe result exists yet, so nothing is proven: the gate stays
-    // closed on Linux until the probe records a verdict.
+    // D132: only the platform we ship names itself; everything else is `other`.
+    expect(["windows", "other"]).toContain(gate.platform);
+    // No 021 probe result exists yet, so nothing is proven.
     expect(gate.opaqueProven).toBe(false);
   });
 
@@ -120,33 +120,14 @@ describe("engine gate derived from this runtime (D45)", () => {
     recordOpaqueOriginProbe(false);
     expect(detectEngineGate().opaqueProven).toBe(false);
   });
-
-  it("still fails closed for unproven Linux", () => {
-    const gate = detectEngineGate();
-    const verdict = artifactGate({ ...gate, platform: "linux" });
-    expect(verdict.enabled).toBe(false);
-    expect(verdict.notice).toMatch(/Linux/);
-  });
 });
 
-describe("Linux gate (D45)", () => {
-  it("renders on Windows and on proven Linux", () => {
-    expect(artifactGate({ platform: "windows", opaqueProven: true })).toEqual({
-      enabled: true,
-      notice: null,
-    });
-    expect(artifactGate({ platform: "linux", opaqueProven: true })).toEqual({
-      enabled: true,
-      notice: null,
-    });
-  });
-
-  it("disables with a naming notice on unproven Linux", () => {
-    const verdict = artifactGate({ platform: "linux", opaqueProven: false });
-    expect(verdict.enabled).toBe(false);
-    expect(verdict.notice).toMatch(/Linux/);
-    const s = useDrawerStore.getState();
-    s.setNotice("t1", verdict.notice ?? "");
-    expect(useDrawerStore.getState().drawers["t1"]?.notice).toContain("Linux");
+describe("gate verdict on the shipped platform (D132)", () => {
+  it("renders, unconditionally — the disable branch D45 carried was Linux-only", () => {
+    // The runtime disable existed to keep an *unproven WebKitGTK engine* from
+    // rendering artifacts; D132 removed that engine, so there is nothing left
+    // for it to fail closed on. The Windows obligation is the release proof
+    // (SPEC.md A8), not a runtime switch.
+    expect(artifactGate()).toEqual({ enabled: true, notice: null });
   });
 });

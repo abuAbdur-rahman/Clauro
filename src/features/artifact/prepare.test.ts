@@ -401,26 +401,15 @@ describe("media type is parsed, not string-compared (audit 14, NIT)", () => {
   });
 });
 
-describe("the D45 gate holds at the prepare boundary (audit 14, IMPORTANT)", () => {
-  it("refuses to prepare on an unproven Linux engine", async () => {
-    const pub = publisher();
-    const out = await prepare({
-      source: "<h1>x</h1>",
-      mediaType: "text/html",
-      fetchPolicy: policy,
-      publishDoc: pub.publishDoc,
-      engine: { platform: "linux", opaqueProven: false },
-    });
-    expect(out.kind).toBe("failed");
-    if (out.kind !== "failed") return;
-    expect(out.reason).toMatch(/Linux/);
-    expect(pub.published).toHaveLength(0);
-  });
-
-  it("prepares on Windows and on proven Linux", async () => {
+describe("the gate at the prepare boundary (D132)", () => {
+  it("prepares on the shipped platform, proven or not", async () => {
+    // D45 refused to prepare on an unproven *WebKitGTK* engine. D132 removed
+    // that engine from v1, so prepare has no platform it refuses: the Windows
+    // obligation is the release proof (SPEC.md A8), not a runtime switch.
     for (const engine of [
       { platform: "windows" as const, opaqueProven: false },
-      { platform: "linux" as const, opaqueProven: true },
+      { platform: "windows" as const, opaqueProven: true },
+      { platform: "other" as const, opaqueProven: false },
     ]) {
       const pub = publisher();
       const out = await prepare({
@@ -431,6 +420,7 @@ describe("the D45 gate holds at the prepare boundary (audit 14, IMPORTANT)", () 
         engine,
       });
       expect(out.kind).toBe("live");
+      expect(pub.published).toHaveLength(1);
     }
   });
 });

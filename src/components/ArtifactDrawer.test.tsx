@@ -143,15 +143,15 @@ describe("ArtifactDrawer (DESIGN.md §2.4)", () => {
     await screen.findByTitle("artifact-frame");
   });
 
-  it("disabled gate shows the notice instead of the frame", () => {
+  it("has no disabled state left to show (D132)", () => {
+    // D45's runtime disable was Linux-only ("an unproven WebKitGTK engine
+    // renders nothing"), and D132 took that engine out of v1. The drawer still
+    // consults the gate, but nothing can close it: guarding the unreachable
+    // branch here keeps it from being re-armed by accident.
     useDrawerStore.getState().setNotice("t1", "Stored context line.");
-    draw({ engine: { platform: "linux", opaqueProven: false } });
-    expect(screen.getByText(/off on Linux/)).not.toBeNull();
-    expect(screen.getByText("Stored context line.")).not.toBeNull();
-    expect(screen.queryByTitle("artifact-frame")).toBeNull();
-    // A disabled gate prepares nothing: no policy is ever requested for an
-    // artifact that cannot be rendered.
-    expect(prepare.fn).not.toHaveBeenCalled();
+    draw({ engine: { platform: "windows", opaqueProven: false } });
+    expect(screen.queryByText(/off on Linux/)).toBeNull();
+    expect(screen.queryByLabelText("artifact drawer disabled")).toBeNull();
   });
 
   it("no prop can widen the sandbox (D108)", async () => {

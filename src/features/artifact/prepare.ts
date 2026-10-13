@@ -15,7 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { compileBlocks, extractJsxBlocks, type WorkerLike } from "./compile";
 import { buildEnvelope } from "./envelope";
 import { sanitizeSvg } from "./sanitize";
-import { artifactGate, detectEngineGate, setRenderNonce, type EngineGate } from "./store";
+import { artifactGate, setRenderNonce, type EngineGate } from "./store";
 
 export type PrepareResult =
   | { kind: "live"; url: string; nonce: string }
@@ -103,7 +103,7 @@ export async function prepareArtifact(input: PrepareInput): Promise<PrepareResul
   // The D45 gate, checked before anything is fetched or built (audit 14: it
   // used to exist only as a prop the drawer never disagreed with). A disabled
   // engine produces no policy request, no publish, no document.
-  const verdict = artifactGate(input.engine ?? detectEngineGate());
+  const verdict = artifactGate();
   if (!verdict.enabled) {
     return { kind: "failed", reason: verdict.notice ?? "artifacts are disabled on this engine (D45)" };
   }

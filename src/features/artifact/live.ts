@@ -24,13 +24,7 @@ import {
   type ArtifactLatest,
   type TurnEvent,
 } from "../turn/turn";
-import {
-  artifactGate,
-  detectEngineGate,
-  useDrawerStore,
-  withRecentEntry,
-  type EngineGate,
-} from "./store";
+import { useDrawerStore, withRecentEntry } from "./store";
 
 export type { ArtifactLatest };
 
@@ -73,19 +67,12 @@ export interface ProducerDeps {
   onError: (reason: string) => void;
 }
 
-/** Start the producer for one thread. Returns the unsubscribe. */
+/** Start the producer for one thread. Returns the unsubscribe. D132 removed the
+ *  engine gate this used to consult — its refusal was Linux-only (D45). */
 export async function startArtifactProducer(
   threadId: string,
   deps: ProducerDeps,
-  gate: EngineGate = detectEngineGate(),
 ): Promise<() => void> {
-  // The D45 gate at the producer boundary (audit 14): a disabled engine gets
-  // no listeners and no fetch — the refusal is stated, not silent.
-  const verdict = artifactGate(gate);
-  if (!verdict.enabled) {
-    deps.setNotice?.(threadId, verdict.notice ?? "artifacts are disabled on this engine (D45)");
-    return () => undefined;
-  }
   let stopped = false;
   const refresh = async (): Promise<void> => {
     try {
