@@ -60,6 +60,14 @@ export function ArtifactDrawer({
   const state = entry?.state ?? "empty";
   const result = prepared !== null && prepared.key === artifactId ? prepared.result : null;
 
+  // The D45 verdict this drawer renders is the verdict it prepares with: two
+  // reads of the engine can disagree, and a drawer the app has enabled must
+  // never refuse to prepare. The effect below depends on the verdict's FIELDS,
+  // not the object, so a caller handing a fresh object each render cannot send
+  // it into a prepare loop (App.tsx memoises the pair; this does not rely on
+  // that).
+  const { platform, opaqueProven } = engine;
+
   useEffect(() => {
     // Prepare when the artifact is *known* (D121): during compiling the
     // drawer says so, and the turn-done path lands straight in `live` — the
@@ -72,7 +80,18 @@ export function ArtifactDrawer({
     // Preparing is where the policy request, the Worker, the sanitiser and
     // the publish all happen, so the spinner covers exactly that window and
     // nothing more.
-    prepareArtifact({ source, mediaType, fetchPolicy, createWorker, publishDoc })
+    prepareArtifact({
+      source,
+      mediaType,
+      fetchPolicy,
+      createWorker,
+      publishDoc,
+      // Forward the verdict above: without it `prepareArtifact` re-detects the
+      // engine, and on a host whose UA closes the gate the drawer refuses to
+      // prepare an artifact the app just told it to render (CI linux,
+      // 2026-10-13 — the three `phase3.e2e` cases red).
+      engine: { platform, opaqueProven },
+    })
       .then((out) => {
         if (live) setPrepared({ key: artifactId, result: out });
       })
@@ -93,7 +112,16 @@ export function ArtifactDrawer({
     return () => {
       live = false;
     };
-  }, [artifactId, source, mediaType, fetchPolicy, createWorker, publishDoc]);
+  }, [
+    artifactId,
+    source,
+    mediaType,
+    fetchPolicy,
+    createWorker,
+    publishDoc,
+    platform,
+    opaqueProven,
+  ]);
 
   // The channel's host half (D6/D122): attach when a live frame is on
   // screen, and re-attach on every new document — the transferred port dies

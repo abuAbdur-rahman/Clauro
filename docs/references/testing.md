@@ -27,6 +27,18 @@ prose description of a decision.
 unknown event. These are the four a hand-rolled SSE parser gets wrong, and three of them fail
 silently.
 
+**A test names its inputs; it never inherits them from the host.** The OS leaks into jsdom through
+`navigator.userAgent` (`Mozilla/5.0 (linux) … jsdom/…`), and anything that reads it flips its verdict
+between a Windows dev box and the linux runner. The D45 artifact gate did: 27 artifact tests were
+green locally and red on CI (2026-10-13). Pin what the code reads — pass the value
+(`PrepareInput.engine`), or mock the ambient read through `importOriginal` (`detectEngineGate`). A
+suite that depends on the machine it runs on is a suite that lies on one of them.
+
+**A skipped step is not a passing step.** `cargo test` ran before the frontend step in the same job,
+so a Rust failure skipped lint/typecheck/vitest outright and the frontend half of that platform was
+simply unknown — which is how the 27 above stayed hidden on linux until the Rust half was green. Read
+skips as unknown and report them that way.
+
 ## Related
 
 Closing a task is where a test gets checked for real — see [`task-closeout.md`](task-closeout.md)

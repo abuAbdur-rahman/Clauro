@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { newNonce, prepareArtifact, SOURCE_MAX_BYTES } from "./prepare";
+import {
+  newNonce,
+  prepareArtifact,
+  SOURCE_MAX_BYTES,
+  type PrepareInput,
+  type PrepareResult,
+} from "./prepare";
+import type { EngineGate } from "./store";
 import type { WorkerLike } from "./compile";
 import { transformJsx } from "./compile.transform";
 
@@ -52,6 +59,20 @@ function publisher() {
   return { published, publishDoc };
 }
 
+/**
+ * These cases prove the pipeline — policy, compile, sanitise, publish, the D27
+ * bound — not the D45 gate, which has its own cases below with explicit
+ * engines. Pin a proven engine so the suite cannot inherit the host's: jsdom
+ * derives its UA from the OS, and a linux runner fail-closes the gate for
+ * every one of them (23 cases red on CI, green on Windows; 2026-10-13). An
+ * explicit `engine` on the input still wins.
+ */
+const ENGINE: EngineGate = { platform: "windows", opaqueProven: true };
+
+function prepare(input: PrepareInput): Promise<PrepareResult> {
+  return prepareArtifact({ ...input, engine: input.engine ?? ENGINE });
+}
+
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
 });
@@ -67,7 +88,7 @@ describe("nonce", () => {
 describe("html artifacts", () => {
   it("a static artifact becomes a document with no script of its own", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1 class='text-xl'>hello</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -86,7 +107,7 @@ describe("html artifacts", () => {
 
   it("a jsx artifact is compiled into the document", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source:
         '<div id="app"></div><script type="text/jsx">export default () => h("b", {}, "compiled")</script>',
       mediaType: "text/html",
@@ -106,7 +127,7 @@ describe("html artifacts", () => {
 
   it("a syntax error becomes a stated reason, not an empty frame", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: '<script type="text/jsx">export default () => <b></script>',
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -121,7 +142,7 @@ describe("html artifacts", () => {
 
   it("a host that returns no policy fails closed", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: () => Promise.resolve(""),
@@ -137,7 +158,7 @@ describe("svg artifacts", () => {
   it("is sanitised, and never compiled", async () => {
     const createWorker = vi.fn(worker);
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source:
         '<svg viewBox="0 0 4 4"><script>alert(1)</script><rect width="4" height="4"/></svg>',
       mediaType: "image/svg+xml",
@@ -156,7 +177,7 @@ describe("svg artifacts", () => {
 
   it("markup that is not an svg fails with a reason", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>not svg</h1>",
       mediaType: "image/svg+xml",
       fetchPolicy: policy,
@@ -170,7 +191,7 @@ describe("svg artifacts", () => {
 describe("the document the host publishes for the drawer", () => {
   it("carries a policy, a nonce on both scripts, and the nav guard", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: '<script type="text/jsx">export default () => h("i")</script>',
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -192,7 +213,7 @@ describe("publishing to the host (D123)", () => {
     // The host is remote by construction (D124): the adopted URL must never
     // name the shell's host, or the frame would read as local to Tauri's IPC.
     vi.mocked(invoke).mockResolvedValue("http://artifact.localhost/__clauro/doc/from-host");
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -221,7 +242,7 @@ describe("publishing to the host (D123)", () => {
 
   it("a host that refuses to publish fails closed with the reason", async () => {
     vi.mocked(invoke).mockRejectedValue(new Error("bad artifact document token"));
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -234,7 +255,7 @@ describe("publishing to the host (D123)", () => {
 
   it("a host that answers with a non-string fails closed", async () => {
     vi.mocked(invoke).mockResolvedValue(42);
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -245,7 +266,7 @@ describe("publishing to the host (D123)", () => {
   });
 
   it("a publisher that throws fails closed with the reason", async () => {
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -259,7 +280,7 @@ describe("publishing to the host (D123)", () => {
   });
 
   it("an empty URL from the host fails closed — no frame without a document", async () => {
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -282,7 +303,7 @@ describe("publishing to the host (D123)", () => {
     it(`refuses a published URL outside the document host: ${hostile.slice(0, 48)}`, async () => {
       // The URL is the frame's `src`: anything but the document host would
       // render without the Rust-assembled policy (D3/D123).
-      const out = await prepareArtifact({
+      const out = await prepare({
         source: "<h1>x</h1>",
         mediaType: "text/html",
         fetchPolicy: policy,
@@ -299,7 +320,7 @@ describe("publishing to the host (D123)", () => {
       "http://artifact.localhost/__clauro/doc/n-1_2",
       "artifact://localhost/__clauro/doc/n-1_2",
     ]) {
-      const out = await prepareArtifact({
+      const out = await prepare({
         source: "<h1>x</h1>",
         mediaType: "text/html",
         fetchPolicy: policy,
@@ -314,7 +335,7 @@ describe("publishing to the host (D123)", () => {
 describe("meta refresh cannot navigate the frame (audit 14, IMPORTANT)", () => {
   it("is stripped from the document before publish", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source:
         '<meta http-equiv="refresh" content="0;url=https://evil.example/">' +
         "<h1>x</h1><META HTTP-EQUIV = 'Refresh' content=\"1;url=https://evil2.example/\">",
@@ -335,7 +356,7 @@ describe("source is bounded on the way in (D27)", () => {
   it("refuses source over the byte cap before anything is fetched or compiled", async () => {
     const pub = publisher();
     const fetchPolicy = vi.fn(policy);
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "x".repeat(SOURCE_MAX_BYTES + 1),
       mediaType: "text/html",
       fetchPolicy,
@@ -350,7 +371,7 @@ describe("source is bounded on the way in (D27)", () => {
 
   it("a source just under the cap still prepares", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>".padEnd(SOURCE_MAX_BYTES - 1, " "),
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -363,7 +384,7 @@ describe("source is bounded on the way in (D27)", () => {
 describe("media type is parsed, not string-compared (audit 14, NIT)", () => {
   it("image/svg+xml; charset=utf-8 is sanitised like image/svg+xml", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source:
         '<svg viewBox="0 0 4 4"><script>alert(1)</script><rect width="4" height="4"/></svg>',
       mediaType: "image/svg+xml; charset=utf-8",
@@ -383,7 +404,7 @@ describe("media type is parsed, not string-compared (audit 14, NIT)", () => {
 describe("the D45 gate holds at the prepare boundary (audit 14, IMPORTANT)", () => {
   it("refuses to prepare on an unproven Linux engine", async () => {
     const pub = publisher();
-    const out = await prepareArtifact({
+    const out = await prepare({
       source: "<h1>x</h1>",
       mediaType: "text/html",
       fetchPolicy: policy,
@@ -402,7 +423,7 @@ describe("the D45 gate holds at the prepare boundary (audit 14, IMPORTANT)", () 
       { platform: "linux" as const, opaqueProven: true },
     ]) {
       const pub = publisher();
-      const out = await prepareArtifact({
+      const out = await prepare({
         source: "<h1>x</h1>",
         mediaType: "text/html",
         fetchPolicy: policy,
