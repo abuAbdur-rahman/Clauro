@@ -329,11 +329,18 @@ fn credential_name_frags_and_url_values_scrubbed() {
     }
 }
 
+/// Windows half of the case-folding merge (audit 11 NIT): env names are
+/// case-insensitive there, so a model-supplied `PATH` and a managed `Path`
+/// are the *same* slot — otherwise both survive the merge and "managed
+/// always wins (D30)" becomes a casing coincidence.
+///
+/// The old, unconditional form of this assertion failed on the Linux floor
+/// (reproduced under WSL on 2026-10-13): `build_env` only folds case under
+/// `cfg(windows)` because a Unix env IS case-sensitive. The two halves below
+/// are that contract (§8a — a Windows-only verdict stays labelled as one).
+#[cfg(windows)]
 #[test]
 fn merge_is_case_insensitive_so_managed_still_wins_on_windows() {
-    // audit 11 NIT: Windows env names are case-insensitive; a model-supplied
-    // `PATH` and a managed `Path` coexisted in the BTreeMap, so "managed
-    // always wins (D30)" depended on exact casing.
     let merged = build_env(
         &[],
         &[],
@@ -352,6 +359,39 @@ fn merge_is_case_insensitive_so_managed_still_wins_on_windows() {
     assert_eq!(
         path_entries[0].1, "managed",
         "managed must win regardless of casing (D30)"
+    );
+}
+
+/// Unix half: `PATH` and `Path` are different variables on a case-sensitive
+/// OS, so the merge keeps both — D30 still holds per *exact* name (managed
+/// `PATH` beats ordinary `PATH`: `merge_order_is_scrub_overrides_env_managed`),
+/// and a differently-cased managed entry must not silently displace the real
+/// `PATH` by way of a fold this OS would not do.
+#[cfg(not(windows))]
+#[test]
+fn merge_keeps_differently_cased_env_names_distinct() {
+    let merged = build_env(
+        &[],
+        &[],
+        &[("PATH".to_string(), "ordinary".to_string())],
+        &[("Path".to_string(), "managed".to_string())],
+    );
+    let path_entries: Vec<_> = merged
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("path"))
+        .collect();
+    assert_eq!(
+        path_entries.len(),
+        2,
+        "case-sensitive OS: both names survive, got {merged:?}"
+    );
+    assert!(
+        merged.contains(&("PATH".to_string(), "ordinary".to_string())),
+        "ordinary PATH untouched by a differently-cased name, got {merged:?}"
+    );
+    assert!(
+        merged.contains(&("Path".to_string(), "managed".to_string())),
+        "managed entry kept verbatim, got {merged:?}"
     );
 }
 
