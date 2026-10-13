@@ -76,6 +76,15 @@ re-deferred with its reason refreshed** — never simply still open.
       single entry (`glib`, Dependabot #2) is **re-deferred with its reason refreshed** 2026-10-13:
       block re-proved by dry-run, no `0.18.x` backport exists, and tauri 2.12.3 (2026-10-10) still
       requires `gtk ^0.18`.
+- [ ] **Vendored Tailwind CSS for the artifact frame (`D111`) — NOT DONE, and it is this task's.**
+      D111 is explicit: "*The artifact's Tailwind CSS is vendored by `Tasks/022`, not here; `014` owns
+      the constraint, not the bytes.*" The frame's stylesheet slot is still empty — `rg` finds no
+      Tailwind reference anywhere under `src/features/artifact` or in `src-tauri/src/csp.rs`, so an
+      artifact that uses the predefined utility classes the prompt tells the model to use renders
+      **unstyled**. `Tasks/014` named this as visible-rather-than-silent, not as acceptable at
+      release. **This is a release blocker for the drawer, which is the v1 visual centrepiece**, and
+      the closeout above is scoped short of it — recorded here rather than left implied by a tick.
+
 - [ ] Windows install runs on a machine with no WebView2, and explains itself — **RELEASE-GATED, not
       verified here.** Needs a host without the runtime; the pre-paint boot gate exists
       (`App.tsx:72`), but "explains itself to a locked-down machine" is unproven on this box.
@@ -87,6 +96,10 @@ re-deferred with its reason refreshed** — never simply still open.
 ## Status
 
 **Landed 2026-10-13 (Phase 6, branch `phase-6`; release-gated items above are labelled, not ticked).**
+**Scope correction, same day:** the first closeout read "the provable half" and missed that `D111`
+assigns the **vendored Tailwind bytes** to this task. That item is now listed as open above — the
+artifact frame still has no stylesheet, which is a release blocker for the drawer rather than a
+paperwork gap. Everything else below stands.
 The verifiable half is done and enforced rather than described: the attribution notice with a
 `check-docs.py` gate that has a negative control on each branch (§10); a windowed first-party-wording
 gate that would have caught the one real violation it shipped alongside (§11, `crates/clauro-loop/tests/run.rs`);
