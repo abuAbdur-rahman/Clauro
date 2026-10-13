@@ -37,11 +37,31 @@ before first paint, from the OS preference when `system` is selected.
 
 ## Acceptance criteria
 
-- [ ] Every action reachable from the keyboard
-- [ ] Hotkey registers globally; releases cleanly; no duplicate instances
-- [ ] Palette blocked, with a reason, while a turn is running
-- [ ] `/compact` unavailable mid-turn
-- [ ] `bash` approval is **not** reachable from the palette
-- [ ] `attach` absent
-- [ ] Theme switch with no flash of the wrong theme
-- [ ] Density and accent apply live
+- [x] Every action reachable from the keyboard — arrow/Enter select-and-close `src/features/shell/CommandPalette.test.tsx:187`, Escape through the focus trap `:227`, kbd hints footer `:64`
+- [x] Hotkey registers globally; releases cleanly; no duplicate instances — global status mapping `src/features/shell/hotkey.test.tsx:78`, builder wiring (shortcut + single-instance) `src-tauri/src/lib.rs:734`, status line `src/features/settings/SettingsDialog.test.tsx:256`; release-on-quit is plugin lifecycle with no dedicated assertion (labelled §7a — registration re-proven across every relaunch)
+- [x] Palette blocked, with a reason, while a turn is running — `src/features/shell/shell.test.ts:7`, reason render `src/features/shell/CommandPalette.test.tsx:108`
+- [x] `/compact` unavailable mid-turn — `src/features/shell/shell.test.ts:7`
+- [x] `bash` approval is **not** reachable from the palette — `src/features/shell/shell.test.ts:14` (`not.toContain("bash:approve")` at `:16`)
+- [x] `attach` absent — `src/features/shell/shell.test.ts:14`
+- [x] Theme switch with no flash of the wrong theme — pre-paint apply `src/features/shell/usetheme.test.tsx:31`, resolve-without-flash `src/features/shell/shell.test.ts:32`; live in a real engine 2026-10-13: dark↔light token flip with no reload
+- [x] Density and accent apply live — `src/features/settings/SettingsDialog.test.tsx:164` + `:173`, density cascade pin `src/styles.test.ts:46`; live in a real engine 2026-10-13: root 17px ↔ 15px, accent ring moves
+
+## Status — 2026-10-13 ✅
+
+All eight criteria green. Live on the running proof binary and the mock web harness (same bundle):
+Settings → Shortcuts pinned the registered status line; the palette rendered and executed an action
+end to end; Ctrl+K moved focus across windows while Notepad's own Ctrl+K (close-tab) never fired —
+OS-level interception, not an in-app listener; a second launch held two processes transiently and
+settled to one window; the 21-command surface is pinned by `src-tauri/src/lib.rs:675`; appearance
+switched live in a real engine — theme tokens flip with no reload, the accent selection applies, and
+density resizes the root 17px ↔ 15px.
+
+That last probe found a real defect: the compact rule sat in `@layer base` while the unlayered
+`html { font-size: 17px }` outranks every layer regardless of specificity, so density wrote its
+attribute and changed nothing — fixed by moving the rule beside the base rule (`src/styles.css`),
+pinned by `src/styles.test.ts:46`, which was red on the shipped file.
+
+Labelled unverified (§7a): live Escape/X dismissal was raced by foreground activity on the proof
+host (unit coverage `CommandPalette.test.tsx:227`); keypress delivery for the in-app chord beyond
+Ctrl+K is test-covered only. Plugins adopted with records: `docs/dependencies.md` §4.7/§4.8,
+`TECH_STACK.md` §6.2/§7.1.

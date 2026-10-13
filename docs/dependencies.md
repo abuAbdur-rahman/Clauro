@@ -144,8 +144,8 @@ cadence — more than one maintainer, or a non-trivial dependent base — this d
 
 ## 4. Adopted by the workspace — records required by `AGENTS.md` §5a
 
-These four are installed but are not part of Tauri's template, so each gets the full record:
-licence, URL, rejected alternative, maintenance state **as checked on 2026-10-04**.
+These are installed but are not part of Tauri's template, so each gets the full record:
+licence, URL, rejected alternative, maintenance state **as checked on the date in its Verified row**.
 
 ### 4.1 `keyring` (Rust) — OS keychain
 
@@ -304,6 +304,59 @@ carries no `"license"` field in `package.json` (the repo's `LICENSE` file is MIT
 is a one-line packaging fix left to the packaging owner). **No copyleft (GPL/AGPL) runtime
 dependency**; the only non-permissive-adjacent licence is dompurify's file-level MPL, already
 recorded in `TECH_STACK.md` §7.1 and tolerated by §6.1.
+
+### 4.7 `tauri-plugin-single-instance` (Rust) — second-instance handoff
+
+| Field | Value |
+|---|---|
+| Crate | `tauri-plugin-single-instance` **2.5.3** (resolved, `Cargo.lock`) |
+| Licence | **Apache-2.0 OR MIT** — compatible |
+| URL | https://crates.io/crates/tauri-plugin-single-instance · https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance |
+| Maintenance | tauri-apps' official plugin workspace. 2.5.3 released **2026-10-10**; 8.98M downloads (4.66M recent). |
+| Verified | 2026-10-13 (crates.io API) |
+
+**Why it is in.** `Tasks/020` acceptance: *"A second instance activates the first rather than
+launching a second."* The plugin owns the platform single-instance handshake and, per its own docs,
+must be registered **first** among the app's plugins so a second instance hands off before any other
+plugin's setup runs — which is the order `src-tauri/src/lib.rs` uses. The callback focuses the main
+window (`summon::focus_main`).
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Hand-rolled per-platform handshake (Win32 `CreateMutexW` + broadcast, an abstract Unix socket, the macOS equivalent) | Three platform protocols plus teardown races (already-exists paths, a stale socket after a crash) — §5a's "hand-rolled is the expensive instinct", on a surface where being wrong means two instances fighting over one hotkey. |
+| No guard — let a second window open | Fails 020's acceptance criterion outright. |
+| `3.0.0-alpha.2` of the same plugin | Alpha on a **D50 release-blocker** surface (the Linux floor). The stable 2.x line is what ships. |
+
+### 4.8 `tauri-plugin-global-shortcut` (Rust) — the global summon chord
+
+| Field | Value |
+|---|---|
+| Crate | `tauri-plugin-global-shortcut` **2.4.1** (resolved, `Cargo.lock`) |
+| Licence | **Apache-2.0 OR MIT** — compatible |
+| URL | https://crates.io/crates/tauri-plugin-global-shortcut · https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/global-shortcut |
+| Maintenance | tauri-apps' official plugin workspace (wraps the `global-hotkey` crate). 2.4.1 released **2026-10-10**; 4.42M downloads (1.91M recent). |
+| Verified | 2026-10-13 (crates.io API) |
+
+**Why it is in.** `Tasks/020` acceptance: *"The hotkey is globally registered and released cleanly
+on quit"*, with conflicts falling back to the in-app chord **and saying so**. Registration happens
+host-side in `setup` (`src-tauri/src/lib.rs`, recorded through `summon::record`), so the outcome is
+*reported* by `summon_hotkey_status` rather than assumed. On Windows the underlying API is
+`RegisterHotKey`, which consumes the press — the webview keydown listener cannot double-fire while
+the chord is live, and the in-app listener stays as the fallback when registration failed.
+
+**Rejected:**
+
+| Alternative | Why not |
+|---|---|
+| Hand-rolled `RegisterHotKey`/`UnregisterHotKey` + X11/DBus on Linux + `NSEvent` global monitors on macOS | Three backends, each with its own lifetime rules (macOS must register and dispatch on the main thread), plus release-on-quit choreography — the wheel §5a names as the example not to rebuild. |
+| `global-hotkey` crate directly (the plugin's own dependency) | Then we own the Tauri lifecycle glue — setup timing, state, error surfacing — the official plugin already ships. The plugin is the supported entry point over the same crate. |
+
+**Note (scope, recorded so it is not re-litigated):** only the summon chord (Ctrl+K) is global.
+Settings (Ctrl+,) stays in-app deliberately — one global chord, no competition between them — see
+`useSettingsHotkey` in `src/features/shell/hotkey.ts`. The frontend's `react-hotkeys-hook` row in §5
+is unaffected: the in-app listeners are two keydown handlers, still not a dependency.
 
 ---
 
