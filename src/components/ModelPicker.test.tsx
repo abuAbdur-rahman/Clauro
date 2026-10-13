@@ -91,6 +91,28 @@ describe("ModelPicker on Select", () => {
     expect(screen.getByRole("combobox").textContent).toMatch(/choose a model/i);
   });
 
+  it("the compact trigger is a chip whose label truncates (T7)", async () => {
+    // Task 031 T7, matching the reference's `.ctools .chip` (docs/references/
+    // ui/index.html:141,441): the composer's model control is a bordered 28px
+    // chip whose label truncates at 260px, rather than a box that grows with
+    // the model name. The full-width picker (Settings → Models) keeps its own
+    // shape, and the chevron is the SelectTrigger's own — a chip that drew its
+    // own would render two.
+    const { unmount } = render(<ModelPicker threadId={THREAD} compact />);
+    const chip = await screen.findByRole("combobox");
+    expect(chip.getAttribute("data-testid")).toBe("model-chip");
+    const label = chip.querySelector('[data-testid="model-chip-label"]');
+    expect(label).not.toBeNull();
+    expect(label?.className).toMatch(/truncate/);
+    expect(chip.querySelectorAll("svg")).toHaveLength(1);
+    unmount();
+
+    render(<ModelPicker threadId={THREAD} />);
+    expect((await screen.findByRole("combobox")).getAttribute("data-testid")).toBe(
+      "model-picker",
+    );
+  });
+
   it("opens provider-grouped options carrying limits", async () => {
     const user = userEvent.setup();
     render(<ModelPicker threadId={THREAD} />);

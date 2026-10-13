@@ -228,9 +228,22 @@ export default function ModelPicker({
           <SelectTrigger
             aria-label="Model"
             size="sm"
-            className={compact ? "w-auto max-w-48" : "w-full max-w-2xl"}
+            data-testid={compact ? "model-chip" : "model-picker"}
+            /* Task 031 T7, matching the reference's `.ctools .chip`
+               (docs/references/ui/index.html:141,441): the composer's control
+               is a 28px bordered chip whose label truncates at 260px, rather
+               than a box that grows with the model name. The chevron below is
+               the SelectTrigger's own — this adds none, so a chip renders one
+               chevron, not two. */
+            className={
+              compact
+                ? "h-7 w-auto max-w-[260px] gap-1.5 border-border bg-card text-xs"
+                : "w-full max-w-2xl"
+            }
           >
-            <SelectValue placeholder="Choose a model" />
+            <span data-testid="model-chip-label" className="min-w-0 flex-1 truncate">
+              <SelectValue placeholder="Choose a model" className="truncate" />
+            </span>
           </SelectTrigger>
           <SelectContent>
             <div className="p-2">
