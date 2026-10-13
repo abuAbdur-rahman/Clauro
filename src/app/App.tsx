@@ -20,7 +20,7 @@ import {
 } from "../features/shell/hotkey";
 import { useSettingsStore } from "../features/shell/settings";
 import { useArtifactContent } from "../features/artifact/live";
-import { useDrawerStore, artifactGate, detectEngineGate } from "../features/artifact/store";
+import { useDrawerStore, detectEngineGate } from "../features/artifact/store";
 import { exportThreadDownload } from "../features/retention/export";
 import type { PaletteChat } from "../features/shell/CommandPalette";
 import { useTheme } from "../features/shell/usetheme";
@@ -447,14 +447,13 @@ export default function App() {
     if (paletteOpen) setPaletteEverOpened(true);
   }, [paletteOpen]);
   // The drawer mounts when there is drawer work: a non-empty row for this
-  // thread (D121), produced content, a stored notice, or a disabled gate —
-  // the D45 notice aside is permanent UI the user has to be able to read.
+  // thread (D121) or produced content. The D45 notice aside used to be a third
+  // reason; D132 removed the only platform that could disable artifacts, so
+  // there is no notice to keep on screen.
   const drawerEntry = useDrawerStore((s) => s.drawers[activeThreadId]);
   const drawerNeeded =
     (drawerEntry !== undefined && drawerEntry.state !== "empty") ||
-    drawerEntry?.notice != null ||
-    artifactContent !== null ||
-    !artifactGate(engine).enabled;
+    artifactContent !== null;
   // Delete-row confirmation (review 31 #1): destructive means confirm first.
   const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
   // Palette contents (review 31 #13): the same rail rows the shell renders,

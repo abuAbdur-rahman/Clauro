@@ -1,10 +1,11 @@
 /**
- * Artifact drawer state, sandbox tokens, and the Linux gate (Task 013).
+ * Artifact drawer state, sandbox tokens, and the engine gate (Task 013).
  *
  * The drawer is a layout column with three states (DESIGN.md §2.4): empty
  * (zero width), compiling (says "compiling"), live. The sandbox comes from
- * the `sandbox` attribute alone — never `allow-same-origin` (D2). On Linux
- * without a proven opaque origin the drawer disables with a notice (D45).
+ * the `sandbox` attribute alone — never `allow-same-origin` (D2). The gate is
+ * Windows-only as of D132: the disable branch it carried was for an unproven
+ * WebKitGTK engine, and that platform is out of v1's scope.
  */
 import { create } from "zustand";
 
@@ -14,7 +15,8 @@ export interface DrawerEntry {
   state: DrawerState;
   artifactId: string | null;
   version: number | null;
-  /** D45 notice; set exactly when the drawer is disabled on Linux. */
+  /** Retained for the gate seam (D45/D132). Unreachable today: nothing can
+   *  disable the drawer on the platform we ship. */
   notice: string | null;
 }
 
@@ -146,7 +148,8 @@ export function sandboxAttr(extra: readonly string[] = []): string {
 }
 
 export interface EngineGate {
-  platform: "windows" | "mac" | "linux" | "other";
+  /** The platforms we ship (D132). Anything else reports `other`. */
+  platform: "windows" | "other";
   /** True once a probe proved the opaque origin on this engine (001/D45). */
   opaqueProven: boolean;
 }
@@ -156,17 +159,26 @@ export interface GateVerdict {
   notice: string | null;
 }
 
-/** D45: one package, runtime gate. Linux without proof disables with a notice
- * naming the reason; everything else renders. */
-export function artifactGate(gate: EngineGate): GateVerdict {
-  if (gate.platform === "linux" && !gate.opaqueProven) {
-    return {
-      enabled: false,
-      notice:
-        "Artifacts are off on Linux: this engine has not proven an opaque origin (D45). " +
-        "Chat, tools, and everything else work normally.",
-    };
-  }
+/**
+ * D45's runtime gate, kept as the seam it always was. The disable branch it
+ * used to carry was **Linux-only** — "an unproven WebKitGTK engine renders no
+ * artifacts" — and D132 removed Linux from v1's scope, so that branch is gone
+ * with it. On the platform we do ship the obligation is a *release* proof, not
+ * a runtime disable (SPEC.md A8: WebView2 must hold an opaque origin, asserted
+ * by `pnpm proofs`), so nothing here weakens the Windows sandbox claim:
+ * `opaqueProven` is still reported by `detectEngineGate` and still recorded
+ * through the 021 probe surface above.
+ */
+/**
+ * D45's gate, now unconditional. The disable branch it carried was
+ * **Linux-only** — "an unproven WebKitGTK engine renders no artifacts" — and
+ * D132 took that platform out of v1's scope, so there is nothing left for it to
+ * fail closed on. The Windows obligation is a *release* proof, not a runtime
+ * switch (SPEC.md A8: WebView2 must hold an opaque origin, asserted by
+ * `pnpm proofs`). The engine is still detected and reported through
+ * `detectEngineGate`, so a future platform's rule has the input it needs.
+ */
+export function artifactGate(): GateVerdict {
   return { enabled: true, notice: null };
 }
 
@@ -188,13 +200,9 @@ export function recordOpaqueOriginProbe(proven: boolean): void {
  */
 export function detectEngineGate(): EngineGate {
   const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  const platform: EngineGate["platform"] = /\blinux\b/i.test(ua)
-    ? "linux"
-    : /\bmac\b|macintosh/i.test(ua)
-      ? "mac"
-      : /\bwin/i.test(ua)
-        ? "windows"
-        : "other";
+  // Windows, or nothing (D132). macOS was already out by D49; Linux is out by
+  // D132, so neither names itself as a platform we ship.
+  const platform: EngineGate["platform"] = /\bwin/i.test(ua) ? "windows" : "other";
   return { platform, opaqueProven: opaqueOriginProbe === true };
 }
 

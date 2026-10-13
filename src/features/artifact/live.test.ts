@@ -247,27 +247,12 @@ describe("a refresh in flight cannot write after the producer stops (audit 14, N
   });
 });
 
-describe("the D45 gate holds at the producer boundary (audit 14, IMPORTANT)", () => {
-  it("starts no listeners on an unproven Linux engine, and says why", async () => {
+describe("the producer has no gate to refuse it (D132)", () => {
+  it("runs unconditionally — the refusal was Linux-only", async () => {
+    // D45 refused to start a producer on an unproven *WebKitGTK* engine. D132
+    // removed that engine, so the producer starts and fetches, always.
     const h = makeDeps();
-    const stop = await startArtifactProducer(THREAD, h.deps, {
-      platform: "linux",
-      opaqueProven: false,
-    });
-    expect(vi.mocked(h.deps.listenEvents)).not.toHaveBeenCalled();
-    expect(vi.mocked(h.deps.listenDone)).not.toHaveBeenCalled();
-    expect(vi.mocked(h.deps.fetchLatest)).not.toHaveBeenCalled();
-    expect(h.notices).toHaveLength(1);
-    expect(h.notices[0]).toMatch(/Linux/);
-    stop();
-  });
-
-  it("runs normally everywhere else", async () => {
-    const h = makeDeps();
-    const stop = await startArtifactProducer(THREAD, h.deps, {
-      platform: "windows",
-      opaqueProven: false,
-    });
+    const stop = await startArtifactProducer(THREAD, h.deps);
     expect(vi.mocked(h.deps.listenEvents)).toHaveBeenCalledOnce();
     expect(vi.mocked(h.deps.fetchLatest)).toHaveBeenCalledOnce();
     expect(h.notices).toHaveLength(0);
