@@ -176,5 +176,6 @@ is never reusable. Every port carries attribution in the file it lands in.
 - **Never force-push.**
 - **Never `git clone` or merge an unvetted repo.** This project ported from three specific MIT repos;
   adding a fourth is a licensing decision, not a convenience.
-- **Windows and Linux floors are release blockers, not warnings.** A failure on the floor CI job
-  invalidates the sandbox guarantee on that platform. **D50.**
+- **The Windows floor is a release blocker, not a warning.** A failure on the floor CI job
+  invalidates the sandbox guarantee on that platform. **D50.** (The Linux halves of this rule were
+  removed with the platform — **D132**.)
