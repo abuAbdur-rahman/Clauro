@@ -1,8 +1,9 @@
 //! Host-owned command runner (D28–D30, task 012).
 //!
-//! One runner, no new dependencies: process-group kill is `taskkill /T /F`
-//! on Windows and a `process_group` + `kill -- -pgid` on Unix (both present
-//! on dev and CI images). Output truncates with spill to disk, fd0 is
+//! One runner, one direct-signal dependency: process-group kill is
+//! `taskkill /T /F` on Windows and a `process_group` plus kernel SIGKILL
+//! via `libc` (**D131**) on Unix — the external `kill(1)` was dropped
+//! after its probe lied in CI. Output truncates with spill to disk, fd0 is
 //! `/dev/null`, and the child environment is scrubbed then merged in the
 //! fixed order `scrub → overrides → env → managed` (D30).
 //!
@@ -284,8 +285,8 @@ pub fn spawn_command(
 }
 
 /// Kill the whole group, then let the caller reap. Windows: `taskkill /T`
-/// takes the tree. Unix: negative-pid `kill` takes the process group the
-/// child leads.
+/// takes the tree. Unix: a direct group SIGKILL, verified by emptiness
+/// after reaping our own leader (D131).
 pub fn kill_group(pid: u32) -> Result<(), RunError> {
     #[cfg(windows)]
     {
@@ -304,18 +305,33 @@ pub fn kill_group(pid: u32) -> Result<(), RunError> {
     }
     #[cfg(not(windows))]
     {
-        // Best effort first, verdict by effect: group-kill exit codes lie
-        // across environments — WSL2's kernel delivers the signal and still
-        // reports exit 1. What matters is that the group is gone, so poll
-        // for that (bounded) instead of trusting the status.
-        let _ = std::process::Command::new("kill")
-            .args(["-KILL".to_string(), format!("-{pid}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| RunError::Killed(e.to_string()))?;
+        // D131: signal directly and verify by emptiness. `kill(1)`'s argv
+        // parsing varies per image, and its probe lied in CI — a kill that
+        // had worked read as failure. SIGKILL, not SIGTERM: the bash-runner
+        // contract (D28/D30) admits no escalation window.
+        // SAFETY: signal-only syscalls with an integer target; no pointers.
+        if unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) } != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                // Already gone: nothing to signal, no members to wait for.
+                return Ok(());
+            }
+            return Err(RunError::Killed(format!("kill(-{pid}) failed: {err}")));
+        }
+        // Reap OUR leader before testing emptiness: our own un-reaped child
+        // is a zombie, and `kill(-pgid, 0)` counts zombies as group members.
+        // The callers' `child.wait()` runs only after this returns, so
+        // without the in-loop reap the poll always saw a member, burned its
+        // full budget on a kill that had worked, and reported failure for a
+        // success (CI on the linux runner, 2026-10-13). WNOHANG: reap only
+        // what has already exited, never block.
         for _ in 0..50 {
+            let mut status: libc::c_int = 0;
+            // SAFETY: waitpid on our own child only; `status` is a plain
+            // out-parameter integer.
+            unsafe {
+                libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG);
+            }
             if !group_has_members(pid) {
                 return Ok(());
             }
@@ -327,18 +343,27 @@ pub fn kill_group(pid: u32) -> Result<(), RunError> {
     }
 }
 
-/// True while any member of `pgid` (zombies included) can still be signalled.
-/// `kill -0` on the negative pid asks the group, not one process.
+/// True while any member of `pgid` (zombies included — which is precisely
+/// why `kill_group` reaps its own leader before asking, D131) still exists.
+/// Signal 0 on the negative pid asks the group, not one process.
 #[cfg(not(windows))]
 fn group_has_members(pgid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0".to_string(), format!("-{pgid}")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true)
+    // D131: the kernel, not `kill(1)`. The binary's argv parsing varies per
+    // image, and its rc=1 probe lied in CI for a group that still held our
+    // own un-reaped leader — a working kill read as failure. Signal 0:
+    // rc 0 = a member exists; EPERM = members exist and are not ours to
+    // signal (still alive); ESRCH alone means the group is empty. Any
+    // other failure reads as "members remain" — the safe direction,
+    // because the bounded poll converts it into `Err` like survivors.
+    // SAFETY: signal-only syscall with an integer target; no pointers, so
+    // there is nothing to invalidate.
+    if unsafe { libc::kill(-(pgid as libc::pid_t), 0) } == 0 {
+        return true;
+    }
+    !matches!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH)
+    )
 }
 
 /// Keep at most `cap` bytes of `output`, never splitting a UTF-8 char.
@@ -472,4 +497,32 @@ pub fn run_command(
         truncated: true,
         spill_path: Some(spill_path),
     })
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::group_has_members;
+    use std::os::unix::process::CommandExt;
+
+    /// A live group must report members (D131, red-first 2026-10-13): the
+    /// external `kill(1)` probe returned rc=1 on a group that plainly held a
+    /// running leader — the same lie that made `kill_group` burn its whole
+    /// poll and report failure for a kill that had worked (the two CI
+    /// failures on the linux runner).
+    #[test]
+    fn group_has_members_is_true_for_a_live_group() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep as its own group leader");
+        let pgid = child.id();
+        let members = group_has_members(pgid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            members,
+            "a group holding a running leader must report members"
+        );
+    }
 }
