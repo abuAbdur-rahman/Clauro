@@ -10,6 +10,22 @@ name: Release
 #
 # Least privilege: build jobs only read the repo; only the publish job holds
 # `contents: write` (review 42).
+on:
+  # A release is cut by pushing a tag. Nothing here runs on a schedule or on
+  # a branch push: a build that cannot be reproduced from a tag does not get
+  # cut. (Restored 2026-10-13: the SHA-pin refresh below accidentally
+  # dropped this block — the file failed workflow validation on the next
+  # push, caught by the Release run before merge.)
+  push:
+    tags: ["v*"]
+  # Manual re-run for a tag that already exists; the input drives the tag
+  # checkout and the release steps below.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (v0.1.0)"
+        required: true
+
 permissions:
   contents: read
 
