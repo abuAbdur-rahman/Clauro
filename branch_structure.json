@@ -1,0 +1,30 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "dependabot/npm_and_yarn/vite-8.3.3",
+    "dev",
+    "main",
+    "phase-6",
+    "phase-6b",
+    "win-only",
+    "win-only-2"
+  ],
+  "parent": {
+    "dependabot/npm_and_yarn/vite-8.3.3": "main",
+    "dev": "main",
+    "main": null,
+    "phase-6": "main",
+    "phase-6b": "main",
+    "win-only": "main",
+    "win-only-2": "win-only"
+  },
+  "order": [
+    "main",
+    "dependabot/npm_and_yarn/vite-8.3.3",
+    "dev",
+    "phase-6",
+    "phase-6b",
+    "win-only",
+    "win-only-2"
+  ]
+}
